@@ -1,0 +1,16 @@
+{
+  "name": "net-device-share",
+  "version": "1.0.0",
+  "description": "Совместное использование USB-устройств по сети (USB/IP) с автообнаружением узлов и учётом занятости",
+  "type": "module",
+  "main": "src/main.js",
+  "bin": { "net-device-share": "src/main.js" },
+  "engines": { "node": ">=20.6.0" },
+  "scripts": {
+    "start": "node src/main.js",
+    "dev": "node src/main.js --backend mock --log-level debug",
+    "doctor": "node src/main.js --doctor"
+  },
+  "dependencies": {},
+  "license": "MIT"
+}
