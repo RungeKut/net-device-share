@@ -83,17 +83,43 @@ async function doctor(config) {
   process.stdout.write(args.join('\n') + '\n');
 }
 
+/**
+ * Открывает интерфейс штатным обработчиком ссылок операционной системы.
+ *
+ * Здесь намеренно НЕ используется `cmd /c start` со скрытым окном и
+ * отвязкой от родителя. Такая связка — запуск командного интерпретатора с
+ * произвольной строкой, спрятанным окном и выброшенным выводом — совпадает
+ * с типовым поведением загрузчиков вредоносного кода, и антивирусы
+ * справедливо помечают её эвристикой. explorer.exe делает ровно то же
+ * полезное действие (ShellExecute по протоколу http), но интерпретатор
+ * команд в цепочке не участвует и ничего не прячется.
+ */
 function openBrowser(url) {
+  // Проверяем ссылку перед передачей во внешнюю программу. Сейчас она
+  // собирается нами же из локального адреса и порта, но подстановка чужой
+  // строки в аргумент внешнего процесса — как раз то, чего делать нельзя.
+  let parsed;
   try {
-    if (process.platform === 'win32') {
-      // start — встроенная команда оболочки, первый пустой аргумент
-      // занимает позицию заголовка окна.
-      spawn('cmd', ['/c', 'start', '', url], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
-    } else if (process.platform === 'darwin') {
-      spawn('open', [url], { detached: true, stdio: 'ignore' }).unref();
-    } else {
-      spawn('xdg-open', [url], { detached: true, stdio: 'ignore' }).unref();
-    }
+    parsed = new URL(url);
+  } catch {
+    log.debug('некорректная ссылка, браузер не открываем:', url);
+    return;
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    log.debug('ссылка не по протоколу http(s), браузер не открываем:', url);
+    return;
+  }
+
+  const [command, args] = process.platform === 'win32' ? ['explorer.exe', [parsed.href]]
+    : process.platform === 'darwin' ? ['open', [parsed.href]]
+    : ['xdg-open', [parsed.href]];
+
+  try {
+    const child = spawn(command, args, { stdio: 'ignore' });
+    // explorer.exe возвращает ненулевой код даже при успешном открытии,
+    // поэтому код выхода не проверяем: важно лишь, что процесс запустился.
+    child.on('error', (e) => log.debug(`браузер открыть не удалось: ${e.message}`));
+    child.unref();
   } catch (e) {
     log.debug('браузер открыть не удалось:', e.message);
   }
