@@ -138,7 +138,7 @@ function renderBanner() {
     const tail = (inst.steps || []).slice(-6);
     banner.innerHTML = `
       <b>Идёт установка компонентов USB/IP…</b>
-      <p class="banner-hint">Если Windows запросит права администратора — подтвердите. Это может занять около минуты.</p>
+      <p class="banner-hint">Windows запросит права администратора — подтвердите. Запрос приходит на каждый компонент отдельно; в окне видно издателя установщика. Это может занять около минуты.</p>
       <pre class="banner-log">${tail.map((s) => esc(s.text)).join('\n') || 'подготовка…'}</pre>`;
     return;
   }
@@ -169,7 +169,7 @@ function renderBanner() {
         <button class="btn primary" id="btnInstall">${failed ? 'Повторить установку' : 'Установить'}</button>
         <span class="banner-hint">${esc(todo.map((c) => `${c.title.split('—')[0].trim()} ${c.version}`).join(', '))}
           — ${size ? esc(size.toFixed(1)) : '?'} МБ из папки <code>installers</code>, интернет не нужен.
-          Потребуются права администратора.</span>
+          Потребуются права администратора: Windows спросит подтверждение на каждый компонент.</span>
       </div>`);
     const note = todo.find((c) => c.signerNote);
     if (note) parts.push(`<p class="banner-hint">${esc(note.signerNote)}</p>`);

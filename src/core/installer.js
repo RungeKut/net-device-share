@@ -8,8 +8,9 @@
 // подпись Authenticode. Мы запускаем установщик драйвера ядра с правами
 // администратора — на слово ему верить нельзя.
 //
-// Все компоненты ставятся одним повышенным процессом, чтобы запрос UAC
-// был один, а не по одному на каждый файл.
+// Компоненты ставятся по очереди, каждый своим установщиком. Так в окне UAC
+// виден издатель настоящего установщика, а не посредник вроде PowerShell,
+// и в системе не появляется временный сценарий, запускаемый в обход политики.
 
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
@@ -181,37 +182,33 @@ export class Installer extends EventEmitter {
     const elevated = await isElevated();
     this._step('info', elevated
       ? 'приложение уже запущено с правами администратора'
-      : 'нужны права администратора — появится запрос Windows, подтвердите его');
+      : `нужны права администратора — Windows запросит подтверждение на каждый компонент (${todo.length} шт.)`);
 
     const logDir = path.join(os.tmpdir(), 'net-device-share-install');
     await fsp.mkdir(logDir, { recursive: true });
-    const workerPath = path.join(logDir, 'install-worker.ps1');
-    const workerLog = path.join(logDir, 'worker.log');
-    await fsp.writeFile(workerPath, buildWorker(work, logDir, workerLog), 'ascii');
-    await fsp.rm(workerLog, { force: true });
 
-    this._step('info', 'запуск установки…');
-    const result = elevated
-      ? await run('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', workerPath], { timeoutMs: 600000 })
-      : await run('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', elevateCommand(workerPath)], { timeoutMs: 600000 });
+    // Компоненты ставятся по очереди, каждый своим установщиком. Без
+    // повышенных прав на каждый будет отдельный запрос UAC — зато в нём
+    // виден издатель настоящего установщика, а не посредник.
+    for (const { component, file } of work) {
+      const logPath = path.join(logDir, `${component.id}.log`);
+      const command = component.command.replace('{file}', file);
+      const args = component.args.map((a) => a.replace('{file}', file).replace('{log}', logPath));
 
-    // Лог пишет повышенный процесс; читаем его в любом случае —
-    // при ошибке он и объясняет, что произошло.
-    let workerOutput = '';
-    try {
-      workerOutput = await fsp.readFile(workerLog, 'utf8');
-    } catch { /* лога может не быть, если UAC отклонили */ }
+      this._step('info', `установка ${component.id} ${component.version}…`);
+      const r = await runInstaller(command, args, elevated);
 
-    for (const line of workerOutput.split(/\r?\n/)) {
-      const t = line.trim();
-      if (t) this._step(/FAILED|ERROR/i.test(t) ? 'warn' : 'info', `  ${t}`);
-    }
+      if (r.declined) {
+        throw new Error('запрос прав администратора отклонён — установка не выполнена');
+      }
+      if (!r.ok) {
+        throw new Error(`установщик ${component.id} завершился с ошибкой (код ${r.code}). Подробный журнал: ${logPath}`);
+      }
+      this._step('info', `  установщик отработал успешно`);
 
-    if (!result.ok) {
-      const declined = !workerOutput && /отклон|cancel|denied|1223/i.test(result.stderr || '');
-      throw new Error(declined
-        ? 'запрос прав администратора отклонён — установка не выполнена'
-        : `установщик завершился с ошибкой (код ${result.code}). ${(result.stderr || '').trim().slice(0, 300)}`);
+      const found = (component.verifyPaths || []).find((p) => fs.existsSync(p));
+      if (found) this._step('info', `  файл на месте: ${found}`);
+      else this._step('warn', '  ожидаемый файл по известным путям не найден');
     }
 
     this._step('info', 'проверка результата…');
@@ -247,43 +244,43 @@ const LINUX_HINTS = [
   'Запускайте приложение через scripts/run-linux.sh — он сделает это сам.',
 ];
 
-/** Скрипт для повышенного процесса. Только ASCII: PowerShell 5.1 без BOM читает файл как ANSI. */
-function buildWorker(work, logDir, logFile) {
-  const lines = [
-    '$ErrorActionPreference = "Continue"',
-    `$log = '${psQuote(logFile)}'`,
-    'function W([string]$m) { Add-Content -Path $log -Value $m -Encoding utf8 }',
-    'W "worker started"',
-    '$failed = 0',
-  ];
+// ERROR_CANCELLED — код, которым Windows сообщает «пользователь отказался».
+const DECLINED_CODE = 1223;
 
-  for (const { component, file } of work) {
-    const logPath = path.join(logDir, `${component.id}.log`);
-    const args = component.args.map((a) => a
-      .replace('{file}', file)
-      .replace('{log}', logPath));
-    const command = component.command.replace('{file}', file);
-
-    lines.push(
-      '',
-      `W "=== ${component.id} ${component.version} ==="`,
-      `$p = Start-Process -FilePath '${psQuote(command)}' -ArgumentList @(${args.map((a) => `'${psQuote(a)}'`).join(',')}) -Wait -PassThru`,
-      `W ("${component.id} exit code: " + $p.ExitCode)`,
-      `if ($p.ExitCode -ne 0) { W "${component.id} FAILED"; $failed = 1 }`,
-    );
-
-    for (const p of component.verifyPaths || []) {
-      lines.push(`W ("  exists ${psQuote(p).replace(/\\/g, '\\')} : " + (Test-Path '${psQuote(p)}'))`);
-    }
+/**
+ * Запуск одного установщика, при необходимости — с повышением прав.
+ *
+ * Здесь намеренно НЕТ ни временного файла сценария, ни `-ExecutionPolicy
+ * Bypass`. Прежняя реализация сбрасывала .ps1 в %TEMP% и запускала его с
+ * обходом политики исполнения от имени администратора — то есть повторяла
+ * связку «сбросил скрипт → обошёл политику → поднял права», по которой
+ * антивирусы опознают загрузчики вредоносного кода. Претензия справедливая:
+ * со стороны это неотличимо.
+ *
+ * Теперь PowerShell нужен только как обёртка над ShellExecute с глаголом
+ * RunAs — из Node вызвать его напрямую нельзя. Команда короткая, постоянной
+ * формы, а `-Command` под политику исполнения не подпадает: она действует
+ * на файлы сценариев.
+ *
+ * Побочная выгода важнее технической: в окне UAC пользователь видит издателя
+ * настоящего установщика, а не «Windows PowerShell». Плата — отдельный запрос
+ * на каждый компонент вместо одного общего.
+ */
+async function runInstaller(command, args, elevated) {
+  if (elevated) {
+    const r = await run(command, args, { timeoutMs: 600000 });
+    return { ok: r.ok, code: r.code, declined: false };
   }
 
-  lines.push('', 'W "worker finished"', 'exit $failed');
-  return lines.join('\r\n') + '\r\n';
-}
+  const list = args.map((a) => `'${psQuote(a)}'`).join(',');
+  const script = "$ErrorActionPreference='Stop'; "
+    + `try { $p = Start-Process -FilePath '${psQuote(command)}'`
+    + (args.length ? ` -ArgumentList @(${list})` : '')
+    + ' -Verb RunAs -Wait -PassThru; exit $p.ExitCode } '
+    + `catch { exit ${DECLINED_CODE} }`;
 
-/** Команда, поднимающая worker через UAC и возвращающая его код выхода. */
-function elevateCommand(workerPath) {
-  return `$p = Start-Process powershell.exe -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File','"${workerPath}"' -Verb RunAs -Wait -PassThru; exit $p.ExitCode`;
+  const r = await run('powershell.exe', ['-NoProfile', '-Command', script], { timeoutMs: 600000 });
+  return { ok: r.ok, code: r.code, declined: r.code === DECLINED_CODE };
 }
 
 function psQuote(s) {
