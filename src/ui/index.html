@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Net Device Share</title>
+  <link rel="stylesheet" href="/style.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔌</text></svg>">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="logo">🔌</span>
+    <div>
+      <div class="brand-title">Net Device Share</div>
+      <div class="brand-sub" id="selfLine">подключение…</div>
+    </div>
+  </div>
+
+  <div class="topbar-right">
+    <span class="dot" id="connDot" title="связь с приложением"></span>
+    <span class="cap" id="capServer" title="возможность раздавать свои устройства">раздача</span>
+    <span class="cap" id="capClient" title="возможность подключать чужие устройства">подключение</span>
+    <button class="btn" id="btnRefresh" type="button">Обновить</button>
+    <button class="btn" id="btnSettings" type="button">Настройки</button>
+  </div>
+</header>
+
+<div id="banner" class="banner" hidden></div>
+
+<nav class="tabs" role="tablist">
+  <button class="tab active" data-tab="catalog" type="button">Устройства сети <span class="badge" id="cntCatalog">0</span></button>
+  <button class="tab" data-tab="mine" type="button">Мои устройства <span class="badge" id="cntMine">0</span></button>
+  <button class="tab" data-tab="attached" type="button">Подключено ко мне <span class="badge" id="cntAttached">0</span></button>
+  <button class="tab" data-tab="peers" type="button">Узлы <span class="badge" id="cntPeers">0</span></button>
+  <button class="tab" data-tab="log" type="button">Журнал</button>
+</nav>
+
+<main>
+  <section class="panel active" id="tab-catalog">
+    <div class="panel-head">
+      <h2>Устройства, доступные в сети</h2>
+      <label class="check"><input type="checkbox" id="onlyFree"> только свободные</label>
+    </div>
+    <div id="catalogList" class="cards"></div>
+  </section>
+
+  <section class="panel" id="tab-mine">
+    <div class="panel-head">
+      <h2>USB-устройства этого компьютера</h2>
+      <label class="check"><input type="checkbox" id="autoShare"> публиковать новые автоматически</label>
+    </div>
+    <p class="hint">Опубликованное устройство видно другим узлам сети. Занять его может любой из них — и вы сами.</p>
+    <div id="mineList" class="cards"></div>
+  </section>
+
+  <section class="panel" id="tab-attached">
+    <div class="panel-head"><h2>Устройства, подключённые к этому компьютеру</h2></div>
+    <p class="hint">Эти устройства присутствуют в «Диспетчере устройств» так же, как подключённые кабелем.</p>
+    <div id="attachedList" class="cards"></div>
+  </section>
+
+  <section class="panel" id="tab-peers">
+    <div class="panel-head"><h2>Узлы в сети</h2></div>
+    <div id="peersList" class="cards"></div>
+  </section>
+
+  <section class="panel" id="tab-log">
+    <div class="panel-head">
+      <h2>Журнал</h2>
+      <label class="check"><input type="checkbox" id="logAutoscroll" checked> прокручивать</label>
+    </div>
+    <pre id="logView" class="log"></pre>
+  </section>
+</main>
+
+<dialog id="settings">
+  <form method="dialog" class="dlg">
+    <h2>Настройки</h2>
+
+    <label class="field">
+      <span>Имя этого узла</span>
+      <input type="text" id="setName" maxlength="64" placeholder="имя компьютера">
+      <small>Под этим именем вас видят остальные и по нему видно, кто занял устройство.</small>
+    </label>
+
+    <label class="field">
+      <span>Рабочая сеть</span>
+      <select id="setNetwork"></select>
+      <small>Приложение работает только в выбранной подсети; узлы из других сетей игнорируются.</small>
+    </label>
+
+    <label class="field">
+      <span>Общий ключ <em class="muted">(необязательно)</em></span>
+      <input type="password" id="setKey" placeholder="оставьте пустым — без проверки" autocomplete="new-password">
+      <small>Узлы с разными ключами не видят друг друга. Изменение требует перезапуска.</small>
+    </label>
+
+    <div class="grid2">
+      <label class="field">
+        <span>Срок аренды, с</span>
+        <input type="number" id="setLease" min="10" max="600" step="5">
+        <small>Через столько секунд молчания клиента устройство освободится само.</small>
+      </label>
+      <label class="field">
+        <span>Подробность журнала</span>
+        <select id="setLogLevel">
+          <option value="error">error</option>
+          <option value="warn">warn</option>
+          <option value="info">info</option>
+          <option value="debug">debug</option>
+          <option value="trace">trace</option>
+        </select>
+      </label>
+    </div>
+
+    <div class="grid2">
+      <label class="field">
+        <span>Порт HTTP</span>
+        <input type="number" id="setApiPort" min="1" max="65535">
+      </label>
+      <label class="field">
+        <span>Порт обнаружения (UDP)</span>
+        <input type="number" id="setDiscoveryPort" min="1" max="65535">
+      </label>
+    </div>
+
+    <details class="advanced">
+      <summary>Пути к утилитам USB/IP</summary>
+      <label class="field">
+        <span>usbipd (раздача)</span>
+        <input type="text" id="setUsbipdPath" placeholder="определяется автоматически">
+      </label>
+      <label class="field">
+        <span>usbip (подключение)</span>
+        <input type="text" id="setUsbipPath" placeholder="определяется автоматически">
+      </label>
+    </details>
+
+    <p class="dlg-note" id="settingsNote"></p>
+
+    <div class="dlg-actions">
+      <button class="btn" value="cancel" type="submit">Отмена</button>
+      <button class="btn primary" id="btnSaveSettings" value="save" type="submit">Сохранить</button>
+    </div>
+  </form>
+</dialog>
+
+<div id="toasts" class="toasts"></div>
+
+<script src="/app.js" type="module"></script>
+</body>
+</html>
