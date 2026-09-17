@@ -58,7 +58,8 @@ export class App extends EventEmitter {
     });
     this.backendInfo = await this.backend.probe();
     log.info(`бэкенд USB/IP: ${this.backend.name} (раздача: ${this.backendInfo.server ? 'да' : 'нет'}, подключение: ${this.backendInfo.client ? 'да' : 'нет'})`);
-    for (const issue of this.backendInfo.issues) log.warn(issue);
+    for (const issue of this.backendInfo.issues || []) log.warn(issue);
+    for (const note of this.backendInfo.notes || []) log.info(note);
 
     this.hub = new DeviceHub({
       backend: this.backend,
@@ -439,10 +440,17 @@ export class App extends EventEmitter {
       platform: process.platform,
       startedAt: this.startedAt,
       devices: this.share.listShared(),
-      groups: localGroups,
+      // В каталог идут только опубликованные группы. Неопубликованная —
+      // заготовка у владельца: её устройства показываются поодиночке.
+      groups: localGroups.filter((g) => g.shared),
     }];
     for (const peer of this.peers.list()) {
-      owners.push({ ...peer, self: false, devices: peer.devices || [], groups: peer.groups || [] });
+      owners.push({
+        ...peer,
+        self: false,
+        devices: peer.devices || [],
+        groups: (peer.groups || []).filter((g) => g.shared !== false),
+      });
     }
 
     const catalog = [];
@@ -500,7 +508,8 @@ export class App extends EventEmitter {
         server: this.backendInfo.server,
         client: this.backendInfo.client,
         tools: this.backendInfo.tools,
-        issues: this.backendInfo.issues,
+        issues: this.backendInfo.issues || [],
+        notes: this.backendInfo.notes || [],
       },
       install: this.installer ? this.installer.plan() : null,
       config: this.publicConfig(),

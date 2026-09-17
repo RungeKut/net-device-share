@@ -333,9 +333,10 @@ dialog::backdrop { background: rgba(8, 12, 20, .5); }
 .group.mine { border-color: var(--mine); }
 .group.offline { opacity: .55; }
 
-.group-head { display: grid; gap: 6px; margin-bottom: 10px; }
+/* Раскладка .group-head задана ниже, в блоке про поиск и колонку кнопок:
+   держать здесь второе, конфликтующее правило — верный способ однажды
+   поправить не то место. */
 .group-title { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 15px; }
-.group-actions { display: flex; gap: 6px; flex-wrap: wrap; }
 .group-body { display: grid; gap: 8px; }
 .group-body .card { background: var(--surface); }
 
@@ -401,3 +402,53 @@ dialog::backdrop { background: rgba(8, 12, 20, .5); }
 .member input { flex: none; }
 
 .group-manage .card-meta span { display: block; }
+
+/* ===================== поиск и раскладка группы ===================== */
+
+/* Три колонки: заголовок слева, поиск строго по центру, фильтры справа.
+   Средняя колонка центрируется независимо от ширины боковых. */
+.panel-head.with-search {
+  display: grid;
+  grid-template-columns: 1fr minmax(200px, 400px) 1fr;
+  align-items: center;
+  gap: 12px;
+}
+.panel-head.with-search h2 { justify-self: start; margin-bottom: 0; }
+.panel-head.with-search .head-controls { justify-self: end; }
+
+.search {
+  font: inherit;
+  width: 100%;
+  padding: 6px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text);
+}
+.search:focus { outline: none; border-color: var(--accent); background: var(--surface); }
+.search::placeholder { color: var(--muted); }
+
+/* Кнопки группы — справа, как у карточек. Колонка берёт ровно свою
+   ширину, поэтому рамка группы не расширяется. */
+.group-head {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: start;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.group-info { display: grid; gap: 6px; min-width: 0; }
+.group-head .card-actions { display: flex; flex-direction: column; gap: 6px; }
+
+.group-rule { margin: 8px 0 0; font-size: 11.5px; }
+.note-line { padding: 1px 0; }
+
+@media (max-width: 760px) {
+  .panel-head.with-search { grid-template-columns: 1fr; }
+  .panel-head.with-search h2,
+  .panel-head.with-search .head-controls { justify-self: start; }
+}
+@media (max-width: 620px) {
+  .group-head { grid-template-columns: 1fr; }
+  .group-head .card-actions { flex-direction: row; flex-wrap: wrap; }
+}

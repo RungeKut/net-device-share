@@ -73,7 +73,7 @@ export class UsbBackend {
 
   /** Проверка окружения: что установлено, чего не хватает. */
   async probe() {
-    return { available: false, server: false, client: false, tools: {}, issues: ['бэкенд не реализован'] };
+    return { available: false, server: false, client: false, tools: {}, issues: ['бэкенд не реализован'], notes: [] };
   }
 
   /** Локальные USB-устройства, пригодные для публикации. */

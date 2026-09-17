@@ -40,7 +40,7 @@ const MIME = {
 const MUTATING = new Set([
   '/api/v1/settings', '/api/v1/share', '/api/v1/purpose', '/api/v1/force-release',
   '/api/v1/attach', '/api/v1/detach', '/api/v1/refresh', '/api/v1/install',
-  '/api/v1/group/save', '/api/v1/group/delete',
+  '/api/v1/group/save', '/api/v1/group/delete', '/api/v1/group/share',
   '/api/v1/request', '/api/v1/request/answer', '/api/v1/request/cancel',
 ]);
 
@@ -208,7 +208,9 @@ export class ApiServer {
             apiPort: this.app.config.get('apiPort'),
             stateHash: share.hash(),
             devices: share.listShared(),
-            groups: share.listGroups(),
+            // Неопубликованная группа — внутренняя заготовка владельца,
+            // соседям её знать незачем.
+            groups: share.listGroups().filter((g) => g.shared),
             // Запросы отдаём только те, что касаются спрашивающего.
             requests: callerId ? share.requestsFor(callerId) : [],
           });
@@ -364,6 +366,11 @@ export class ApiServer {
         }
         case '/api/v1/group/save': {
           const g = this.app.share.saveGroup(body);
+          this.app.onStateChanged();
+          return sendJson(res, 200, g);
+        }
+        case '/api/v1/group/share': {
+          const g = this.app.share.setGroupShared(body.groupId, Boolean(body.shared));
           this.app.onStateChanged();
           return sendJson(res, 200, g);
         }

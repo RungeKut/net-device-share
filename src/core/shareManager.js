@@ -147,9 +147,9 @@ export class ShareManager extends EventEmitter {
       throw errWith('busy', 'устройство сейчас занято — сначала освободите его');
     }
     if (!shared) {
-      const group = this.groupOf(deviceId);
+      const group = this.publishedGroupOf(deviceId);
       if (group) {
-        throw errWith('in_group', `устройство входит в группу «${group.name}» — сначала исключите его из группы`);
+        throw errWith('in_group', `устройство отдано группой «${group.name}» — снимите с публикации саму группу`);
       }
     }
 
@@ -195,6 +195,36 @@ export class ShareManager extends EventEmitter {
     return this.groups().find((g) => g.members.includes(deviceId)) || null;
   }
 
+  /**
+   * Группа, которая СЕЙЧАС распоряжается устройством.
+   *
+   * Пока группа не опубликована, она существует только как заготовка у
+   * владельца: её устройства живут своей жизнью — публикуются и занимаются
+   * по отдельности. Ограничения включаются вместе с публикацией группы.
+   */
+  publishedGroupOf(deviceId) {
+    const g = this.groupOf(deviceId);
+    return g && g.shared ? g : null;
+  }
+
+  publishedGroups() {
+    return this.groups().filter((g) => g.shared);
+  }
+
+  /** Публикация группы целиком. */
+  setGroupShared(groupId, shared) {
+    const group = this.groups().find((g) => g.id === groupId);
+    if (!group) throw errWith('not_found', 'группа не найдена');
+    if (!shared && group.members.some((m) => this.claims.has(m))) {
+      throw errWith('busy', 'группа сейчас занята — сначала освободите её');
+    }
+    const groups = this.groups().map((g) => (g.id === groupId ? { ...g, shared: Boolean(shared) } : g));
+    this.config.set({ groups });
+    log.info(`группа «${group.name}» ${shared ? 'опубликована' : 'снята с публикации'}`);
+    this._emitIfChanged(true);
+    return { ...group, shared: Boolean(shared) };
+  }
+
   saveGroup({ id, name, description, members }) {
     const clean = (members || []).filter((m) => this.devices.has(m));
     if (clean.length < 1) throw errWith('bad_request', 'в группе должно быть хотя бы одно устройство');
@@ -214,21 +244,18 @@ export class ShareManager extends EventEmitter {
       if (this.claims.has(m)) throw errWith('busy', 'нельзя менять состав, пока устройства группы заняты');
     }
 
+    const existing = this.groups().find((g) => g.id === groupId);
     const group = {
       id: groupId,
       name: String(name || '').trim().slice(0, 80) || 'Группа',
       description: String(description || '').trim().slice(0, 500),
       members: clean,
+      // Новая группа сразу опубликована: её и создают ради того, чтобы
+      // занимали из сети. Снять публикацию можно отдельной кнопкой — тогда
+      // устройства снова заживут по отдельности.
+      shared: existing ? Boolean(existing.shared) : true,
     };
     this.config.set({ groups: [...others, group] });
-
-    // Устройства группы обязаны быть опубликованы: группа существует именно
-    // для того, чтобы её занимали из сети.
-    for (const m of clean) {
-      if (!this.config.isShared(m)) this.config.setShared(m, true);
-      const dev = this.devices.get(m);
-      if (dev) { dev.shared = true; dev.sharedSince = dev.sharedSince || Date.now(); }
-    }
 
     log.info(`группа «${group.name}» сохранена: ${clean.length} устройств`);
     this._emitIfChanged(true);
@@ -266,7 +293,7 @@ export class ShareManager extends EventEmitter {
     }
     const dev = this.devices.get(target);
     if (!dev) throw errWith('device_not_found', `устройство ${target} не найдено`);
-    const group = this.groupOf(target);
+    const group = this.publishedGroupOf(target);
     if (group) {
       throw errWith('in_group', `устройство входит в группу «${group.name}» — занимайте группу целиком`);
     }
@@ -284,10 +311,13 @@ export class ShareManager extends EventEmitter {
     const isOwner = holderId === this.config.get('nodeId');
     const preempt = force && isOwner;
 
-    for (const dev of devices) {
-      if (!dev.shared) throw errWith('not_shared', `устройство ${dev.title} не опубликовано`);
+    if (kind === 'group') {
+      if (!group.shared) throw errWith('not_shared', `группа «${group.name}» не опубликована`);
+    } else {
+      for (const dev of devices) {
+        if (!dev.shared) throw errWith('not_shared', `устройство ${dev.title} не опубликовано`);
+      }
     }
-
     // Проверяем ВСЕ устройства до того, как трогать хоть одно: группа
     // занимается целиком или не занимается вовсе.
     const blocking = [];
@@ -600,6 +630,10 @@ export class ShareManager extends EventEmitter {
       claim: claim ? { ...claim } : null,
       reservedFor: reserved && reserved.until > Date.now() ? { ...reserved } : null,
       groupId: group ? group.id : null,
+      groupName: group ? group.name : null,
+      // Пока группа не опубликована, устройство живёт своей жизнью;
+      // интерфейсу нужно различать эти два состояния.
+      groupPublished: Boolean(group && group.shared),
       connectedSince: dev.connectedSince,
       sharedSince: dev.sharedSince,
       unavailableReason: dev.unavailableReason || null,
@@ -612,11 +646,19 @@ export class ShareManager extends EventEmitter {
     return [...this.devices.values()].map((d) => this.toDto(d));
   }
 
+  /**
+   * Устройства, видимые соседям: опубликованные поодиночке и все члены
+   * опубликованных групп. Член группы может быть не опубликован сам по себе —
+   * его отдаёт наружу группа, и без него она была бы неполной.
+   */
   listShared() {
-    return [...this.devices.values()].filter((d) => d.shared).map((d) => this.toDto(d));
+    const viaGroup = new Set(this.publishedGroups().flatMap((g) => g.members));
+    return [...this.devices.values()]
+      .filter((d) => d.shared || viaGroup.has(d.deviceId))
+      .map((d) => this.toDto(d));
   }
 
-  /** Группы с подставленным состоянием занятости — то, что уходит соседям. */
+  /** Группы с подставленным состоянием занятости. */
   listGroups() {
     return this.groups().map((g) => {
       const claims = g.members.map((m) => this.claims.get(m)).filter(Boolean);
@@ -627,6 +669,7 @@ export class ShareManager extends EventEmitter {
         name: g.name,
         description: g.description || '',
         members: [...g.members],
+        shared: Boolean(g.shared),
         available: g.members.every((m) => this.devices.has(m)),
         claim: holder ? { ...holder } : null,
         // Частичная занятость возможна только как след сбоя: в норме
@@ -640,7 +683,7 @@ export class ShareManager extends EventEmitter {
   hash() {
     const devices = this.listShared();
     const groupPart = this.listGroups()
-      .map((g) => `${g.id}|${g.name}|${g.description}|${g.members.join(',')}|${g.claim ? g.claim.holderId : '-'}`)
+      .map((g) => `${g.id}|${g.name}|${g.description}|${g.shared ? 1 : 0}|${g.members.join(',')}|${g.claim ? g.claim.holderId : '-'}`)
       .join(';');
     const requestPart = [...this.requests.values()]
       .map((r) => `${r.id}:${r.state}`)
