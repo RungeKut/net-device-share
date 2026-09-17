@@ -302,3 +302,102 @@ dialog::backdrop { background: rgba(8, 12, 20, .5); }
   .grid2 { grid-template-columns: 1fr; }
   main, .tabs, .topbar { padding-left: 12px; padding-right: 12px; }
 }
+
+/* ======================= группы, описания, запросы ======================= */
+
+:root {
+  --group: #0e7490;
+  --group-bg: #e4f4f8;
+  --warn: #b45309;
+  --warn-bg: #fdf1dc;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --group: #56c8de;
+    --group-bg: #10303a;
+    --warn: #f3b463;
+    --warn-bg: #33260f;
+  }
+}
+
+/* Группа — рамка другого цвета: видно, что это составное устройство,
+   а не просто соседние карточки. */
+.group {
+  border: 2px solid var(--group);
+  border-radius: var(--radius);
+  background: var(--group-bg);
+  padding: 12px 14px 14px;
+  margin: 0;
+}
+.group.busy { border-color: var(--busy); }
+.group.mine { border-color: var(--mine); }
+.group.offline { opacity: .55; }
+
+.group-head { display: grid; gap: 6px; margin-bottom: 10px; }
+.group-title { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 15px; }
+.group-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.group-body { display: grid; gap: 8px; }
+.group-body .card { background: var(--surface); }
+
+.pill.group-pill { color: var(--group); background: var(--surface); border-color: currentColor; }
+.pill.warn { color: var(--warn); background: var(--warn-bg); }
+.pill.ok { color: var(--ok); background: var(--ok-bg); }
+
+.card.in-group { border-left-width: 3px; }
+.type-icon { font-size: 15px; line-height: 1; }
+
+/* Пользовательское описание: главный текст карточки после названия. */
+.purpose {
+  margin-top: 4px;
+  padding: 4px 8px;
+  border-left: 3px solid var(--border);
+  background: var(--surface-2);
+  border-radius: 0 6px 6px 0;
+  font-size: 12.5px;
+  color: var(--text);
+}
+.purpose-input {
+  font: inherit; font-size: 12.5px; margin-top: 6px; width: 100%;
+  padding: 5px 8px; border-radius: 6px;
+  border: 1px dashed var(--border); background: var(--surface-2); color: var(--text);
+}
+.purpose-input:focus { border-style: solid; border-color: var(--accent); outline: none; }
+
+.head-controls { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.mini-select {
+  font: inherit; font-size: 12.5px; padding: 3px 8px; border-radius: 6px;
+  border: 1px solid var(--border); background: var(--surface-2); color: var(--text);
+}
+
+.banner.info { background: var(--surface-2); color: var(--text); border-color: var(--border); }
+
+/* Собственные запросы — узкой строкой над каталогом. */
+.outgoing { display: grid; gap: 6px; margin-bottom: 12px; }
+.outgoing-row {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 6px 10px; border: 1px dashed var(--border);
+  border-radius: var(--radius); font-size: 12.5px; background: var(--surface-2);
+}
+
+/* Диалог запроса намеренно крупный: он всплывает поверх работы. */
+.request-dialog { border-color: var(--warn); border-width: 2px; }
+.request-dialog h2 { color: var(--warn); }
+.request-line { margin: 0; font-size: 14px; }
+.request-target { margin: 4px 0; font-size: 17px; font-weight: 650; }
+.request-message {
+  margin: 8px 0 0; padding: 8px 10px; border-radius: 6px;
+  background: var(--surface-2); font-style: italic;
+}
+
+.member-picker, .type-picker {
+  display: grid; gap: 4px; max-height: 220px; overflow: auto;
+  padding: 8px; border: 1px solid var(--border); border-radius: 8px;
+  background: var(--surface-2);
+}
+.member {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 12.5px; cursor: pointer; padding: 2px;
+}
+.member input { flex: none; }
+
+.group-manage .card-meta span { display: block; }

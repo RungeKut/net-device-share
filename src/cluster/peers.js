@@ -38,6 +38,8 @@ export class PeerRegistry extends EventEmitter {
     const peer = existing || {
       nodeId: msg.nodeId,
       devices: [],
+      groups: [],
+      requests: [],
       stateHash: null,
       firstSeen: now,
     };
@@ -101,10 +103,14 @@ export class PeerRegistry extends EventEmitter {
         timeoutMs: 4000,
       });
       peer.devices = Array.isArray(state?.devices) ? state.devices : [];
+      peer.groups = Array.isArray(state?.groups) ? state.groups : [];
+      // Запросы приходят уже отфильтрованными: владелец отдаёт только те,
+      // где мы проситель или держатель.
+      peer.requests = Array.isArray(state?.requests) ? state.requests : [];
       peer.stateHash = state?.stateHash ?? expectedHash ?? null;
       peer.name = state?.name || peer.name;
       peer.stateError = null;
-      log.debug(`состояние "${peer.name}" обновлено: устройств ${peer.devices.length}`);
+      log.debug(`состояние "${peer.name}" обновлено: устройств ${peer.devices.length}, групп ${peer.groups.length}`);
       this.emit('changed');
     } catch (e) {
       peer.stateError = e.message;

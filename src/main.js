@@ -5,7 +5,7 @@ import { spawn } from 'node:child_process';
 import { Config, parseArgs, applyCliOverrides, configDir } from './config.js';
 import { logger, setLevel } from './log.js';
 import { App, VERSION } from './core/app.js';
-import { createBackend } from './usb/backend.js';
+import { createBackend } from './devices/backend.js';
 import { listNetworks, resolveNetwork } from './net/interfaces.js';
 
 const log = logger('main');

@@ -1,9 +1,10 @@
-// Сборка приложения: конфигурация, бэкенд USB/IP, обнаружение узлов,
-// реестр соседей, публикация, подключения и HTTP-интерфейс.
+// Сборка приложения: конфигурация, устройства, обнаружение узлов, реестр
+// соседей, публикация, занятия, запросы и HTTP-интерфейс.
 //
 // Здесь же формируется единый снимок состояния — то, что видит пользователь:
-// каталог устройств всей сети, склеенный из собственных устройств и данных,
-// полученных от соседей.
+// каталог всей сети, склеенный из собственных устройств и данных соседей.
+// Каталог состоит из записей двух видов: одиночные устройства и группы,
+// внутри которых лежат их устройства. Для интерфейса это один список.
 
 import { EventEmitter } from 'node:events';
 import { logger } from '../log.js';
@@ -11,15 +12,17 @@ import { resolveNetwork, listNetworks } from '../net/interfaces.js';
 import { Discovery } from '../net/discovery.js';
 import { PeerRegistry } from '../cluster/peers.js';
 import { ShareManager } from './shareManager.js';
-import { AttachManager } from './attachManager.js';
+import { AttachManager, attachKey } from './attachManager.js';
 import { Installer } from './installer.js';
 import { ApiServer } from '../api/httpServer.js';
-import { createBackend } from '../usb/backend.js';
-import { deviceKey } from '../net/protocol.js';
+import { createBackend } from '../devices/backend.js';
+import { DeviceHub } from '../devices/hub.js';
+import { DEVICE_TYPES, RESERVATION_NOTE, typeInfo } from '../devices/types.js';
+import { rpc } from '../net/rpc.js';
 
 const log = logger('app');
 
-export const VERSION = '1.0.0';
+export const VERSION = '2.0.0';
 
 export class App extends EventEmitter {
   constructor(config) {
@@ -30,11 +33,13 @@ export class App extends EventEmitter {
     this.network = null;
     this.backend = null;
     this.backendInfo = null;
+    this.hub = null;
     this.share = null;
     this.attach = null;
     this.peers = null;
     this.discovery = null;
     this.api = null;
+    this.installer = null;
     this.stopping = false;
   }
 
@@ -55,6 +60,11 @@ export class App extends EventEmitter {
     log.info(`бэкенд USB/IP: ${this.backend.name} (раздача: ${this.backendInfo.server ? 'да' : 'нет'}, подключение: ${this.backendInfo.client ? 'да' : 'нет'})`);
     for (const issue of this.backendInfo.issues) log.warn(issue);
 
+    this.hub = new DeviceHub({
+      backend: this.backend,
+      enabledTypes: () => this.config.get('enabledTypes') || ['usb'],
+    });
+
     this.installer = new Installer({
       reprobe: () => this.reprobeBackend(),
       backendInfo: () => this.backendInfo,
@@ -63,13 +73,7 @@ export class App extends EventEmitter {
     this.installer.on('changed', () => this.api?.pushState());
     this.installer.on('finished', () => this.onStateChanged());
 
-    const plan = this.installer.plan();
-    if (plan.canInstall) {
-      log.info(`недостающие компоненты можно установить из папки installers: ${
-        plan.components.filter((c) => c.needed).map((c) => c.id).join(', ')}`);
-    }
-
-    this.share = new ShareManager({ backend: this.backend, config: this.config });
+    this.share = new ShareManager({ hub: this.hub, config: this.config });
     this.attach = new AttachManager({ backend: this.backend, config: this.config, share: this.share });
     this.peers = new PeerRegistry({
       nodeId: this.config.get('nodeId'),
@@ -82,14 +86,27 @@ export class App extends EventEmitter {
     this.attach.on('changed', () => this.onStateChanged());
     this.peers.on('changed', () => this.api?.pushState());
 
-    // Если у соседа отобрали право на наше устройство, у него же надо
-    // прекратить и само подключение — иначе в его системе останется
-    // «висящее» устройство, которое уже никуда не ведёт.
-    this.share.on('claim-revoked', ({ busid }) => {
-      const id = deviceKey(this.config.get('nodeId'), busid);
-      if (this.attach.attachments.has(id)) {
-        this.attach.detach(id, { keepClaim: true }).catch((e) => log.warn(e.message));
+    // Запрос на нашу же цель адресуем держателю немедленно, не дожидаясь
+    // его очередного heartbeat: диалог должен всплыть сразу.
+    this.share.on('request-created', (req) => this.pushRequestToHolder(req));
+
+    // Если право на нашу цель отозвано, у держателя надо прекратить и само
+    // подключение — иначе в его системе останется устройство в никуда.
+    this.share.on('claim-revoked', ({ deviceId, claim, reason }) => {
+      const target = claim?.groupId ? `group:${claim.groupId}` : deviceId;
+      const selfId = this.config.get('nodeId');
+
+      if (!claim || claim.holderId === selfId) {
+        const id = attachKey(selfId, target);
+        if (this.attach.attachments.has(id)) {
+          this.attach.detach(id, { keepClaim: true }).catch((e) => log.warn(e.message));
+        }
+        return;
       }
+      // Держатель на другом узле: сообщаем ему сразу. Heartbeat донёс бы и
+      // сам, но до десяти секунд у него в системе висело бы устройство,
+      // которое уже никуда не ведёт.
+      this.pushRevocation(claim.holderId, target, reason);
     });
 
     await this.share.start();
@@ -130,18 +147,12 @@ export class App extends EventEmitter {
     };
   }
 
-  /** Состояние изменилось: анонсируем соседям и обновляем UI. */
   onStateChanged() {
     if (this.stopping) return;
     this.discovery?.announce();
     this.api?.pushState();
   }
 
-  /**
-   * Перечитать окружение USB/IP. Нужна после установки компонентов: пути к
-   * утилитам бэкенд кеширует при первой проверке, и без повторной пробы
-   * приложение продолжало бы считать, что ничего не установлено.
-   */
   async reprobeBackend() {
     this.backendInfo = await this.backend.probe();
     log.info(`окружение перепроверено (раздача: ${this.backendInfo.server ? 'да' : 'нет'}, подключение: ${this.backendInfo.client ? 'да' : 'нет'})`);
@@ -157,64 +168,181 @@ export class App extends EventEmitter {
     this.onStateChanged();
   }
 
-  /** Занять и подключить устройство из общего каталога. */
-  async attachDevice(nodeId, busid) {
-    if (!this.backendInfo.client) {
-      throw new Error('на этом компьютере нет клиентской части USB/IP — подключать устройства невозможно. См. docs/WINDOWS-SETUP.md');
-    }
+  // ------------------------------------------------------- действия с целями
 
-    // Собственное устройство: адрес берём из своего интерфейса. Занимать
-    // своё устройство разрешено намеренно — остальные увидят его занятым.
-    if (nodeId === this.config.get('nodeId')) {
-      const dev = this.share.listAll().find((d) => d.busid === busid);
-      if (!dev) throw new Error('устройство не найдено');
-      if (!dev.shared) throw new Error('сначала опубликуйте устройство');
-      const r = await this.attach.attach({
+  /** Собирает всё, что нужно для занятия цели у конкретного узла. */
+  _targetInfo(nodeId, target) {
+    const selfId = this.config.get('nodeId');
+
+    if (nodeId === selfId) {
+      const devices = this._devicesOfTarget(this.share.listShared(), this.share.listGroups(), target);
+      if (!devices.length) throw new Error('цель не найдена среди опубликованных');
+      return {
         nodeId,
         nodeName: `${this.config.get('name')} (этот компьютер)`,
         host: this.network.address,
         apiPort: this.config.get('apiPort'),
         usbipPort: this.config.get('usbipPort'),
-        busid,
-        description: dev.description,
-        vendorId: dev.vendorId,
-        productId: dev.productId,
-      });
-      this.onStateChanged();
-      return r;
+        target,
+        kind: target.startsWith('group:') ? 'group' : 'device',
+        title: this._targetTitle(this.share.listShared(), this.share.listGroups(), target),
+        devices,
+      };
     }
 
     const peer = this.peers.get(nodeId);
     if (!peer) throw new Error('узел-владелец не найден в сети');
     if (!peer.online) throw new Error(`узел "${peer.name}" сейчас недоступен`);
 
-    const dev = (peer.devices || []).find((d) => d.busid === busid);
-    if (!dev) throw new Error('устройство не найдено у владельца');
+    const devices = this._devicesOfTarget(peer.devices || [], peer.groups || [], target);
+    if (!devices.length) throw new Error('цель не найдена у владельца');
 
-    const r = await this.attach.attach({
+    return {
       nodeId,
       nodeName: peer.name,
       host: peer.address,
       apiPort: peer.apiPort,
       usbipPort: peer.usbipPort,
-      busid,
-      description: dev.description,
-      vendorId: dev.vendorId,
-      productId: dev.productId,
-    });
+      target,
+      kind: target.startsWith('group:') ? 'group' : 'device',
+      title: this._targetTitle(peer.devices || [], peer.groups || [], target),
+      devices,
+    };
+  }
 
-    // Владелец только что изменил состояние — забираем его сразу,
-    // не дожидаясь очередного анонса.
-    this.peers.refreshPeerState(peer).catch(() => {});
+  _devicesOfTarget(devices, groups, target) {
+    if (String(target).startsWith('group:')) {
+      const g = (groups || []).find((x) => `group:${x.id}` === target);
+      if (!g) return [];
+      return g.members.map((m) => devices.find((d) => d.deviceId === m)).filter(Boolean);
+    }
+    const d = devices.find((x) => x.deviceId === target);
+    return d ? [d] : [];
+  }
+
+  _targetTitle(devices, groups, target) {
+    if (String(target).startsWith('group:')) {
+      const g = (groups || []).find((x) => `group:${x.id}` === target);
+      return g ? `группа «${g.name}»` : target;
+    }
+    const d = devices.find((x) => x.deviceId === target);
+    return d ? d.description : target;
+  }
+
+  /** Занять цель. force — право владельца забрать своё без спроса. */
+  async attachTarget(nodeId, target, { force = false } = {}) {
+    const info = this._targetInfo(nodeId, target);
+
+    const needsClient = info.devices.some((d) => d.hasTransport);
+    if (needsClient && !this.backendInfo.client) {
+      throw new Error('на этом компьютере нет клиентской части USB/IP — подключать устройства невозможно. См. docs/WINDOWS-SETUP.md');
+    }
+
+    const r = await this.attach.attach(info, { force });
+    const peer = this.peers.get(nodeId);
+    if (peer) this.peers.refreshPeerState(peer).catch(() => {});
     this.onStateChanged();
     return r;
   }
 
-  /** Применение настроек из UI. Возвращает признак необходимости перезапуска. */
+  /** Попросить у держателя освободить занятую цель. */
+  async requestTarget(nodeId, target, message) {
+    const selfId = this.config.get('nodeId');
+    if (nodeId === selfId) {
+      return this.share.createRequest({
+        target,
+        requesterId: selfId,
+        requesterName: this.config.get('name'),
+        message,
+      });
+    }
+    const peer = this.peers.get(nodeId);
+    if (!peer) throw new Error('узел-владелец не найден в сети');
+
+    const res = await rpc({
+      host: peer.address,
+      port: peer.apiPort,
+      path: '/api/v1/peer/request',
+      method: 'POST',
+      body: { target, requesterName: this.config.get('name'), message },
+      key: this.config.get('preSharedKey'),
+      nodeId: selfId,
+      timeoutMs: 8000,
+    });
+    this.peers.refreshPeerState(peer).catch(() => {});
+    this.onStateChanged();
+    return res;
+  }
+
+  /** Ответ на адресованный нам запрос. */
+  async answerRequest(requestId, accept) {
+    const r = await this.attach.answerRequest(requestId, accept);
+    this.onStateChanged();
+    return r;
+  }
+
+  /**
+   * Доставка запроса держателю. Отдельный канал нужен ради скорости:
+   * heartbeat донёс бы его и сам, но с задержкой до десяти секунд, а
+   * диалог должен всплыть сразу.
+   */
+  async pushRequestToHolder(req) {
+    const selfId = this.config.get('nodeId');
+    if (req.holderId === selfId) {
+      this.attach.acceptPush(req, {
+        nodeId: selfId,
+        host: this.network.address,
+        apiPort: this.config.get('apiPort'),
+      });
+      return;
+    }
+    const peer = this.peers.get(req.holderId);
+    if (!peer || !peer.online) {
+      log.debug('держатель недоступен, запрос дойдёт с очередным heartbeat');
+      return;
+    }
+    try {
+      await rpc({
+        host: peer.address,
+        port: peer.apiPort,
+        path: '/api/v1/peer/notify-request',
+        method: 'POST',
+        body: { request: req, owner: { nodeId: selfId, host: this.network.address, apiPort: this.config.get('apiPort') } },
+        key: this.config.get('preSharedKey'),
+        nodeId: selfId,
+        timeoutMs: 5000,
+      });
+    } catch (e) {
+      log.debug(`мгновенное уведомление держателя не прошло (${e.message}) — дойдёт с heartbeat`);
+    }
+  }
+
+  /** Сообщить бывшему держателю, что право отозвано. */
+  async pushRevocation(holderId, target, reason) {
+    const peer = this.peers.get(holderId);
+    if (!peer || !peer.online) return;
+    try {
+      await rpc({
+        host: peer.address,
+        port: peer.apiPort,
+        path: '/api/v1/peer/revoked',
+        method: 'POST',
+        body: { target, reason },
+        key: this.config.get('preSharedKey'),
+        nodeId: this.config.get('nodeId'),
+        timeoutMs: 5000,
+      });
+    } catch (e) {
+      log.debug(`извещение об отзыве не прошло (${e.message}) — держатель узнает по heartbeat`);
+    }
+  }
+
+  // ----------------------------------------------------------------- настройки
+
   async applySettings(patch) {
     const before = { ...this.config.data };
     const allowed = ['name', 'network', 'preSharedKey', 'autoShareNew', 'claimLeaseMs',
-                     'apiPort', 'discoveryPort', 'usbipPort', 'usbipdPath', 'usbipPath', 'logLevel'];
+      'apiPort', 'discoveryPort', 'usbipPort', 'usbipdPath', 'usbipPath', 'logLevel', 'enabledTypes'];
     const clean = {};
     for (const k of allowed) {
       if (patch[k] !== undefined) clean[k] = patch[k];
@@ -222,15 +350,24 @@ export class App extends EventEmitter {
     if (typeof clean.name === 'string') {
       clean.name = clean.name.trim().slice(0, 64) || before.name;
     }
+    if (Array.isArray(clean.enabledTypes)) {
+      clean.enabledTypes = clean.enabledTypes.filter((t) => DEVICE_TYPES[t]);
+      if (!clean.enabledTypes.length) clean.enabledTypes = ['usb'];
+    }
     this.config.set(clean);
+
+    // Пароль удалённого доступа приходит отдельным полем и никогда не
+    // хранится открытым.
+    if (patch.webPassword !== undefined) {
+      this.config.setWebPassword(patch.webPassword || null);
+      log.info(patch.webPassword ? 'пароль удалённого доступа установлен' : 'пароль удалённого доступа снят');
+    }
 
     if (clean.logLevel) {
       const { setLevel } = await import('../log.js');
       setLevel(clean.logLevel);
     }
 
-    // Порты и ключ меняют способ, которым нас находят и проверяют соседи, —
-    // корректно применить это на лету нельзя, нужен перезапуск.
     const needsRestart = ['apiPort', 'discoveryPort', 'usbipPort', 'preSharedKey']
       .some((k) => clean[k] !== undefined && clean[k] !== before[k]);
 
@@ -247,9 +384,8 @@ export class App extends EventEmitter {
       await this.discovery.start();
     }
 
-    if (clean.name && clean.name !== before.name) {
-      log.info(`имя узла изменено на "${clean.name}"`);
-    }
+    if (clean.enabledTypes) await this.share.refresh();
+    if (clean.name && clean.name !== before.name) log.info(`имя узла изменено на "${clean.name}"`);
 
     this.onStateChanged();
     return { ok: true, needsRestart, config: this.publicConfig() };
@@ -265,50 +401,87 @@ export class App extends EventEmitter {
       discoveryPort: c.discoveryPort,
       usbipPort: c.usbipPort,
       autoShareNew: c.autoShareNew,
+      enabledTypes: c.enabledTypes,
       claimLeaseMs: c.claimLeaseMs,
       logLevel: c.logLevel,
-      // Сам ключ наружу не отдаём — только факт его наличия.
+      // Ни ключ, ни пароль наружу не отдаём — только факт их наличия.
       hasKey: Boolean(c.preSharedKey),
+      hasWebPassword: this.config.hasWebPassword(),
       usbipdPath: c.usbipdPath || null,
       usbipPath: c.usbipPath || null,
       configFile: this.config.file,
     };
   }
 
-  /** Полный снимок для интерфейса. */
-  snapshot() {
+  // ------------------------------------------------------------------ снимок
+
+  /**
+   * @param {'full'|'readonly'} access — уровень доступа запрашивающего.
+   *   В режиме только для чтения снимок тот же, но интерфейс не покажет
+   *   действий; проверка прав на сервере от этого не зависит.
+   */
+  snapshot(access = 'full') {
     const selfId = this.config.get('nodeId');
     const attachments = this.attach.list();
-    const attachedByDevice = new Map(attachments.map((a) => [a.id, a]));
+    const heldByTarget = new Map(attachments.map((a) => [a.id, a]));
 
     const localDevices = this.share.listAll();
-    const catalog = [];
+    const localGroups = this.share.listGroups();
 
-    // Собственные опубликованные устройства — на равных с чужими:
-    // пользователь занимает их тем же действием.
-    for (const d of localDevices) {
-      if (!d.shared || !d.busid) continue;
-      catalog.push(this._catalogEntry(d, {
-        nodeId: selfId,
-        name: this.config.get('name'),
-        address: this.network.address,
-        online: true,
-        self: true,
-        platform: process.platform,
-        startedAt: this.startedAt,
-      }, attachedByDevice));
+    const owners = [{
+      nodeId: selfId,
+      name: this.config.get('name'),
+      address: this.network.address,
+      apiPort: this.config.get('apiPort'),
+      usbipPort: this.config.get('usbipPort'),
+      online: true,
+      self: true,
+      platform: process.platform,
+      startedAt: this.startedAt,
+      devices: this.share.listShared(),
+      groups: localGroups,
+    }];
+    for (const peer of this.peers.list()) {
+      owners.push({ ...peer, self: false, devices: peer.devices || [], groups: peer.groups || [] });
     }
 
-    for (const peer of this.peers.list()) {
-      for (const d of peer.devices || []) {
-        catalog.push(this._catalogEntry(d, peer, attachedByDevice));
+    const catalog = [];
+    for (const owner of owners) {
+      const grouped = new Set();
+      for (const g of owner.groups || []) {
+        for (const m of g.members) grouped.add(m);
+        const members = g.members
+          .map((m) => (owner.devices || []).find((d) => d.deviceId === m))
+          .filter(Boolean)
+          .map((d) => this._deviceEntry(d, owner, heldByTarget, true));
+        catalog.push(this._groupEntry(g, owner, members, heldByTarget));
+      }
+      for (const d of owner.devices || []) {
+        if (grouped.has(d.deviceId)) continue;
+        catalog.push(this._deviceEntry(d, owner, heldByTarget, false));
       }
     }
 
     catalog.sort((a, b) => (a.ownerName || '').localeCompare(b.ownerName || '')
-      || String(a.busid).localeCompare(String(b.busid), undefined, { numeric: true }));
+      || (a.kind === b.kind ? 0 : a.kind === 'group' ? -1 : 1)
+      || String(a.title).localeCompare(String(b.title), undefined, { numeric: true }));
+
+    // Запросы: адресованные нам (нужен диалог) и наши собственные (нужен ответ).
+    const incoming = this.attach.pendingRequests();
+    const outgoing = [];
+    for (const owner of owners) {
+      for (const r of owner.requests || []) {
+        if (r.requesterId === selfId) outgoing.push({ ...r, ownerId: owner.nodeId, ownerName: owner.name });
+      }
+    }
+    for (const r of this.share.requestsFor(selfId)) {
+      if (r.requesterId === selfId && !outgoing.some((x) => x.id === r.id)) {
+        outgoing.push({ ...r, ownerId: selfId, ownerName: this.config.get('name') });
+      }
+    }
 
     return {
+      access,
       self: {
         nodeId: selfId,
         name: this.config.get('name'),
@@ -332,8 +505,12 @@ export class App extends EventEmitter {
       install: this.installer ? this.installer.plan() : null,
       config: this.publicConfig(),
       networks: listNetworks(),
+      deviceTypes: Object.values(DEVICE_TYPES).map((t) => ({ ...t })),
+      reservationNote: RESERVATION_NOTE,
       localDevices,
+      localGroups,
       catalog,
+      requests: { incoming, outgoing },
       peers: this.peers.list().map((p) => ({
         nodeId: p.nodeId,
         name: p.name,
@@ -353,19 +530,25 @@ export class App extends EventEmitter {
     };
   }
 
-  _catalogEntry(d, owner, attachedByDevice) {
-    const id = deviceKey(owner.nodeId, d.busid);
-    const att = attachedByDevice.get(id) || null;
+  _deviceEntry(d, owner, heldByTarget, inGroup) {
     const selfId = this.config.get('nodeId');
+    const target = d.deviceId;
+    const held = heldByTarget.get(attachKey(owner.nodeId, target)) || null;
+    const info = typeInfo(d.type);
     return {
-      id,
-      busid: d.busid,
-      description: d.description,
-      vendorId: d.vendorId,
-      productId: d.productId,
-      serial: d.serial,
-      note: d.note || null,
+      kind: 'device',
+      id: `${owner.nodeId}|${target}`,
+      target,
+      inGroup,
+      type: d.type,
+      typeTitle: info.title,
+      icon: d.icon || info.icon,
+      title: d.description,
+      subtitle: d.title,
+      purpose: d.purpose || null,
+      hasTransport: d.hasTransport,
       bindState: d.bindState,
+      meta: d.meta || {},
       connectedSince: d.connectedSince,
       sharedSince: d.sharedSince,
       lastError: d.lastError || null,
@@ -374,13 +557,42 @@ export class App extends EventEmitter {
       ownerAddress: owner.address,
       ownerOnline: owner.online !== false,
       ownerSelf: owner.nodeId === selfId,
-      ownerPlatform: owner.platform,
       claim: d.claim || null,
+      reservedFor: d.reservedFor || null,
       busy: Boolean(d.claim),
       busyByMe: Boolean(d.claim && d.claim.holderId === selfId),
-      attachmentId: att ? att.id : null,
-      attachState: att ? att.state : null,
-      vhciPort: att ? att.vhciPort : null,
+      attachmentId: held ? held.id : null,
+      attachState: held ? held.state : null,
+      vhciPort: held ? (held.parts.find((p) => p.vhciPort !== null)?.vhciPort ?? null) : null,
+    };
+  }
+
+  _groupEntry(g, owner, members, heldByTarget) {
+    const selfId = this.config.get('nodeId');
+    const target = `group:${g.id}`;
+    const held = heldByTarget.get(attachKey(owner.nodeId, target)) || null;
+    return {
+      kind: 'group',
+      id: `${owner.nodeId}|${target}`,
+      target,
+      groupId: g.id,
+      title: g.name,
+      purpose: g.description || null,
+      members,
+      available: g.available !== false,
+      partial: Boolean(g.partial),
+      ownerId: owner.nodeId,
+      ownerName: owner.name,
+      ownerAddress: owner.address,
+      ownerOnline: owner.online !== false,
+      ownerSelf: owner.nodeId === selfId,
+      claim: g.claim || null,
+      reservedFor: g.reservedFor || null,
+      busy: Boolean(g.claim),
+      busyByMe: Boolean(g.claim && g.claim.holderId === selfId),
+      attachmentId: held ? held.id : null,
+      attachState: held ? held.state : null,
+      hasTransport: members.some((m) => m.hasTransport),
     };
   }
 
@@ -389,12 +601,12 @@ export class App extends EventEmitter {
     this.stopping = true;
     log.info('завершение работы…');
 
-    // Порядок важен: сначала вернуть чужие устройства владельцам,
-    // потом перестать анонсироваться, потом закрыть сокеты.
+    // Порядок важен: сначала вернуть чужое владельцам, потом перестать
+    // анонсироваться, потом закрыть сокеты.
     try {
       await this.attach.detachAll();
     } catch (e) {
-      log.warn('не все устройства удалось отключить:', e.message);
+      log.warn('не всё удалось освободить:', e.message);
     }
 
     this.attach?.stop();
