@@ -20,7 +20,7 @@ import crypto from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { fileURLToPath } from 'node:url';
 import { logger } from '../log.js';
-import { run } from '../usb/backend.js';
+import { run } from '../devices/backend.js';
 
 const log = logger('installer');
 

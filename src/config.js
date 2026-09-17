@@ -26,9 +26,15 @@ export const DEFAULTS = {
   preSharedKey: '',          // пусто → аутентификация выключена
   backend: 'auto',           // auto | windows | linux | mock
   autoShareNew: false,       // автоматически шарить вновь подключённые устройства
-  sharedBusIds: [],          // какие локальные устройства опубликованы
-  deviceNotes: {},           // busid → заметка пользователя
-  uiHost: '127.0.0.1',       // UI слушает только локально
+  enabledTypes: ['usb', 'com', 'lpt', 'net'], // какие типы устройств показывать
+  sharedDeviceIds: [],       // какие локальные устройства опубликованы
+  devicePurposes: {},        // deviceId → «что это и для чего»
+  groups: [],                // [{ id, name, description, members: [deviceId] }]
+  // Пароль удалённого доступа к интерфейсу. Хранится только как хеш.
+  // Пусто → с других компьютеров доступен лишь просмотр.
+  webPassword: null,         // { salt, hash }
+  sessionSecret: null,       // ключ подписи сессионных cookie
+  uiHost: '127.0.0.1',       // адрес, который печатается в подсказке при запуске
   logLevel: 'info',
 };
 
@@ -66,10 +72,37 @@ export class Config {
       this.data.name = os.hostname();
       dirty = true;
     }
-    if (!Array.isArray(this.data.sharedBusIds)) {
-      this.data.sharedBusIds = [];
+    if (!this.data.sessionSecret) {
+      this.data.sessionSecret = crypto.randomBytes(32).toString('hex');
       dirty = true;
     }
+    if (!Array.isArray(this.data.sharedDeviceIds)) {
+      this.data.sharedDeviceIds = [];
+      dirty = true;
+    }
+    if (!Array.isArray(this.data.groups)) {
+      this.data.groups = [];
+      dirty = true;
+    }
+
+    // Перенос с первой версии, где типов не было и ключом служил busid.
+    if (Array.isArray(this.data.sharedBusIds)) {
+      for (const busid of this.data.sharedBusIds) {
+        const id = `usb:${busid}`;
+        if (!this.data.sharedDeviceIds.includes(id)) this.data.sharedDeviceIds.push(id);
+      }
+      delete this.data.sharedBusIds;
+      dirty = true;
+    }
+    if (this.data.deviceNotes && typeof this.data.deviceNotes === 'object') {
+      this.data.devicePurposes = this.data.devicePurposes || {};
+      for (const [busid, text] of Object.entries(this.data.deviceNotes)) {
+        this.data.devicePurposes[`usb:${busid}`] ??= text;
+      }
+      delete this.data.deviceNotes;
+      dirty = true;
+    }
+
     if (dirty) this.save();
   }
 
@@ -96,16 +129,60 @@ export class Config {
   }
 
   /** Отмечает устройство как опубликованное (или снимает публикацию). */
-  setShared(busid, shared) {
-    const set = new Set(this.data.sharedBusIds);
-    if (shared) set.add(busid);
-    else set.delete(busid);
-    this.data.sharedBusIds = [...set];
+  setShared(deviceId, shared) {
+    const set = new Set(this.data.sharedDeviceIds);
+    if (shared) set.add(deviceId);
+    else set.delete(deviceId);
+    this.data.sharedDeviceIds = [...set];
     this.save();
   }
 
-  isShared(busid) {
-    return this.data.sharedBusIds.includes(busid);
+  isShared(deviceId) {
+    return this.data.sharedDeviceIds.includes(deviceId);
+  }
+
+  purposeOf(deviceId) {
+    return (this.data.devicePurposes || {})[deviceId] || null;
+  }
+
+  setPurpose(deviceId, text) {
+    const purposes = { ...(this.data.devicePurposes || {}) };
+    const clean = String(text || '').trim().slice(0, 500);
+    if (clean) purposes[deviceId] = clean;
+    else delete purposes[deviceId];
+    this.set({ devicePurposes: purposes });
+  }
+
+  // --------------------------------------------------- пароль веб-доступа
+
+  /**
+   * Пароль хранится только как scrypt-хеш со случайной солью.
+   * Открытый пароль не нужен ни для чего: проверка сравнивает хеши.
+   */
+  setWebPassword(password) {
+    if (!password) {
+      this.set({ webPassword: null });
+      return;
+    }
+    const salt = crypto.randomBytes(16).toString('hex');
+    const hash = crypto.scryptSync(String(password), salt, 32).toString('hex');
+    this.set({ webPassword: { salt, hash } });
+  }
+
+  checkWebPassword(password) {
+    const stored = this.data.webPassword;
+    if (!stored || !stored.salt || !stored.hash) return false;
+    if (!password) return false;
+    const actual = crypto.scryptSync(String(password), stored.salt, 32);
+    const expected = Buffer.from(stored.hash, 'hex');
+    if (actual.length !== expected.length) return false;
+    // Сравнение за постоянное время: иначе подбор пароля ускоряется
+    // измерением времени ответа.
+    return crypto.timingSafeEqual(actual, expected);
+  }
+
+  hasWebPassword() {
+    return Boolean(this.data.webPassword && this.data.webPassword.hash);
   }
 }
 

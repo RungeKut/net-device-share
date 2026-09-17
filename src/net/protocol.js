@@ -33,20 +33,28 @@ export const BIND_STATE = {
   ERROR: 'error',
 };
 
-/** Хеш состояния: меняется — значит пора перечитать состояние узла по HTTP. */
-export function stateHash(devices) {
+/**
+ * Хеш состояния: меняется — значит пора перечитать состояние узла по HTTP.
+ *
+ * В хеш входит всё, что видят соседи: состав и занятость устройств,
+ * пользовательские описания, принадлежность к группам. Второй аргумент —
+ * состояние групп и запросов: они живут отдельно от списка устройств, но
+ * их изменения обязаны доходить до соседей так же быстро.
+ */
+export function stateHash(devices, extra = '') {
   const shape = devices
     .map((d) => [
-      d.busid,
+      d.deviceId,
       d.shared ? 1 : 0,
       d.bindState,
       d.claim ? `${d.claim.holderId}@${d.claim.since}` : '-',
-      d.vendorId,
-      d.productId,
+      d.reservedFor ? d.reservedFor.nodeId : '-',
+      d.purpose || '',
+      d.groupId || '-',
     ].join('|'))
     .sort()
     .join(';');
-  return crypto.createHash('sha1').update(shape).digest('hex').slice(0, 16);
+  return crypto.createHash('sha1').update(`${shape}##${extra}`).digest('hex').slice(0, 16);
 }
 
 /**
