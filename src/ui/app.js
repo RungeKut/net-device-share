@@ -229,10 +229,16 @@ function renderHeader() {
 function renderBanner() {
   const banner = $('#banner');
   const issues = state.backend.issues || [];
+  const notes = state.backend.notes || [];
   const inst = state.install;
   const running = inst && inst.state === 'running';
   const failed = inst && inst.state === 'error';
   const justDone = inst && inst.state === 'done' && Date.now() - (inst.finishedAt || 0) < 90000;
+
+  // Примечания — не неисправности. Режим имитации выбран флагом запуска,
+  // и кричать про «настроено не полностью» о том, что запрошено намеренно,
+  // значит приучать не читать предупреждения вовсе.
+  renderNotes(notes);
 
   if ((!issues.length && !running && !failed && !justDone) || bannerDismissed || !canEdit()) {
     banner.hidden = true;
@@ -281,6 +287,20 @@ function renderBanner() {
   }
 
   banner.innerHTML = parts.join('');
+}
+
+/** Нейтральная строка-примечание под шапкой. */
+function renderNotes(notes) {
+  let box = $('#notesBar');
+  if (!box) {
+    box = document.createElement('div');
+    box.id = 'notesBar';
+    box.className = 'banner info';
+    $('#banner').after(box);
+  }
+  if (!notes.length) { box.hidden = true; return; }
+  box.hidden = false;
+  box.innerHTML = notes.map((n) => `<div class="note-line">ℹ ${esc(n)}</div>`).join('');
 }
 
 // ------------------------------------------------------------------ каталог
@@ -364,24 +384,28 @@ function deviceCard(d, { insideGroup = false } = {}) {
 
 function groupCard(g) {
   const cls = !g.ownerOnline ? 'offline' : g.busyByMe ? 'mine' : g.busy ? 'busy' : 'free';
+  // Действия стоят справа — там же, где у обычных карточек. Колонка кнопок
+  // берёт ровно свою ширину, поэтому рамка группы не становится шире.
   return `
     <section class="group ${cls}">
       <header class="group-head">
-        <div class="group-title">
-          <span class="type-icon">🧩</span>
-          <b>${esc(g.title)}</b>
-          <span class="pill group-pill">группа · ${g.members.length} устр.</span>
-          ${statusPill(g)}
-          ${g.ownerSelf ? '<span class="pill plain">моя</span>' : ''}
-          ${g.partial ? '<span class="pill err">занята частично</span>' : ''}
-          ${g.available === false ? '<span class="pill err">не все устройства на месте</span>' : ''}
+        <div class="group-info">
+          <div class="group-title">
+            <span class="type-icon">🧩</span>
+            <b>${esc(g.title)}</b>
+            <span class="pill group-pill">группа · ${g.members.length} устр.</span>
+            ${statusPill(g)}
+            ${g.ownerSelf ? '<span class="pill plain">моя</span>' : ''}
+            ${g.partial ? '<span class="pill err">занята частично</span>' : ''}
+            ${g.available === false ? '<span class="pill err">не все устройства на месте</span>' : ''}
+          </div>
+          ${g.purpose ? `<div class="purpose">${esc(g.purpose)}</div>` : ''}
+          <div class="card-meta">
+            <span>владелец: <b>${esc(g.ownerName)}</b> (${esc(g.ownerAddress)})</span>
+            <span>занимается целиком</span>
+          </div>
         </div>
-        ${g.purpose ? `<div class="purpose">${esc(g.purpose)}</div>` : ''}
-        <div class="card-meta">
-          <span>владелец: <b>${esc(g.ownerName)}</b> (${esc(g.ownerAddress)})</span>
-          <span>занимается целиком</span>
-        </div>
-        <div class="group-actions">${entryActions(g)}</div>
+        <div class="card-actions">${entryActions(g)}</div>
       </header>
       <div class="group-body">
         ${g.members.map((m) => deviceCard(m, { insideGroup: true })).join('')}
@@ -389,13 +413,38 @@ function groupCard(g) {
     </section>`;
 }
 
+/**
+ * Строка, по которой ищем. Узлов и устройств в сети бывает много, и
+ * пролистывать их глазами — не работа; искать надо сразу по всему, что
+ * человек помнит: по названию, по описанию, по владельцу, по номеру порта.
+ */
+function haystack(e) {
+  const parts = [e.title, e.subtitle, e.purpose, e.ownerName, e.typeTitle, e.target];
+  if (e.kind === 'group') {
+    for (const m of e.members || []) {
+      parts.push(m.title, m.subtitle, m.purpose, m.typeTitle);
+    }
+  } else {
+    const m = e.meta || {};
+    parts.push(m.vendorId && m.productId ? `${m.vendorId}:${m.productId}` : '', m.serial, m.mac, m.instanceId);
+    for (const a of m.addresses || []) parts.push(a.address);
+  }
+  return parts.filter(Boolean).join(' ').toLowerCase();
+}
+
 function renderCatalog() {
   const onlyFree = $('#onlyFree').checked;
   const type = $('#typeFilter').value;
+  // Слова ищутся все сразу и в любом порядке: так проще найти «стенд jtag»,
+  // не помня точной формулировки описания.
+  const words = $('#search').value.trim().toLowerCase().split(/\s+/).filter(Boolean);
+
   const items = state.catalog.filter((e) => {
     if (onlyFree && e.busy) return false;
-    if (!type) return true;
-    return e.kind === 'group' ? e.members.some((m) => m.type === type) : e.type === type;
+    if (type && !(e.kind === 'group' ? e.members.some((m) => m.type === type) : e.type === type)) return false;
+    if (!words.length) return true;
+    const hay = haystack(e);
+    return words.every((w) => hay.includes(w));
   });
 
   renderOutgoing();
@@ -403,7 +452,7 @@ function renderCatalog() {
   const box = $('#catalogList');
   if (!items.length) {
     box.innerHTML = `<div class="empty">${state.catalog.length
-      ? 'Под фильтр ничего не подходит.'
+      ? (words.length ? `Ничего не найдено по запросу «${esc($('#search').value.trim())}».` : 'Под фильтр ничего не подходит.')
       : 'Опубликованных устройств в сети пока нет.<br>Опубликуйте своё на вкладке «Мои устройства» или дождитесь других узлов.'}</div>`;
     return;
   }
@@ -449,7 +498,9 @@ function renderMine() {
   const ro = !canEdit();
   box.innerHTML = items.map((d) => {
     const blocked = Boolean(d.unavailableReason);
-    const inGroup = Boolean(d.groupId);
+    // Ограничения накладывает только ОПУБЛИКОВАННАЯ группа. Пока она
+    // не опубликована, устройство публикуется и занимается само по себе.
+    const inGroup = Boolean(d.groupPublished);
     const cls = blocked ? 'offline' : d.claim ? 'busy' : d.shared ? 'free' : '';
     const status = d.claim
       ? `<span class="pill busy">занято: ${esc(d.claim.holderName)} · ${esc(since(d.claim.since))}</span>`
@@ -473,7 +524,7 @@ function renderMine() {
             ${esc(d.description)}
             ${blocked ? '' : status}
             ${transportPill(d.hasTransport)}
-            ${inGroup ? '<span class="pill group-pill">в группе</span>' : ''}
+            ${d.groupId ? `<span class="pill group-pill">${inGroup ? 'отдано группой' : 'в группе (не опубл.)'} «${esc(d.groupName || '')}»</span>` : ''}
           </div>
           <div class="card-meta">
             <span>${esc(d.typeTitle)}: <span class="mono">${esc(d.title)}</span></span>
@@ -501,12 +552,23 @@ function renderGroups() {
     return;
   }
   const byId = new Map(state.localDevices.map((d) => [d.deviceId, d]));
-  box.innerHTML = groups.map((g) => `
-    <article class="card ${g.claim ? 'busy' : 'free'} group-manage">
+  box.innerHTML = groups.map((g) => {
+    const status = g.claim
+      ? `<span class="pill busy">занята: ${esc(g.claim.holderName)}</span>`
+      : g.shared ? '<span class="pill free">опубликована, свободна</span>'
+        : '<span class="pill plain">не опубликована</span>';
+
+    const acts = canEdit() ? [
+      `<button class="btn small ${g.shared ? '' : 'primary'}" data-group-share="${esc(g.id)}|${g.shared ? '0' : '1'}">${
+        g.shared ? 'Снять с публикации' : 'Опубликовать'}</button>`,
+      `<button class="btn small" data-edit-group="${esc(g.id)}">Изменить</button>`,
+    ].join('') : '';
+
+    return `
+    <article class="card ${g.claim ? 'busy' : g.shared ? 'free' : ''} group-manage">
       <div class="card-main">
         <div class="card-title">
-          <span class="type-icon">🧩</span>${esc(g.name)}
-          ${g.claim ? `<span class="pill busy">занята: ${esc(g.claim.holderName)}</span>` : '<span class="pill free">свободна</span>'}
+          <span class="type-icon">🧩</span>${esc(g.name)} ${status}
         </div>
         ${g.description ? `<div class="purpose">${esc(g.description)}</div>` : ''}
         <div class="card-meta">
@@ -516,11 +578,13 @@ function renderGroups() {
               : `<span class="pill err">нет устройства ${esc(m)}</span>`}</span>`;
           }).join('')}
         </div>
+        <p class="hint group-rule">${g.shared
+          ? 'Группа опубликована: её устройства занимаются только целиком и не публикуются по отдельности.'
+          : 'Группа не опубликована: её устройства ведут себя как обычные — публикуются и занимаются по отдельности.'}</p>
       </div>
-      <div class="card-actions">
-        ${canEdit() ? `<button class="btn small" data-edit-group="${esc(g.id)}">Изменить</button>` : ''}
-      </div>
-    </article>`).join('');
+      <div class="card-actions">${acts}</div>
+    </article>`;
+  }).join('');
 }
 
 // --------------------------------------------------------------- занято мной
@@ -654,6 +718,10 @@ document.addEventListener('click', (ev) => {
     $('#askDialog').showModal();
   } else if (t.dataset.cancelRequest) {
     action(t, () => post('/api/v1/request/cancel', { requestId: t.dataset.cancelRequest }));
+  } else if (t.dataset.groupShare) {
+    const [groupId, flag] = t.dataset.groupShare.split('|');
+    action(t, () => post('/api/v1/group/share', { groupId, shared: flag === '1' }),
+      flag === '1' ? 'Группа опубликована' : 'Группа снята с публикации');
   } else if (t.dataset.editGroup) {
     openGroupDialog(state.localGroups.find((g) => g.id === t.dataset.editGroup));
   }
@@ -671,6 +739,13 @@ document.addEventListener('change', (ev) => {
   } else if (t.id === 'onlyFree' || t.id === 'typeFilter') {
     renderCatalog();
   }
+});
+
+// Поиск отрабатывает по каждому нажатию: список уже в браузере,
+// перерисовка дешевле, чем ожидание.
+$('#search').addEventListener('input', () => renderCatalog());
+$('#search').addEventListener('keydown', (ev) => {
+  if (ev.key === 'Escape') { $('#search').value = ''; renderCatalog(); }
 });
 
 $('#btnRefresh').addEventListener('click', (ev) => action(ev.target, () => post('/api/v1/refresh', {})));

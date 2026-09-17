@@ -44,8 +44,10 @@
 
 <main>
   <section class="panel active" id="tab-catalog">
-    <div class="panel-head">
+    <div class="panel-head with-search">
       <h2>Устройства и группы, доступные в сети</h2>
+      <input type="search" id="search" class="search" autocomplete="off"
+             placeholder="поиск: название, описание, владелец, порт…">
       <div class="head-controls">
         <label class="check"><input type="checkbox" id="onlyFree"> только свободные</label>
         <select id="typeFilter" class="mini-select"><option value="">все типы</option></select>
