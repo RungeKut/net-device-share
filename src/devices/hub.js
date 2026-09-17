@@ -64,6 +64,18 @@ export class DeviceHub {
     return out;
   }
 
+  /**
+   * Сбросить кеш медленных источников.
+   *
+   * Кеш существует ради периодического опроса, а не ради экономии вообще.
+   * Когда пользователь сам нажал «Обновить», он именно и просит посмотреть
+   * заново: воткнул переходник — ждёт увидеть новый COM-порт, а не прежний
+   * список ещё пятнадцать секунд.
+   */
+  invalidateSlow() {
+    this._slow = { ts: 0, ports: this._slow.ports, nets: this._slow.nets };
+  }
+
   async _listSlow(wantPorts, wantNet) {
     const FRESH_MS = 15000;
     if (Date.now() - this._slow.ts < FRESH_MS) return this._slow;
