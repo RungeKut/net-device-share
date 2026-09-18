@@ -95,7 +95,11 @@ if (fs.existsSync(manifestPath)) {
   for (const c of manifest.components || []) {
     const file = path.join(ROOT, 'installers', c.file);
     if (!fs.existsSync(file)) {
-      check(`installers/${c.file}: наличие`, false, 'файл указан в манифесте, но отсутствует');
+      // Отсутствие файла — не нарушение: в публичной копии репозитория
+      // чужих бинарников нет, они загружаются отдельно. Нарушением было бы
+      // несовпадение суммы у файла, который есть.
+      checked.push(`installers/${c.file}: не загружен`);
+      process.stdout.write(`  · ${c.file} отсутствует — запустите node scripts/fetch-installers.mjs\n`);
       continue;
     }
     const actual = createHash('sha256').update(fs.readFileSync(file)).digest('hex');

@@ -14,7 +14,8 @@
     "start": "node src/main.js",
     "dev": "node src/main.js --backend mock --log-level debug",
     "doctor": "node src/main.js --doctor",
-    "check": "node scripts/check-files.mjs"
+    "check": "node scripts/check-files.mjs",
+    "fetch-installers": "node scripts/fetch-installers.mjs"
   },
   "dependencies": {},
   "license": "MIT"
