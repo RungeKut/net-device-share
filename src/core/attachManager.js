@@ -177,7 +177,7 @@ export class AttachManager extends EventEmitter {
       // забронированными — для них локально делать нечего.
       for (const part of rec.parts) {
         if (!part.hasTransport) continue;
-        const result = await this.backend.attach({ host: rec.host, busid: part.key });
+        const result = await this.backend.attach({ host: rec.host, busid: part.key, port: rec.usbipPort });
         part.vhciPort = result.vhciPort;
       }
 
@@ -348,6 +348,9 @@ export class AttachManager extends EventEmitter {
         rec.heartbeatFails = 0;
         if (rec.lastError) { rec.lastError = null; this.emit('changed'); }
         this._absorbRequests(rec, res?.pendingRequests);
+        // Скорость измеряет владелец — у него стоит счётчик. Держателю она
+        // приезжает попутно, отдельного канала для этого не нужно.
+        this._absorbTraffic(rec, res?.traffic);
       } catch (e) {
         rec.heartbeatFails = (rec.heartbeatFails || 0) + 1;
         rec.lastError = e.message;
@@ -364,6 +367,25 @@ export class AttachManager extends EventEmitter {
         this.emit('changed');
       }
     }
+  }
+
+  /** Раскладывает присланные владельцем счётчики по устройствам занятия. */
+  _absorbTraffic(rec, list) {
+    if (!Array.isArray(list)) return;
+    let changed = false;
+    for (const t of list) {
+      const part = rec.parts.find((p) => p.deviceId === t.deviceId);
+      if (!part) continue;
+      part.traffic = t.bytesInPerMinute === undefined ? null : {
+        bytesInPerMinute: t.bytesInPerMinute,
+        bytesOutPerMinute: t.bytesOutPerMinute,
+        totalIn: t.totalIn,
+        totalOut: t.totalOut,
+        lastActivity: t.lastActivity,
+      };
+      changed = true;
+    }
+    if (changed) this.emit('changed');
   }
 
   /** Запоминает запросы, адресованные нам, и сообщает о новых. */

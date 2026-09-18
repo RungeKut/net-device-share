@@ -19,6 +19,7 @@ import { createBackend } from '../devices/backend.js';
 import { DeviceHub } from '../devices/hub.js';
 import { DEVICE_TYPES, RESERVATION_NOTE, typeInfo } from '../devices/types.js';
 import { rpc } from '../net/rpc.js';
+import { TrafficProxy } from '../net/trafficProxy.js';
 
 const log = logger('app');
 
@@ -40,6 +41,7 @@ export class App extends EventEmitter {
     this.discovery = null;
     this.api = null;
     this.installer = null;
+    this.traffic = null;
     this.stopping = false;
   }
 
@@ -74,7 +76,17 @@ export class App extends EventEmitter {
     this.installer.on('changed', () => this.api?.pushState());
     this.installer.on('finished', () => this.onStateChanged());
 
-    this.share = new ShareManager({ hub: this.hub, config: this.config });
+    await this._startTrafficMeter();
+
+    this.share = new ShareManager({
+      hub: this.hub,
+      config: this.config,
+      // Клиенту сообщается порт счётчика, если он работает, и порт usbipd,
+      // если нет. Всё остальное приложение об этой подмене не знает.
+      dataPort: () => (this.traffic ? this.config.get('trafficPort') : this.config.get('usbipPort')),
+      trafficOf: (deviceId) => (this.traffic ? this.traffic.statsFor(deviceId) : null),
+      trafficBegin: (deviceId) => this.traffic?.begin(deviceId),
+    });
     this.attach = new AttachManager({ backend: this.backend, config: this.config, share: this.share });
     this.peers = new PeerRegistry({
       nodeId: this.config.get('nodeId'),
@@ -93,7 +105,10 @@ export class App extends EventEmitter {
 
     // Если право на нашу цель отозвано, у держателя надо прекратить и само
     // подключение — иначе в его системе останется устройство в никуда.
+    // Счётчики привязаны к сеансу работы: освободили устройство — счёт
+    // начинается заново, иначе следующий держатель увидит чужие цифры.
     this.share.on('claim-revoked', ({ deviceId, claim, reason }) => {
+      this.traffic?.reset(deviceId);
       const target = claim?.groupId ? `group:${claim.groupId}` : deviceId;
       const selfId = this.config.get('nodeId');
 
@@ -329,6 +344,46 @@ export class App extends EventEmitter {
     }
   }
 
+  /**
+   * Запуск счётчика трафика.
+   *
+   * Неудача здесь не должна мешать работе: без счётчика приложение просто
+   * сообщает клиентам порт usbipd напрямую. Цифры активности полезны, но
+   * не настолько, чтобы из-за них не заработали устройства.
+   */
+  async _startTrafficMeter() {
+    this.traffic = null;
+    if (!this.config.get('meterTraffic')) {
+      log.info('учёт трафика выключен настройкой — соединения идут напрямую на usbipd');
+      return;
+    }
+    if (!this.backendInfo.server) {
+      log.debug('серверной части USB/IP нет, считать нечего');
+      return;
+    }
+
+    const proxy = new TrafficProxy({
+      listenPort: this.config.get('trafficPort'),
+      targetPort: this.config.get('usbipPort'),
+      cidr: this.network.cidr,
+    });
+    try {
+      await proxy.start();
+      proxy.on('changed', () => this.api?.pushState());
+      // Отказ уже работающего счётчика не должен ронять приложение: просто
+      // перестаём считать. Клиенты, уже получившие порт, доработают сеанс.
+      proxy.on('failed', (err) => {
+        log.error(`счётчик трафика отказал: ${err.message} — учёт отключён`);
+        this.traffic = null;
+        this.onStateChanged();
+      });
+      this.traffic = proxy;
+    } catch (e) {
+      log.warn(`счётчик трафика не запустился (${e.message}) — соединения пойдут напрямую на usbipd`);
+      this.traffic = null;
+    }
+  }
+
   /** Сообщить бывшему держателю, что право отозвано. */
   async pushRevocation(holderId, target, reason) {
     const peer = this.peers.get(holderId);
@@ -354,7 +409,8 @@ export class App extends EventEmitter {
   async applySettings(patch) {
     const before = { ...this.config.data };
     const allowed = ['name', 'network', 'preSharedKey', 'autoShareNew', 'claimLeaseMs',
-      'apiPort', 'discoveryPort', 'usbipPort', 'usbipdPath', 'usbipPath', 'logLevel', 'enabledTypes'];
+      'apiPort', 'discoveryPort', 'usbipPort', 'usbipdPath', 'usbipPath', 'logLevel', 'enabledTypes',
+      'meterTraffic', 'trafficPort'];
     const clean = {};
     for (const k of allowed) {
       if (patch[k] !== undefined) clean[k] = patch[k];
@@ -380,7 +436,7 @@ export class App extends EventEmitter {
       setLevel(clean.logLevel);
     }
 
-    const needsRestart = ['apiPort', 'discoveryPort', 'usbipPort', 'preSharedKey']
+    const needsRestart = ['apiPort', 'discoveryPort', 'usbipPort', 'preSharedKey', 'meterTraffic', 'trafficPort']
       .some((k) => clean[k] !== undefined && clean[k] !== before[k]);
 
     if (clean.network !== undefined && clean.network !== before.network) {
@@ -413,6 +469,8 @@ export class App extends EventEmitter {
       discoveryPort: c.discoveryPort,
       usbipPort: c.usbipPort,
       autoShareNew: c.autoShareNew,
+      meterTraffic: c.meterTraffic,
+      trafficPort: c.trafficPort,
       enabledTypes: c.enabledTypes,
       claimLeaseMs: c.claimLeaseMs,
       logLevel: c.logLevel,
@@ -523,6 +581,11 @@ export class App extends EventEmitter {
         notes: this.backendInfo.notes || [],
       },
       install: this.installer ? this.installer.plan() : null,
+      traffic: {
+        enabled: Boolean(this.traffic),
+        port: this.traffic ? this.config.get('trafficPort') : null,
+        requested: Boolean(this.config.get('meterTraffic')),
+      },
       config: this.publicConfig(),
       networks: listNetworks(),
       deviceTypes: Object.values(DEVICE_TYPES).map((t) => ({ ...t })),
@@ -572,6 +635,7 @@ export class App extends EventEmitter {
       connectedSince: d.connectedSince,
       sharedSince: d.sharedSince,
       lastError: d.lastError || null,
+      traffic: d.traffic || null,
       ownerId: owner.nodeId,
       ownerName: owner.name,
       ownerAddress: owner.address,
@@ -601,6 +665,7 @@ export class App extends EventEmitter {
       members,
       available: g.available !== false,
       partial: Boolean(g.partial),
+      traffic: sumTraffic(members),
       ownerId: owner.nodeId,
       ownerName: owner.name,
       ownerAddress: owner.address,
@@ -633,7 +698,21 @@ export class App extends EventEmitter {
     this.share?.stop();
     this.peers?.stop();
     await this.discovery?.stop();
+    await this.traffic?.stop();
     await this.api?.stop();
     log.info('остановлено');
   }
+}
+
+/** Активность группы — сумма по её устройствам: занимается она целиком. */
+function sumTraffic(members) {
+  const withData = members.filter((m) => m.traffic);
+  if (!withData.length) return null;
+  return {
+    bytesInPerMinute: withData.reduce((a, m) => a + (m.traffic.bytesInPerMinute || 0), 0),
+    bytesOutPerMinute: withData.reduce((a, m) => a + (m.traffic.bytesOutPerMinute || 0), 0),
+    totalIn: withData.reduce((a, m) => a + (m.traffic.totalIn || 0), 0),
+    totalOut: withData.reduce((a, m) => a + (m.traffic.totalOut || 0), 0),
+    lastActivity: Math.max(...withData.map((m) => m.traffic.lastActivity || 0)) || null,
+  };
 }

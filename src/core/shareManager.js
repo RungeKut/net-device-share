@@ -35,11 +35,17 @@ export class ShareManager extends EventEmitter {
    * @param {object} o
    * @param {import('../devices/hub.js').DeviceHub} o.hub
    * @param {import('../config.js').Config} o.config
+   * @param {() => number} [o.dataPort] — порт, который сообщается клиентам для
+   *   данных USB/IP. Отличается от usbipPort, когда включён счётчик трафика.
+   * @param {(deviceId: string) => object|null} [o.trafficOf] — счётчики устройства
    */
-  constructor({ hub, config }) {
+  constructor({ hub, config, dataPort, trafficOf, trafficBegin }) {
     super();
     this.hub = hub;
     this.config = config;
+    this.dataPort = dataPort || (() => config.get('usbipPort'));
+    this.trafficOf = trafficOf || (() => null);
+    this.trafficBegin = trafficBegin || (() => {});
     /** @type {Map<string, object>} deviceId → устройство */
     this.devices = new Map();
     /** @type {Map<string, object>} deviceId → аренда */
@@ -389,6 +395,7 @@ export class ShareManager extends EventEmitter {
         groupId: group ? group.id : null,
       });
       this.reservations.delete(dev.deviceId);
+      this.trafficBegin(dev.deviceId);
     }
 
     this._closeRequestsFor(target, preempt ? 'superseded' : 'granted');
@@ -400,7 +407,7 @@ export class ShareManager extends EventEmitter {
       ok: true,
       target,
       kind,
-      usbipPort: this.config.get('usbipPort'),
+      usbipPort: this.dataPort(),
       leaseMs: lease,
       devices: devices.map((d) => this.toDto(d)),
     };
@@ -421,7 +428,14 @@ export class ShareManager extends EventEmitter {
     // Ответ на heartbeat — надёжный способ донести до держателя запросы:
     // он приходит регулярно и не требует, чтобы владелец умел достучаться
     // до клиента сам.
-    return { ok: true, expiresAt: Date.now() + lease, pendingRequests: this.requestsFor(holderId) };
+    return {
+      ok: true,
+      expiresAt: Date.now() + lease,
+      pendingRequests: this.requestsFor(holderId),
+      // Клиент видит скорость своими глазами: владелец измеряет, а ответ
+      // на heartbeat и так приходит каждые десять секунд.
+      traffic: devices.map((d) => ({ deviceId: d.deviceId, ...(this.trafficOf(d.deviceId) || {}) })),
+    };
   }
 
   async release(target, holderId, { force = false } = {}) {
@@ -638,6 +652,7 @@ export class ShareManager extends EventEmitter {
       sharedSince: dev.sharedSince,
       unavailableReason: dev.unavailableReason || null,
       lastError: dev.lastError || null,
+      traffic: this.trafficOf(dev.deviceId),
       meta: dev.meta || {},
     };
   }
@@ -681,7 +696,14 @@ export class ShareManager extends EventEmitter {
   }
 
   hash() {
-    const devices = this.listShared();
+    // ВАЖНО: точные байты в хеш не входят. Они меняются каждую секунду, и
+    // соседи перечитывали бы состояние без остановки. В хеш идёт только
+    // признак «есть активность»: переход «молчит ↔ работает» доходит быстро,
+    // а сами цифры держатель получает в ответе на heartbeat.
+    const devices = this.listShared().map((d) => ({
+      ...d,
+      traffic: d.traffic && (d.traffic.bytesInPerMinute || d.traffic.bytesOutPerMinute) ? 'active' : null,
+    }));
     const groupPart = this.listGroups()
       .map((g) => `${g.id}|${g.name}|${g.description}|${g.shared ? 1 : 0}|${g.members.join(',')}|${g.claim ? g.claim.holderId : '-'}`)
       .join(';');

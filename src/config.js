@@ -17,6 +17,11 @@ export const DEFAULTS = {
   discoveryPort: 47811,      // UDP: обнаружение узлов
   apiPort: 47812,            // HTTP: UI + RPC между узлами
   usbipPort: 3240,           // TCP: данные USB/IP (стандартный порт)
+  // Учёт трафика: приложение принимает соединение USB/IP на своём порту,
+  // считает байты и пересылает на usbipd. Выключение возвращает прямое
+  // соединение на usbipPort — без цифр, но и без посредника в тракте данных.
+  meterTraffic: true,
+  trafficPort: 47813,        // TCP: порт счётчика трафика
   multicastAddress: '239.255.77.66',
   announceIntervalMs: 3000,
   peerTimeoutMs: 12000,      // 4 пропущенных анонса → узел офлайн
@@ -211,6 +216,7 @@ export const CLI_MAP = {
   'api-port': 'apiPort',
   'discovery-port': 'discoveryPort',
   'usbip-port': 'usbipPort',
+  'traffic-port': 'trafficPort',
   key: 'preSharedKey',
   backend: 'backend',
   'log-level': 'logLevel',

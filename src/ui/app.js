@@ -312,6 +312,40 @@ function statusPill(entry) {
   return '<span class="pill free">свободно</span>';
 }
 
+/**
+ * Скорость обмена — «байт в минуту».
+ *
+ * Показывается объём за последнюю минуту, а не мгновенная скорость: минута
+ * сглаживает рывки USB-обмена, и по ней видно, работает устройство или
+ * просто числится занятым.
+ */
+function formatRate(bytesPerMinute) {
+  if (!bytesPerMinute) return '0 Б/мин';
+  if (bytesPerMinute < 1024) return `${bytesPerMinute} Б/мин`;
+  if (bytesPerMinute < 1024 * 1024) return `${(bytesPerMinute / 1024).toFixed(1)} КБ/мин`;
+  return `${(bytesPerMinute / 1048576).toFixed(2)} МБ/мин`;
+}
+
+function formatVolume(bytes) {
+  if (!bytes) return '0 Б';
+  if (bytes < 1024) return `${bytes} Б`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} КБ`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1048576).toFixed(1)} МБ`;
+  return `${(bytes / 1073741824).toFixed(2)} ГБ`;
+}
+
+/** Полоска активности: приём и передача за последнюю минуту. */
+function trafficPill(t) {
+  if (!t) return '';
+  const total = (t.bytesInPerMinute || 0) + (t.bytesOutPerMinute || 0);
+  const idle = total === 0;
+  const title = `За последнюю минуту принято ${formatRate(t.bytesInPerMinute)}, `
+    + `передано ${formatRate(t.bytesOutPerMinute)}. `
+    + `Всего за сеанс: ${formatVolume((t.totalIn || 0) + (t.totalOut || 0))}.`;
+  return `<span class="pill traffic ${idle ? 'idle' : 'busy-flow'}" title="${esc(title)}">`
+    + `${idle ? '⏸' : '⇅'} ${esc(formatRate(total))}</span>`;
+}
+
 function transportPill(hasTransport) {
   return hasTransport
     ? ''
@@ -364,6 +398,7 @@ function deviceCard(d, { insideGroup = false } = {}) {
           <span class="type-icon" title="${esc(d.typeTitle)}">${esc(d.icon)}</span>
           ${esc(d.title)}
           ${insideGroup ? '' : statusPill(d)}
+          ${d.busy ? trafficPill(d.traffic) : ''}
           ${transportPill(d.hasTransport)}
           ${d.ownerSelf ? '<span class="pill plain">моё</span>' : ''}
           ${d.ownerOnline ? '' : '<span class="pill err">владелец офлайн</span>'}
@@ -395,6 +430,7 @@ function groupCard(g) {
             <b>${esc(g.title)}</b>
             <span class="pill group-pill">группа · ${g.members.length} устр.</span>
             ${statusPill(g)}
+            ${g.busy ? trafficPill(g.traffic) : ''}
             ${g.ownerSelf ? '<span class="pill plain">моя</span>' : ''}
             ${g.partial ? '<span class="pill err">занята частично</span>' : ''}
             ${g.available === false ? '<span class="pill err">не все устройства на месте</span>' : ''}
@@ -523,6 +559,7 @@ function renderMine() {
             <span class="type-icon" title="${esc(d.typeTitle)}">${esc(d.icon)}</span>
             ${esc(d.description)}
             ${blocked ? '' : status}
+            ${d.claim ? trafficPill(d.traffic) : ''}
             ${transportPill(d.hasTransport)}
             ${d.groupId ? `<span class="pill group-pill">${inGroup ? 'отдано группой' : 'в группе (не опубл.)'} «${esc(d.groupName || '')}»</span>` : ''}
           </div>
@@ -618,8 +655,10 @@ function renderAttached() {
           ${a.parts.map((p) => `<span>${esc(p.description || p.deviceId)}${
             p.hasTransport
               ? (p.vhciPort !== null && p.vhciPort !== undefined ? ` → порт VHCI ${esc(p.vhciPort)}` : ' → подключается')
-              : ' → бронь'}</span>`).join('')}
+              : ' → бронь'} ${p.traffic ? trafficPill(p.traffic) : ''}</span>`).join('')}
         </div>
+        ${a.parts.some((p) => p.hasTransport) && !a.parts.some((p) => p.traffic)
+          ? '<p class="hint">Скорость не показывается: у владельца выключен учёт трафика.</p>' : ''}
       </div>
       <div class="card-actions">
         ${canEdit() ? `<button class="btn small danger" data-detach="${esc(a.id)}">Освободить</button>` : ''}
@@ -864,6 +903,7 @@ $('#btnSettings').addEventListener('click', () => {
   $('#setDiscoveryPort').value = c.discoveryPort;
   $('#setUsbipdPath').value = c.usbipdPath || '';
   $('#setUsbipPath').value = c.usbipPath || '';
+  $('#setMeterTraffic').checked = Boolean(c.meterTraffic);
   $('#settingsNote').textContent = '';
 
   const sel = $('#setNetwork');
@@ -893,6 +933,7 @@ $('#settings').addEventListener('close', async () => {
     usbipdPath: $('#setUsbipdPath').value.trim(),
     usbipPath: $('#setUsbipPath').value.trim(),
     enabledTypes: [...document.querySelectorAll('#setTypes input:checked')].map((i) => i.value),
+    meterTraffic: $('#setMeterTraffic').checked,
   };
   // Пустое поле означает «не менять»: иначе открытие настроек втихую
   // стирало бы заданный ключ или пароль.

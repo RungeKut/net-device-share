@@ -113,8 +113,11 @@ export class LinuxBackend extends UsbBackend {
     return { ok: true };
   }
 
-  async attach({ host, busid }) {
-    const r = await run(this.usbip, ['attach', '-r', host, '-b', busid], { timeoutMs: 30000 });
+  async attach({ host, busid, port }) {
+    // --tcp-port — глобальная опция, до подкоманды; порт назначает владелец.
+    const args = port ? ['--tcp-port', String(port)] : [];
+    args.push('attach', '-r', host, '-b', busid);
+    const r = await run(this.usbip, args, { timeoutMs: 30000 });
     if (!r.ok) throw new Error(cleanErr(r) || 'attach не удался');
     const attached = await this.listAttached();
     const found = attached.find((a) => a.host === host && a.busid === busid);
