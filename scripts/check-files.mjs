@@ -23,7 +23,7 @@ function check(label, condition, detail) {
 
 function walk(dir, ext, acc = []) {
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-    if (entry.name === '.git' || entry.name === 'node_modules') continue;
+    if (entry.name === '.git' || entry.name === 'node_modules' || entry.name === 'dist') continue;
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) walk(full, ext, acc);
     else if (entry.name.endsWith(ext)) acc.push(full);
