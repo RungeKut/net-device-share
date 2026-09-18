@@ -775,6 +775,18 @@ document.addEventListener('change', (ev) => {
       .catch((e) => toast(e.message, 'err'));
   } else if (t.id === 'autoShare') {
     post('/api/v1/settings', { autoShareNew: t.checked }).catch((e) => toast(e.message, 'err'));
+  } else if (t.id === 'setAutostart') {
+    // Действие над системой, а не правка настройки: применяем сразу и
+    // возвращаем галочку на место, если не получилось.
+    const wanted = t.checked;
+    t.disabled = true;
+    post('/api/v1/autostart', { enabled: wanted })
+      .then((st) => {
+        t.checked = Boolean(st.enabled);
+        toast(st.enabled ? 'Автозапуск включён' : 'Автозапуск выключен', 'ok');
+      })
+      .catch((e) => { t.checked = !wanted; toast(e.message, 'err'); })
+      .finally(() => { t.disabled = false; });
   } else if (t.id === 'onlyFree' || t.id === 'typeFilter') {
     renderCatalog();
   }
@@ -904,6 +916,17 @@ $('#btnSettings').addEventListener('click', () => {
   $('#setUsbipdPath').value = c.usbipdPath || '';
   $('#setUsbipPath').value = c.usbipPath || '';
   $('#setMeterTraffic').checked = Boolean(c.meterTraffic);
+
+  // Автозапуск живёт в системе, а не в конфигурации: галочка отражает то,
+  // что показал планировщик, и применяется сразу — «Отмена» его не вернёт.
+  const as = state.autostart || {};
+  const box = $('#setAutostart');
+  box.checked = Boolean(as.enabled);
+  box.disabled = !as.supported;
+  $('#autostartHint').textContent = as.supported
+    ? `${as.method}. ${as.hint} Применяется сразу, а не по кнопке «Сохранить».`
+    : (as.hint || 'на этой системе автозапуск не поддерживается');
+
   $('#settingsNote').textContent = '';
 
   const sel = $('#setNetwork');

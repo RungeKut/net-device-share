@@ -14,6 +14,7 @@ import { PeerRegistry } from '../cluster/peers.js';
 import { ShareManager } from './shareManager.js';
 import { AttachManager, attachKey } from './attachManager.js';
 import { Installer } from './installer.js';
+import { Autostart } from './autostart.js';
 import { ApiServer } from '../api/httpServer.js';
 import { createBackend } from '../devices/backend.js';
 import { DeviceHub } from '../devices/hub.js';
@@ -42,6 +43,8 @@ export class App extends EventEmitter {
     this.api = null;
     this.installer = null;
     this.traffic = null;
+    this.autostart = null;
+    this.autostartState = null;
     this.stopping = false;
   }
 
@@ -75,6 +78,15 @@ export class App extends EventEmitter {
     await this.installer.init();
     this.installer.on('changed', () => this.api?.pushState());
     this.installer.on('finished', () => this.onStateChanged());
+
+    this.autostart = new Autostart(this.config);
+    // Состояние читается у системы один раз при старте: опрашивать
+    // планировщик на каждый снимок незачем, оно меняется только кнопкой.
+    this.autostartState = await this.autostart.status().catch((e) => {
+      log.warn('состояние автозапуска не прочитано:', e.message);
+      return { supported: false, enabled: false, error: e.message };
+    });
+    log.info(`автозапуск при входе в систему: ${this.autostartState.enabled ? 'включён' : 'выключен'}`);
 
     await this._startTrafficMeter();
 
@@ -384,6 +396,21 @@ export class App extends EventEmitter {
     }
   }
 
+  /**
+   * Включение и выключение автозапуска.
+   *
+   * Состояние после операции перечитывается у системы, а не выводится из
+   * намерения: планировщик мог отказать, а показать «включено» на основании
+   * нажатой галочки — значит соврать.
+   */
+  async setAutostart(enabled) {
+    this.autostartState = enabled
+      ? await this.autostart.enable()
+      : await this.autostart.disable();
+    this.onStateChanged();
+    return this.autostartState;
+  }
+
   /** Сообщить бывшему держателю, что право отозвано. */
   async pushRevocation(holderId, target, reason) {
     const peer = this.peers.get(holderId);
@@ -581,6 +608,7 @@ export class App extends EventEmitter {
         notes: this.backendInfo.notes || [],
       },
       install: this.installer ? this.installer.plan() : null,
+      autostart: this.autostartState,
       traffic: {
         enabled: Boolean(this.traffic),
         port: this.traffic ? this.config.get('trafficPort') : null,

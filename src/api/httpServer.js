@@ -42,6 +42,7 @@ const MUTATING = new Set([
   '/api/v1/attach', '/api/v1/detach', '/api/v1/refresh', '/api/v1/install',
   '/api/v1/group/save', '/api/v1/group/delete', '/api/v1/group/share',
   '/api/v1/request', '/api/v1/request/answer', '/api/v1/request/cancel',
+  '/api/v1/autostart',
 ]);
 
 export class ApiServer {
@@ -400,6 +401,8 @@ export class ApiServer {
           this.app.onStateChanged();
           return sendJson(res, 200, r);
         }
+        case '/api/v1/autostart':
+          return sendJson(res, 200, await this.app.setAutostart(Boolean(body.enabled)));
         case '/api/v1/refresh':
           await this.app.refreshAll();
           return sendJson(res, 200, { ok: true });
