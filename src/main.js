@@ -22,6 +22,7 @@ Net Device Share ${VERSION} — общий доступ к USB-устройст�
   --api-port <порт>       HTTP: интерфейс и RPC между узлами (по умолчанию 47812)
   --discovery-port <порт> UDP: обнаружение узлов (по умолчанию 47811)
   --usbip-port <порт>     TCP: данные USB/IP (по умолчанию 3240)
+  --traffic-port <порт>   TCP: счётчик трафика (по умолчанию 47813)
   --backend <тип>         auto | windows | linux | mock
   --log-level <уровень>   error | warn | info | debug | trace
   --no-open               не открывать браузер при запуске

@@ -222,9 +222,14 @@ export class WindowsBackend extends UsbBackend {
     return { ok: true };
   }
 
-  async attach({ host, busid }) {
+  async attach({ host, busid, port }) {
     if (!this.usbip) throw new Error('usbip-win2 (клиент) не установлен');
-    const r = await run(this.usbip, ['attach', '-r', host, '-b', busid], { timeoutMs: 30000 });
+    // --tcp-port у usbip — глобальная опция и идёт ДО подкоманды. Порт
+    // назначает владелец: при включённом учёте трафика это порт его
+    // счётчика, а не стандартный 3240.
+    const args = port ? ['-t', String(port)] : [];
+    args.push('attach', '-r', host, '-b', busid);
+    const r = await run(this.usbip, args, { timeoutMs: 30000 });
     if (!r.ok) throw new Error(cleanErr(r) || 'attach не удался');
 
     // Номер VHCI-порта надёжнее выяснить из списка, чем разбирать вывод attach:

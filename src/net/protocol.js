@@ -50,6 +50,7 @@ export function stateHash(devices, extra = '') {
       d.claim ? `${d.claim.holderId}@${d.claim.since}` : '-',
       d.reservedFor ? d.reservedFor.nodeId : '-',
       d.purpose || '',
+      d.traffic || '-',
       d.groupId || '-',
     ].join('|'))
     .sort()
