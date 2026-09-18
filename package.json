@@ -1,0 +1,22 @@
+{
+  "name": "net-device-share",
+  "version": "2.0.0",
+  "description": "Совместный доступ к USB, COM, LPT и сетевым интерфейсам по сети: каталог, группы, учёт занятости и запросы",
+  "type": "module",
+  "main": "src/main.js",
+  "bin": {
+    "net-device-share": "src/main.js"
+  },
+  "engines": {
+    "node": ">=20.6.0"
+  },
+  "scripts": {
+    "start": "node src/main.js",
+    "dev": "node src/main.js --backend mock --log-level debug",
+    "doctor": "node src/main.js --doctor",
+    "check": "node scripts/check-files.mjs",
+    "fetch-installers": "node scripts/fetch-installers.mjs"
+  },
+  "dependencies": {},
+  "license": "MIT"
+}
