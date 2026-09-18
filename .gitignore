@@ -6,3 +6,7 @@ config.json
 # Чужие установщики под GPL-3.0: в репозитории их нет.
 # Загружаются скриптом scripts/fetch-installers.mjs по manifest.json.
 installers/windows/
+
+# Собранные комплекты: node.exe и архив, в репозитории им не место.
+# Собираются заново командой npm run build.
+dist/
