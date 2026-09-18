@@ -63,6 +63,7 @@ export class App extends EventEmitter {
     });
     this.backendInfo = await this.backend.probe();
     log.info(`бэкенд USB/IP: ${this.backend.name} (раздача: ${this.backendInfo.server ? 'да' : 'нет'}, подключение: ${this.backendInfo.client ? 'да' : 'нет'})`);
+    this._explainMockBackend();
     for (const issue of this.backendInfo.issues || []) log.warn(issue);
     for (const note of this.backendInfo.notes || []) log.info(note);
 
@@ -161,6 +162,28 @@ export class App extends EventEmitter {
 
     log.info(`узел "${this.config.get('name')}" готов; сеть ${this.network.cidr}, адрес ${this.network.address}`);
     return this;
+  }
+
+  /**
+   * Дописывает к примечанию об имитации то, чего бэкенд знать не может:
+   * откуда взялся режим и как из него выйти.
+   *
+   * Разница существенная. Флаг запуска пропадёт сам при следующем старте,
+   * а запись в файле настроек будет действовать вечно, и совет «уберите
+   * флаг» такому пользователю ничем не поможет — убирать нечего.
+   */
+  _explainMockBackend() {
+    if (this.backend.name !== 'mock') return;
+    const fromCli = Boolean(this.config.runtimeOverrides?.backend);
+    this.backendInfo.notes = [
+      ...(this.backendInfo.notes || []),
+      fromCli
+        ? 'Режим задан флагом --backend mock и действует только на этот запуск: '
+          + 'следующий запуск без флага вернёт работу с настоящими устройствами.'
+        : `Режим записан в файле настроек (${this.config.file}, поле "backend"). `
+          + 'Флага при запуске нет, поэтому убирать нечего: удалите это поле '
+          + 'или замените его значение на "auto" и перезапустите приложение.',
+    ];
   }
 
   _announceSnapshot() {

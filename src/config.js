@@ -223,17 +223,36 @@ export const CLI_MAP = {
   'ui-host': 'uiHost',
 };
 
+/**
+ * Ключи, которые действуют ТОЛЬКО на текущий запуск и в файл не пишутся.
+ *
+ * `--backend` — отладочный переключатель, а не предпочтение. Когда он
+ * сохранялся наравне с остальным, один запуск с `--backend mock` закреплял
+ * имитацию навсегда, и совет «уберите --backend mock» становился
+ * бессмысленным: убирать было нечего.
+ */
+const RUNTIME_ONLY = new Set(['backend']);
+
 export function applyCliOverrides(config, args) {
   const patch = {};
+  const runtime = {};
+
   for (const [cli, field] of Object.entries(CLI_MAP)) {
     if (args[cli] === undefined || args[cli] === true) continue;
     const numeric = field.endsWith('Port');
-    patch[field] = numeric ? Number(args[cli]) : args[cli];
+    const value = numeric ? Number(args[cli]) : args[cli];
+    if (RUNTIME_ONLY.has(field)) runtime[field] = value;
+    else patch[field] = value;
   }
+
   if (Object.keys(patch).length) {
-    // Переопределения из CLI сохраняем: пользователь ожидает, что
+    // Остальные переопределения сохраняем: пользователь ожидает, что
     // запуск с --name один раз закрепит имя узла.
     config.set(patch);
   }
+  // Действуют, но не сохраняются: следующий запуск без флага вернётся
+  // к тому, что записано в файле.
+  Object.assign(config.data, runtime);
+  config.runtimeOverrides = runtime;
   return config;
 }
