@@ -1,0 +1,8 @@
+node_modules/
+*.log
+state.json
+config.json
+
+# Чужие установщики под GPL-3.0: в репозитории их нет.
+# Загружаются скриптом scripts/fetch-installers.mjs по manifest.json.
+installers/windows/

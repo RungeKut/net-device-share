@@ -1,0 +1,266 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Net Device Share</title>
+  <link rel="stylesheet" href="/style.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔌</text></svg>">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="logo">🔌</span>
+    <div>
+      <div class="brand-title">Net Device Share</div>
+      <div class="brand-sub" id="selfLine">подключение…</div>
+    </div>
+  </div>
+
+  <div class="topbar-right">
+    <span class="dot" id="connDot" title="связь с приложением"></span>
+    <span class="cap" id="capServer" title="возможность раздавать свои устройства">раздача</span>
+    <span class="cap" id="capClient" title="возможность подключать чужие устройства">подключение</span>
+    <span class="pill plain" id="accessBadge" hidden>только просмотр</span>
+    <button class="btn" id="btnLogin" type="button" hidden>Войти</button>
+    <button class="btn" id="btnLogout" type="button" hidden>Выйти</button>
+    <button class="btn" id="btnRefresh" type="button"
+            title="Список и так обновляется сам. Нажмите, если доставили usbipd или usbip не перезапуская приложение, если подключали устройство мимо приложения или если только что воткнули переходник и хотите увидеть новый порт сразу.">Обновить</button>
+    <button class="btn" id="btnSettings" type="button">Настройки</button>
+  </div>
+</header>
+
+<div id="banner" class="banner" hidden></div>
+<div id="readonlyBar" class="banner info" hidden></div>
+
+<nav class="tabs" role="tablist">
+  <button class="tab active" data-tab="catalog" type="button">Устройства сети <span class="badge" id="cntCatalog">0</span></button>
+  <button class="tab" data-tab="mine" type="button">Мои устройства <span class="badge" id="cntMine">0</span></button>
+  <button class="tab" data-tab="groups" type="button">Группы <span class="badge" id="cntGroups">0</span></button>
+  <button class="tab" data-tab="attached" type="button">Занято мной <span class="badge" id="cntAttached">0</span></button>
+  <button class="tab" data-tab="peers" type="button">Узлы <span class="badge" id="cntPeers">0</span></button>
+  <button class="tab" data-tab="log" type="button">Журнал</button>
+</nav>
+
+<main>
+  <section class="panel active" id="tab-catalog">
+    <div class="panel-head with-search">
+      <h2>Устройства и группы, доступные в сети</h2>
+      <input type="search" id="search" class="search" autocomplete="off"
+             placeholder="поиск: название, описание, владелец, порт…">
+      <div class="head-controls">
+        <label class="check"><input type="checkbox" id="onlyFree"> только свободные</label>
+        <select id="typeFilter" class="mini-select"><option value="">все типы</option></select>
+      </div>
+    </div>
+    <div id="outgoingBox"></div>
+    <div id="catalogList" class="cards"></div>
+  </section>
+
+  <section class="panel" id="tab-mine">
+    <div class="panel-head">
+      <h2>Устройства этого компьютера</h2>
+      <label class="check"><input type="checkbox" id="autoShare"> публиковать новые автоматически</label>
+    </div>
+    <p class="hint">Опубликованное устройство видно другим узлам. Занять его может любой из них — и вы сами.
+      В поле «для чего» напишите, что это за устройство: этот текст видят все.</p>
+    <div id="mineList" class="cards"></div>
+  </section>
+
+  <section class="panel" id="tab-groups">
+    <div class="panel-head">
+      <h2>Группы устройств</h2>
+      <button class="btn primary" id="btnNewGroup" type="button">Создать группу</button>
+    </div>
+    <p class="hint">Группа — составное устройство. Для отладки платы нужны JTAG и COM сразу, и занимать их
+      по отдельности бессмысленно: между двумя захватами вклинится кто-то третий. Группа занимается целиком.</p>
+    <div id="groupsList" class="cards"></div>
+  </section>
+
+  <section class="panel" id="tab-attached">
+    <div class="panel-head"><h2>Занято этим компьютером</h2></div>
+    <p class="hint">Устройства с пробросом присутствуют в «Диспетчере устройств» так же, как подключённые кабелем.
+      Остальные только числятся за вами — их вы подключаете физически.</p>
+    <div id="attachedList" class="cards"></div>
+  </section>
+
+  <section class="panel" id="tab-peers">
+    <div class="panel-head"><h2>Узлы в сети</h2></div>
+    <div id="peersList" class="cards"></div>
+  </section>
+
+  <section class="panel" id="tab-log">
+    <div class="panel-head">
+      <h2>Журнал</h2>
+      <label class="check"><input type="checkbox" id="logAutoscroll" checked> прокручивать</label>
+    </div>
+    <pre id="logView" class="log"></pre>
+  </section>
+</main>
+
+<!-- Запрос на освобождение: всплывает у того, кто держит цель -->
+<dialog id="requestDialog" class="request-dialog">
+  <form method="dialog" class="dlg">
+    <h2>⚠ У вас просят устройство</h2>
+    <div id="requestBody"></div>
+    <div class="dlg-actions">
+      <button class="btn" value="decline" type="submit">Отказать</button>
+      <button class="btn primary" value="accept" type="submit">Отдать</button>
+    </div>
+    <p class="dlg-note">Если не ответить, запрос истечёт сам через несколько минут.</p>
+  </form>
+</dialog>
+
+<!-- Отправка запроса держателю -->
+<dialog id="askDialog">
+  <form method="dialog" class="dlg">
+    <h2>Попросить устройство</h2>
+    <p id="askTarget" class="dlg-note"></p>
+    <label class="field">
+      <span>Сообщение держателю <em class="muted">(необязательно)</em></span>
+      <input type="text" id="askMessage" maxlength="300" placeholder="например: нужно на 15 минут, сдать прошивку">
+    </label>
+    <div class="dlg-actions">
+      <button class="btn" value="cancel" type="submit">Отмена</button>
+      <button class="btn primary" value="send" type="submit">Отправить запрос</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- Создание и правка группы -->
+<dialog id="groupDialog">
+  <form method="dialog" class="dlg">
+    <h2 id="groupDialogTitle">Группа устройств</h2>
+    <label class="field">
+      <span>Название</span>
+      <input type="text" id="groupName" maxlength="80" placeholder="например: Стенд отладки STM32">
+    </label>
+    <label class="field">
+      <span>Описание: что это и для чего</span>
+      <input type="text" id="groupDescription" maxlength="500" placeholder="JTAG и консоль одной платы; занимать только вместе">
+    </label>
+    <div class="field">
+      <span>Устройства группы</span>
+      <div id="groupMembers" class="member-picker"></div>
+      <small>Устройства группы публикуются автоматически. Занимать их по отдельности будет нельзя.</small>
+    </div>
+    <div class="dlg-actions">
+      <button class="btn danger" id="btnDeleteGroup" value="delete" type="submit" hidden>Удалить</button>
+      <button class="btn" value="cancel" type="submit">Отмена</button>
+      <button class="btn primary" value="save" type="submit">Сохранить</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- Вход по паролю -->
+<dialog id="loginDialog">
+  <form method="dialog" class="dlg">
+    <h2>Вход</h2>
+    <p class="dlg-note">Управление с других компьютеров требует пароля. Он задаётся в настройках
+      на том компьютере, где запущено приложение.</p>
+    <label class="field">
+      <span>Пароль</span>
+      <input type="password" id="loginPassword" autocomplete="current-password">
+    </label>
+    <p class="dlg-note" id="loginError"></p>
+    <div class="dlg-actions">
+      <button class="btn" value="cancel" type="submit">Отмена</button>
+      <button class="btn primary" value="login" type="submit">Войти</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="settings">
+  <form method="dialog" class="dlg">
+    <h2>Настройки</h2>
+
+    <label class="field">
+      <span>Имя этого узла</span>
+      <input type="text" id="setName" maxlength="64" placeholder="имя компьютера">
+      <small>Под этим именем вас видят остальные и по нему видно, кто занял устройство.</small>
+    </label>
+
+    <label class="field">
+      <span>Рабочая сеть</span>
+      <select id="setNetwork"></select>
+    </label>
+
+    <div class="field">
+      <span>Какие типы устройств показывать</span>
+      <div id="setTypes" class="type-picker"></div>
+    </div>
+
+    <label class="field">
+      <span><input type="checkbox" id="setAutostart"> Запускать при входе в систему</span>
+      <small id="autostartHint">Создаёт задание в планировщике Windows, которое запускает приложение
+        с правами администратора и без запроса UAC. Потребуется подтвердить повышение прав
+        один раз — сейчас. Применяется сразу, а не по кнопке «Сохранить».</small>
+    </label>
+
+    <label class="field">
+      <span><input type="checkbox" id="setMeterTraffic"> Считать трафик устройств</span>
+      <small>Показывает скорость обмена (байт в минуту) по каждому устройству.
+        Для этого приложение принимает соединение USB/IP на своём порту и пересылает
+        его службе usbipd, то есть встаёт в тракт данных. Выключение убирает цифры,
+        но и посредника. Изменение требует перезапуска.</small>
+    </label>
+
+    <label class="field">
+      <span>Пароль для доступа с других компьютеров</span>
+      <input type="password" id="setWebPassword" autocomplete="new-password">
+      <small>Пусто — оставить как есть. Чтобы снять пароль, введите один символ «-».
+        Без пароля с других компьютеров доступен только просмотр.</small>
+    </label>
+
+    <label class="field">
+      <span>Общий ключ сети <em class="muted">(необязательно)</em></span>
+      <input type="password" id="setKey" placeholder="оставьте пустым — без проверки" autocomplete="new-password">
+      <small>Узлы с разными ключами не видят друг друга. Изменение требует перезапуска.</small>
+    </label>
+
+    <div class="grid2">
+      <label class="field">
+        <span>Срок аренды, с</span>
+        <input type="number" id="setLease" min="10" max="600" step="5">
+      </label>
+      <label class="field">
+        <span>Подробность журнала</span>
+        <select id="setLogLevel">
+          <option value="error">error</option><option value="warn">warn</option>
+          <option value="info">info</option><option value="debug">debug</option>
+          <option value="trace">trace</option>
+        </select>
+      </label>
+    </div>
+
+    <div class="grid2">
+      <label class="field">
+        <span>Порт HTTP</span>
+        <input type="number" id="setApiPort" min="1" max="65535">
+      </label>
+      <label class="field">
+        <span>Порт обнаружения (UDP)</span>
+        <input type="number" id="setDiscoveryPort" min="1" max="65535">
+      </label>
+    </div>
+
+    <details class="advanced">
+      <summary>Пути к утилитам USB/IP</summary>
+      <label class="field"><span>usbipd (раздача)</span><input type="text" id="setUsbipdPath" placeholder="определяется автоматически"></label>
+      <label class="field"><span>usbip (подключение)</span><input type="text" id="setUsbipPath" placeholder="определяется автоматически"></label>
+    </details>
+
+    <p class="dlg-note" id="settingsNote"></p>
+    <div class="dlg-actions">
+      <button class="btn" value="cancel" type="submit">Отмена</button>
+      <button class="btn primary" value="save" type="submit">Сохранить</button>
+    </div>
+  </form>
+</dialog>
+
+<div id="toasts" class="toasts"></div>
+
+<script src="/app.js" type="module"></script>
+</body>
+</html>

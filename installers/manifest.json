@@ -1,0 +1,50 @@
+{
+  "schema": 1,
+  "note": "Описание вложенных установщиков. Приложение читает этот файл, сверяет SHA-256 и подпись, и только потом запускает установку.",
+  "components": [
+    {
+      "id": "usbipd-win",
+      "platform": "win32",
+      "role": "server",
+      "title": "usbipd-win — раздача своих устройств",
+      "description": "Служба USB/IP: отдаёт локальные устройства по сети и слушает TCP 3240.",
+      "version": "5.3.0",
+      "file": "windows/usbipd-win_5.3.0_x64.msi",
+      "sha256": "1c984914aec944de19b64eff232421439629699f8138e3ddc29301175bc6d938",
+      "sourceUrl": "https://github.com/dorssel/usbipd-win/releases/download/v5.3.0/usbipd-win_5.3.0_x64.msi",
+      "project": "https://github.com/dorssel/usbipd-win",
+      "license": "GPL-3.0",
+      "expectedSigner": "Open Source Developer, Frans van Dorsselaer",
+      "command": "msiexec.exe",
+      "args": ["/i", "{file}", "/qn", "/norestart", "/l*v", "{log}"],
+      "verifyPaths": [
+        "C:\\Program Files\\usbipd-win\\usbipd.exe",
+        "C:\\Program Files (x86)\\usbipd-win\\usbipd.exe"
+      ],
+      "requiresReboot": false
+    },
+    {
+      "id": "usbip-win2",
+      "platform": "win32",
+      "role": "client",
+      "title": "usbip-win2 — подключение чужих устройств",
+      "description": "Драйвер VHCI: занятое устройство появляется в «Диспетчере устройств». Драйверы подписаны через attestation signing (Microsoft Windows Hardware Compatibility Publisher), режим тестовой подписи не требуется.",
+      "version": "0.9.8.0",
+      "file": "windows/USBip-0.9.8.0-x64.exe",
+      "sha256": "81f426741f7ee2ed991febe24a22daca8400b6ae2f171054e3fb404897e15d39",
+      "sourceUrl": "https://github.com/vadimgrn/usbip-win2/releases/download/v.0.9.8.0/USBip-0.9.8.0-x64.exe",
+      "project": "https://github.com/vadimgrn/usbip-win2",
+      "license": "GPL-3.0",
+      "expectedSigner": "Cloudyne Systems (Scheibling Consulting AB)",
+      "signerNote": "Установщик подписан сторонней компанией, а не автором проекта. Подпись действительна; для драйвера ядра этот факт стоит учитывать осознанно.",
+      "command": "{file}",
+      "args": ["/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/SP-", "/LOG={log}"],
+      "verifyPaths": [
+        "C:\\Program Files\\USBIP\\usbip.exe",
+        "C:\\Program Files\\usbip-win2\\usbip.exe",
+        "C:\\Program Files\\usbip-win\\usbip.exe"
+      ],
+      "requiresReboot": false
+    }
+  ]
+}
