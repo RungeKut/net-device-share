@@ -43,19 +43,34 @@ if not "%APP_ARGS%"=="" (
 
 rem ------------------------------------------------------------ Node.js
 
-where node >nul 2>&1
-if errorlevel 1 (
-  echo.
-  echo   Не найден Node.js.
-  echo.
-  echo   Установите версию 20.6 или новее: https://nodejs.org/
-  echo   После установки закройте это окно и запустите файл заново.
-  echo.
-  pause
-  exit /b 1
+rem В переносимом комплекте node.exe лежит рядом с этим файлом, и тогда
+rem ставить Node в систему не нужно вовсе. Вложенный имеет приоритет:
+rem комплект должен работать одинаково независимо от того, что установлено
+rem на машине.
+set "NODE_EXE=node"
+if exist "%~dp0node.exe" set "NODE_EXE=%~dp0node.exe"
+
+if "%NODE_EXE%"=="node" (
+  where node >nul 2>&1
+  if errorlevel 1 (
+    echo.
+    echo   Не найден Node.js.
+    echo.
+    echo   Установите версию 20.6 или новее: https://nodejs.org/
+    echo   После установки закройте это окно и запустите файл заново.
+    echo.
+    echo   Либо возьмите переносимый комплект - в нём node.exe уже внутри.
+    echo.
+    pause
+    exit /b 1
+  )
 )
 
-for /f "delims=" %%v in ('node -e "console.log(process.versions.node)" 2^>nul') do set "NODE_VER=%%v"
+rem "call" здесь обязателен: если команда в for /f начинается с
+rem кавычки, cmd принимает её за имя программы целиком и поиск файла
+rem проваливается. С "call" строка начинается с буквы, и путь с
+rem пробелами внутри кавычек разбирается правильно.
+for /f "delims=" %%v in ('call "%NODE_EXE%" -e "console.log(process.versions.node)" 2^>nul') do set "NODE_VER=%%v"
 if not defined NODE_VER (
   echo.
   echo   Node.js найден, но не запускается. Проверьте установку.
@@ -129,7 +144,7 @@ set "OLD_CP=866"
 for /f "tokens=2 delims=:" %%c in ('chcp') do call :trim_cp %%c
 chcp 65001 >nul
 
-node "%~dp0src\main.js" %APP_ARGS%
+"%NODE_EXE%" "%~dp0src\main.js" %APP_ARGS%
 set "EXIT_CODE=%ERRORLEVEL%"
 
 chcp %OLD_CP% >nul
