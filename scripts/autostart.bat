@@ -20,11 +20,19 @@ title Net Device Share
 
 cd /d "%~dp0.."
 
-where node >nul 2>&1
-if errorlevel 1 (
-  echo Не найден Node.js - автозапуск невозможен.
-  exit /b 1
+rem В переносимом комплекте node.exe лежит рядом с приложением, и он имеет
+rem приоритет: комплект должен работать одинаково независимо от того, что
+rem установлено на машине.
+set "NODE_EXE=node"
+if exist "%~dp0..\node.exe" set "NODE_EXE=%~dp0..\node.exe"
+
+if "%NODE_EXE%"=="node" (
+  where node >nul 2>&1
+  if errorlevel 1 (
+    echo Не найден Node.js - автозапуск невозможен.
+    exit /b 1
+  )
 )
 
-node "%~dp0..\src\main.js" --no-open %*
+"%NODE_EXE%" "%~dp0..\src\main.js" --no-open %*
 exit /b %ERRORLEVEL%
