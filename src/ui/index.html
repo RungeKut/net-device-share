@@ -274,7 +274,7 @@
       <div class="grid2">
         <label class="field">
           <span>Обмен списками, с</span>
-          <input type="number" id="setGossip" min="5" max="3600" step="5">
+          <input type="number" id="setGossip" min="5" max="3600" step="1">
         </label>
         <label class="field">
           <span>Опрос этих узлов, с</span>
@@ -300,7 +300,7 @@
         </label>
         <label class="field">
           <span>В покое, с</span>
-          <input type="number" id="setAnnounceIdle" min="1" max="600" step="5">
+          <input type="number" id="setAnnounceIdle" min="1" max="600" step="1">
         </label>
       </div>
 
@@ -333,8 +333,11 @@
 
     <p class="dlg-note" id="settingsNote"></p>
     <div class="dlg-actions">
-      <button class="btn" value="cancel" type="submit">Отмена</button>
-      <button class="btn primary" value="save" type="submit">Сохранить</button>
+      <!-- «Отмена» намеренно не submit: отправку формы браузер блокирует,
+           если хоть одно поле не проходит проверку, и отказаться от правок
+           стало бы невозможно именно тогда, когда это нужнее всего. -->
+      <button class="btn" type="button" id="btnCancelSettings">Отмена</button>
+      <button class="btn primary" value="save" type="submit" id="btnSaveSettings">Сохранить</button>
     </div>
   </form>
 </dialog>

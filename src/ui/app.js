@@ -983,6 +983,29 @@ $('#btnSettings').addEventListener('click', () => {
   $('#settings').showModal();
 });
 
+$('#btnCancelSettings').addEventListener('click', () => $('#settings').close('cancel'));
+
+/**
+ * Проверка формы перед сохранением.
+ *
+ * Поле, не прошедшее проверку, браузер пытается показать пользователю — а
+ * если оно лежит в свёрнутом разделе, показать его нельзя, и отправка
+ * отменяется молча. Со стороны это выглядит как сломанная кнопка: нажимаешь,
+ * и ничего не происходит. Поэтому раздел раскрываем сами.
+ */
+$('#btnSaveSettings').addEventListener('click', (ev) => {
+  const form = $('#settings').querySelector('form');
+  if (form.checkValidity()) return;
+
+  ev.preventDefault();
+  const bad = form.querySelector(':invalid');
+  if (!bad) return;
+  for (let d = bad.closest('details'); d; d = d.parentElement?.closest('details')) d.open = true;
+  bad.scrollIntoView({ block: 'center' });
+  bad.reportValidity();
+  $('#settingsNote').textContent = 'Проверьте выделенное поле — значение вне допустимых пределов.';
+});
+
 $('#settings').addEventListener('close', async () => {
   if ($('#settings').returnValue !== 'save') return;
 
