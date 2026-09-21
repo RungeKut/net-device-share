@@ -108,6 +108,28 @@ if (fs.existsSync(manifestPath)) {
   }
 }
 
+// --- числовые поля интерфейса: шаг не должен отсекать круглые значения ---
+//
+// Браузер отсчитывает допустимые значения не от нуля, а от min. При
+// min="1" step="5" годятся 1, 6, 11, 16… — и привычные 30 или 60
+// оказываются недопустимыми. Само по себе это полбеды, но поле, лежащее в
+// свёрнутом разделе, браузер сфокусировать не может и молча отменяет
+// отправку формы: обе кнопки диалога выглядят сломанными, и в консоли
+// ничего нет. Уже наступали.
+{
+  const html = fs.readFileSync(path.join(ROOT, 'src', 'ui', 'index.html'), 'utf8');
+  for (const tag of html.match(/<input[^>]*type="number"[^>]*>/g) || []) {
+    const attr = (name) => new RegExp(`${name}="([^"]*)"`).exec(tag)?.[1];
+    const step = Number(attr('step') ?? 1);
+    const min = Number(attr('min') ?? 0);
+    const id = attr('id') || tag.slice(0, 40);
+    if (!Number.isFinite(step) || step <= 1) continue;
+    check(`#${id}: шаг и нижняя граница согласованы`, Number.isFinite(min) && min % step === 0,
+      `min=${min} не кратно step=${step} — круглые значения окажутся недопустимыми, `
+      + 'и форма молча перестанет отправляться');
+  }
+}
+
 // --- итог ---
 if (problems.length) {
   process.stderr.write(`\nНайдены нарушения (${problems.length}):\n`);
