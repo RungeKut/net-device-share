@@ -6,6 +6,7 @@
 // Каталог состоит из записей двух видов: одиночные устройства и группы,
 // внутри которых лежат их устройства. Для интерфейса это один список.
 
+import crypto from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { logger } from '../log.js';
 import { resolveNetwork, listNetworks } from '../net/interfaces.js';
@@ -21,7 +22,7 @@ import { createBackend } from '../devices/backend.js';
 import { DeviceHub } from '../devices/hub.js';
 import { DEVICE_TYPES, RESERVATION_NOTE, typeInfo } from '../devices/types.js';
 import { rpc } from '../net/rpc.js';
-import { realmOf } from '../net/protocol.js';
+import { Realms } from '../net/realms.js';
 import { TrafficProxy } from '../net/trafficProxy.js';
 
 const log = logger('app');
@@ -40,6 +41,9 @@ const ANNOUNCE_TRANSPORTS = new Set(['both', 'multicast', 'broadcast']);
  */
 const MIN_KEY_LENGTH = 8;
 
+/** Больше горстки кругов доверия на узел — это уже не про удобство. */
+const MAX_NETWORKS = 8;
+
 /** Числовая настройка времени: только целое и только в разумных границах. */
 function clampMs(target, field, min, max) {
   if (target[field] === undefined) return;
@@ -52,6 +56,9 @@ export class App extends EventEmitter {
   constructor(config) {
     super();
     this.config = config;
+    // Круги доверия нужны раньше всего остального: по ним выбирается
+    // ключ для любого разговора с другим узлом.
+    this.realms = new Realms(config);
     this.version = VERSION;
     this.startedAt = Date.now();
     this.network = null;
@@ -123,10 +130,17 @@ export class App extends EventEmitter {
       trafficOf: (deviceId) => (this.traffic ? this.traffic.statsFor(deviceId) : null),
       trafficBegin: (deviceId) => this.traffic?.begin(deviceId),
     });
-    this.attach = new AttachManager({ backend: this.backend, config: this.config, share: this.share });
+    this.attach = new AttachManager({
+      backend: this.backend,
+      config: this.config,
+      share: this.share,
+      // Ключ зависит от того, в каком круге услышан владелец, поэтому
+      // менеджер подключений спрашивает его по узлу, а не хранит у себя.
+      keyFor: (nodeId) => this.keyForNode(nodeId),
+    });
     this.peers = new PeerRegistry({
       nodeId: this.config.get('nodeId'),
-      preSharedKey: this.config.get('preSharedKey'),
+      realms: this.realms,
       peerTimeoutMs: this.config.get('peerTimeoutMs'),
       peerForgetMs: this.config.get('peerForgetMs'),
       announceIntervalMs: this.config.get('announceIntervalMs'),
@@ -136,7 +150,7 @@ export class App extends EventEmitter {
     this.directory = new DirectoryService({
       peers: this.peers,
       seeds: () => this.config.get('seeds') || [],
-      key: () => this.config.get('preSharedKey'),
+      realms: this.realms,
       intervalMs: () => this.config.get('gossipIntervalMs'),
       defaultPort: () => this.config.get('apiPort'),
       selfEntry: () => this._selfEntry(),
@@ -185,12 +199,12 @@ export class App extends EventEmitter {
       port: this.config.get('discoveryPort'),
       apiPort: this.config.get('apiPort'),
       usbipPort: this.config.get('usbipPort'),
+      realms: this.realms,
       multicastAddress: this.config.get('multicastAddress'),
       announceIntervalMs: this.config.get('announceIntervalMs'),
       announceIdleIntervalMs: this.config.get('announceIdleIntervalMs'),
       announceBackoff: this.config.get('announceBackoff'),
       announceTransport: this.config.get('announceTransport'),
-      preSharedKey: this.config.get('preSharedKey'),
       getSnapshot: () => this._announceSnapshot(),
     });
     this.discovery.on('announce', (m) => {
@@ -229,6 +243,20 @@ export class App extends EventEmitter {
           + 'Флага при запуске нет, поэтому убирать нечего: удалите это поле '
           + 'или замените его значение на "auto" и перезапустите приложение.',
     ];
+  }
+
+  /**
+   * Ключ для разговора с указанным узлом.
+   *
+   * С соседом говорим ключом того круга, в котором он услышан; с самим
+   * собой — любым своим, лишь бы мы же его и приняли: занятие собственного
+   * устройства идёт тем же путём по HTTP, что и чужого, и подпись там тоже
+   * проверяется.
+   */
+  keyForNode(nodeId) {
+    if (nodeId === this.config.get('nodeId')) return this.realms.self()?.key ?? '';
+    const peer = this.peers?.get(nodeId);
+    return peer ? this.realms.keyFor(peer.realm) : undefined;
   }
 
   _announceSnapshot() {
@@ -399,7 +427,7 @@ export class App extends EventEmitter {
       path: '/api/v1/peer/request',
       method: 'POST',
       body: { target, requesterName: this.config.get('name'), message },
-      key: this.config.get('preSharedKey'),
+      key: this.realms.keyFor(peer.realm),
       nodeId: selfId,
       timeoutMs: 8000,
     });
@@ -442,7 +470,7 @@ export class App extends EventEmitter {
         path: '/api/v1/peer/notify-request',
         method: 'POST',
         body: { request: req, owner: { nodeId: selfId, host: this.network.address, apiPort: this.config.get('apiPort') } },
-        key: this.config.get('preSharedKey'),
+        key: this.realms.keyFor(peer.realm),
         nodeId: selfId,
         timeoutMs: 5000,
       });
@@ -520,7 +548,7 @@ export class App extends EventEmitter {
         path: '/api/v1/peer/revoked',
         method: 'POST',
         body: { target, reason },
-        key: this.config.get('preSharedKey'),
+        key: this.realms.keyFor(peer.realm),
         nodeId: this.config.get('nodeId'),
         timeoutMs: 5000,
       });
@@ -533,7 +561,10 @@ export class App extends EventEmitter {
 
   async applySettings(patch) {
     const before = { ...this.config.data };
-    const allowed = ['name', 'network', 'preSharedKey', 'autoShareNew', 'claimLeaseMs',
+    // Круги, в которых мы объявлялись до правки. Снимаем сейчас: realms
+    // читает настройки вживую, и после записи прежний состав уже не узнать.
+    const wasAnnouncing = this.discovery ? this.realms.announcing().map((r) => ({ realm: r.realm, key: r.key })) : [];
+    const allowed = ['name', 'network', 'networks', 'seeOpen', 'showToOpen', 'autoShareNew', 'claimLeaseMs',
       'apiPort', 'discoveryPort', 'usbipPort', 'usbipdPath', 'usbipPath', 'logLevel', 'enabledTypes',
       'meterTraffic', 'trafficPort',
       'seeds', 'gossipIntervalMs', 'remotePollIntervalMs', 'announceIntervalMs',
@@ -551,18 +582,9 @@ export class App extends EventEmitter {
     }
     if (clean.seeds !== undefined) clean.seeds = this._cleanSeeds(clean.seeds);
 
-    // Пробелы по краям ключа отбрасываем.
-    //
-    // Ключ переносят копированием, и вместе с ним нередко приезжает
-    // перевод строки или пробел. Отличие невидимо, а узлы после этого молча
-    // не видят друг друга: подпись не сходится, и понять почему нельзя —
-    // ключ ведь «тот же самый».
-    if (clean.preSharedKey !== undefined) {
-      clean.preSharedKey = String(clean.preSharedKey).trim();
-      if (clean.preSharedKey && clean.preSharedKey.length < MIN_KEY_LENGTH) {
-        throw new Error(`общий ключ короче ${MIN_KEY_LENGTH} символов — воспользуйтесь кнопкой «Сгенерировать»`);
-      }
-    }
+    if (clean.networks !== undefined) clean.networks = this._cleanNetworks(clean.networks);
+    if (clean.seeOpen !== undefined) clean.seeOpen = Boolean(clean.seeOpen);
+    if (clean.showToOpen !== undefined) clean.showToOpen = Boolean(clean.showToOpen);
     if (clean.announceTransport !== undefined && !ANNOUNCE_TRANSPORTS.has(clean.announceTransport)) {
       throw new Error(`неизвестный канал анонсов «${clean.announceTransport}»`);
     }
@@ -584,9 +606,12 @@ export class App extends EventEmitter {
     // такую настройку значит оставить человека с пустым списком и без
     // единой подсказки почему.
     const seedsNow = clean.seeds ?? before.seeds ?? [];
-    const keyNow = clean.preSharedKey ?? before.preSharedKey;
-    if (seedsNow.length && !keyNow) {
-      throw new Error('для узлов из других сетей нужен общий ключ — задайте его в этом же окне');
+    // Ключ из «--key» здесь тоже считается: он действует только на запуск,
+    // но круг доверия задаёт настоящий.
+    const networksNow = clean.networks ?? before.networks ?? [];
+    const keyedNow = networksNow.filter((n) => n?.key).length || Boolean(this.config.get('preSharedKey'));
+    if (seedsNow.length && !keyedNow) {
+      throw new Error('для узлов из других сетей нужна сеть с общим ключом — заведите её в этом же окне');
     }
 
     this.config.set(clean);
@@ -603,7 +628,7 @@ export class App extends EventEmitter {
       setLevel(clean.logLevel);
     }
 
-    const needsRestart = ['apiPort', 'discoveryPort', 'usbipPort', 'preSharedKey', 'meterTraffic', 'trafficPort']
+    const needsRestart = ['apiPort', 'discoveryPort', 'usbipPort', 'meterTraffic', 'trafficPort']
       .some((k) => clean[k] !== undefined && clean[k] !== before[k]);
 
     if (clean.network !== undefined && clean.network !== before.network) {
@@ -636,6 +661,30 @@ export class App extends EventEmitter {
       this.discovery.announce();
     }
 
+    // Состав кругов доверия применяется сразу, без перезапуска: анонсы
+    // читают его при каждой отправке. Забыть чужаков нужно здесь же —
+    // сами они провисели бы до истечения таймаута.
+    const circlesChanged = ['networks', 'seeOpen', 'showToOpen']
+      .some((k) => clean[k] !== undefined && JSON.stringify(clean[k]) !== JSON.stringify(before[k]));
+    if (circlesChanged) {
+      const mine = this.realms.listening().map((r) => r.realm);
+      this.peers.retainRealms(mine);
+      const keyed = this.realms.keyed().length;
+      log.info(`круги доверия: ключевых сетей ${keyed}`
+        + `, узлы без ключа ${this.realms.seeOpen ? 'видим' : 'не видим'}`
+        + `, им ${this.realms.showToOpen ? 'видны' : 'не видны'}`);
+      if (this.realms.describe().isolated) {
+        log.warn('узел не состоит ни в одном круге доверия — он никого не увидит и никому не будет виден');
+      }
+      // Тем, чей круг мы покинули, говорим об этом сразу, а в оставшихся и
+      // новых объявляемся заново и просим соседей представиться.
+      const now = new Set(this.realms.announcing().map((r) => r.realm));
+      this.discovery.farewell(wasAnnouncing.filter((r) => !now.has(r.realm)));
+      this.discovery.refresh();
+      this.directory.stop();
+      this.directory.start();
+    }
+
     if (clean.remotePollIntervalMs !== undefined && clean.remotePollIntervalMs !== before.remotePollIntervalMs) {
       this.peers.opts.remotePollIntervalMs = clean.remotePollIntervalMs;
       this.peers.retimeRemotePoll();
@@ -663,6 +712,48 @@ export class App extends EventEmitter {
 
     this.onStateChanged();
     return { ok: true, needsRestart, config: this.publicConfig() };
+  }
+
+  /**
+   * Разбор и проверка списка ключевых сетей.
+   *
+   * Ключи сюда приходят открытым текстом — иначе их не задать — и дальше
+   * живут только в файле настроек. Наружу отдаются лишь название и
+   * отпечаток (см. publicConfig).
+   */
+  _cleanNetworks(raw) {
+    if (!Array.isArray(raw)) throw new Error('список сетей должен быть массивом');
+    if (raw.length > MAX_NETWORKS) {
+      throw new Error(`сетей не может быть больше ${MAX_NETWORKS}: каждая умножает широковещательный трафик`);
+    }
+
+    // Ключи наружу не отдаются, поэтому интерфейс не может прислать их
+    // обратно при правке названия. Пустой ключ у сети с известным id
+    // означает «оставить прежний» — иначе первое же переименование
+    // стирало бы ключ и выбрасывало узел из сети.
+    const known = new Map((this.config.get('networks') || []).map((n) => [n.id, n.key]));
+
+    const out = [];
+    const seen = new Set();
+    for (const item of raw) {
+      const key = String(item?.key ?? '').trim() || known.get(item?.id) || '';
+      if (!key) continue;
+      if (key.length < MIN_KEY_LENGTH) {
+        const named = String(item?.label ?? '').trim() || 'без названия';
+        throw new Error(`ключ сети «${named}» короче ${MIN_KEY_LENGTH} символов — воспользуйтесь кнопкой «Сгенерировать»`);
+      }
+      // Два одинаковых ключа — это одна и та же сеть под двумя именами:
+      // отпечаток у них общий, и различить их потом будет нечем.
+      if (seen.has(key)) {
+        throw new Error('две сети с одинаковым ключом — это одна и та же сеть');
+      }
+      seen.add(key);
+
+      const label = String(item?.label ?? '').trim().slice(0, 48) || `Сеть ${out.length + 1}`;
+      const id = typeof item?.id === 'string' && item.id ? item.id : crypto.randomUUID();
+      out.push({ id, label, key });
+    }
+    return out;
   }
 
   /** Разбор и проверка адресов узлов из других сетей. */
@@ -705,12 +796,19 @@ export class App extends EventEmitter {
       enabledTypes: c.enabledTypes,
       claimLeaseMs: c.claimLeaseMs,
       logLevel: c.logLevel,
-      // Ни ключ, ни пароль наружу не отдаём — только факт их наличия.
-      hasKey: Boolean(c.preSharedKey),
-      // Отпечаток круга доверия. По нему видно, совпадают ли ключи на двух
-      // компьютерах, не называя самого ключа. Ничего нового он не раскрывает:
-      // этот же отпечаток едет в каждом анонсе открытым текстом.
-      realm: realmOf(c.preSharedKey),
+      // Сами ключи наружу не отдаются никогда — ни при полном доступе,
+      // ни тем более при просмотре. Наружу идут название и отпечаток:
+      // по отпечатку видно, совпадают ли ключи на двух компьютерах, а
+      // восстановить по нему ключ нельзя. Ничего нового он не раскрывает —
+      // тот же отпечаток едет в каждом анонсе открытым текстом.
+      networks: access === 'full'
+        ? this.realms.keyed().filter((n) => n.id !== 'cli')
+          .map(({ id, label, realm }) => ({ id, label, realm }))
+        : [],
+      networkCount: this.realms.keyed().length,
+      seeOpen: this.realms.seeOpen,
+      showToOpen: this.realms.showToOpen,
+      isolated: this.realms.describe().isolated,
       hasWebPassword: this.config.hasWebPassword(),
       usbipdPath: c.usbipdPath || null,
       usbipPath: c.usbipPath || null,
@@ -849,6 +947,10 @@ export class App extends EventEmitter {
         origin: p.origin,
         network: p.network || null,
         viaName: p.viaName || null,
+        // Из какой сети узел. Когда сетей несколько, без подписи в списке
+        // не разобрать, почему одно устройство занимается, а другое нет.
+        realm: p.realm || null,
+        realmLabel: this.realms.labelFor(p.realm),
       })),
       federation: this._federation(access),
       attachments,

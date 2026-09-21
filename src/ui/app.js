@@ -174,7 +174,7 @@ function render() {
   renderPeers();
   // Пока настройки открыты, состояние обмена в них живое: адрес набирают
   // и тут же смотрят, ответил ли узел, а не переоткрывают окно.
-  if ($('#settings').open) renderFederation();
+  if ($('#settings').open) { renderFederation(); renderRealmNote(); }
   handleIncomingRequests();
 }
 
@@ -711,7 +711,8 @@ function renderPeers() {
       <div class="card-main">
         <div class="card-title">${esc(p.name)}
           <span class="pill ${p.online ? 'free' : 'err'}">${p.online ? 'в сети' : 'не отвечает'}</span>
-          ${p.origin && p.origin !== 'local' ? `<span class="pill remote" title="${esc(remoteHint(p))}">другая сеть</span>` : ''}</div>
+          ${p.origin && p.origin !== 'local' ? `<span class="pill remote" title="${esc(remoteHint(p))}">другая сеть</span>` : ''}
+          ${p.realmLabel ? `<span class="pill plain" title="круг доверия ${esc(p.realm || '')}">${esc(p.realmLabel)}</span>` : ''}</div>
         <div class="card-meta">
           <span>адрес: <b>${esc(p.address)}</b>:${esc(p.apiPort)}</span>
           ${p.origin !== 'local' && p.network ? `<span>сеть: ${esc(p.network)}</span>` : ''}
@@ -929,12 +930,13 @@ $('#loginDialog').addEventListener('close', async () => {
 $('#btnSettings').addEventListener('click', () => {
   const c = state.config;
   $('#setName').value = c.name;
-  $('#setKey').value = '';
-  $('#setKey').placeholder = c.hasKey ? '•••••• (задан) — введите новый или оставьте пустым' : 'оставьте пустым — без проверки';
-  // Поле всегда открывается скрытым: настройки могут смотреть через плечо.
-  $('#setKey').type = 'password';
-  $('#btnShowKey').textContent = 'Показать';
-  renderKeyRealm();
+  // Черновик собирается заново при каждом открытии: «Отмена» должна
+  // возвращать то, что сохранено, а не то, что успели натыкать в прошлый раз.
+  netDraft = (c.networks || []).map((n) => ({ ...n, key: '', saved: true }));
+  renderNetworks();
+  $('#setSeeOpen').checked = c.seeOpen !== false;
+  $('#setShowToOpen').checked = c.showToOpen !== false;
+  renderRealmNote();
   $('#setWebPassword').value = '';
   $('#setWebPassword').placeholder = c.hasWebPassword ? '•••••• (задан)' : 'не задан — извне только просмотр';
   $('#setLease').value = Math.round(c.claimLeaseMs / 1000);
@@ -1028,10 +1030,12 @@ $('#settings').addEventListener('close', async () => {
     announceBackoff: $('#setAnnounceBackoff').checked,
     announceTransport: $('#setAnnounceTransport').value,
   };
+  patch.networks = collectNetworks();
+  patch.seeOpen = $('#setSeeOpen').checked;
+  patch.showToOpen = $('#setShowToOpen').checked;
+
   // Пустое поле означает «не менять»: иначе открытие настроек втихую
-  // стирало бы заданный ключ или пароль.
-  const key = $('#setKey').value;
-  if (key) patch.preSharedKey = key;
+  // стирало бы заданный пароль.
   const web = $('#setWebPassword').value;
   if (web === '-') patch.webPassword = '';
   else if (web) patch.webPassword = web;
@@ -1072,30 +1076,94 @@ function generateKey() {
   return [0, 5, 10, 15, 20].map((i) => chars.slice(i, i + 5).join('')).join('-');
 }
 
-$('#btnGenKey').addEventListener('click', () => {
-  const key = generateKey();
-  $('#setKey').value = key;
-  $('#setKey').type = 'text';
-  $('#btnShowKey').textContent = 'Скрыть';
-  $('#setKey').select();
-  $('#keyRealm').innerHTML = '<div class="fed-row ok">Ключ создан. Скопируйте его сейчас — '
-    + 'после сохранения он больше не показывается. Тот же ключ нужно ввести на остальных компьютерах.</div>';
+/**
+ * Черновик списка сетей.
+ *
+ * Правки живут здесь до нажатия «Сохранить», поэтому «Отмена» ничего не
+ * меняет. Ключи уже сохранённых сетей сюда не попадают — наружу их не
+ * отдают, — и пустое поле ключа означает «оставить прежний».
+ */
+let netDraft = [];
+
+function renderNetworks() {
+  const box = $('#netList');
+  if (!netDraft.length) {
+    box.innerHTML = '<div class="fed-row muted">Ни одной сети с ключом. '
+      + 'Узел работает только в открытом круге — там, где ключ не проверяется.</div>';
+    return;
+  }
+  box.innerHTML = netDraft.map((n, i) => `
+    <div class="net-row" data-i="${i}">
+      <input type="text" class="net-label" maxlength="48" placeholder="название сети"
+             value="${esc(n.label || '')}">
+      <input type="password" class="net-key" autocomplete="new-password"
+             placeholder="${n.saved ? 'ключ задан — оставьте пустым' : 'введите или создайте ключ'}"
+             value="${esc(n.key || '')}">
+      <button type="button" class="btn net-gen" title="Создать случайный ключ">Ключ</button>
+      <button type="button" class="btn danger net-del" title="Удалить сеть">✕</button>
+      <div class="net-note">${n.realm
+        ? `отпечаток <b>${esc(n.realm)}</b> — на компьютерах с тем же ключом он такой же`
+        : (n.key ? 'ключ создан: скопируйте его сейчас, после сохранения он не показывается' : 'новая сеть')}</div>
+    </div>`).join('');
+}
+
+/** Считать правки из полей в черновик, не теряя несохранённого. */
+function collectNetworks() {
+  for (const row of document.querySelectorAll('#netList .net-row')) {
+    const i = Number(row.dataset.i);
+    if (!netDraft[i]) continue;
+    netDraft[i].label = row.querySelector('.net-label').value;
+    netDraft[i].key = row.querySelector('.net-key').value;
+  }
+  return netDraft.map((n) => ({ id: n.id, label: n.label, key: n.key }));
+}
+
+$('#btnAddNet').addEventListener('click', () => {
+  collectNetworks();
+  netDraft.push({ id: null, label: '', key: '', realm: null, saved: false });
+  renderNetworks();
+  const rows = document.querySelectorAll('#netList .net-row');
+  rows[rows.length - 1]?.querySelector('.net-label')?.focus();
 });
 
-$('#btnShowKey').addEventListener('click', () => {
-  const f = $('#setKey');
-  const hidden = f.type === 'password';
-  f.type = hidden ? 'text' : 'password';
-  $('#btnShowKey').textContent = hidden ? 'Скрыть' : 'Показать';
+$('#netList').addEventListener('click', (ev) => {
+  const row = ev.target.closest('.net-row');
+  if (!row) return;
+  const i = Number(row.dataset.i);
+
+  if (ev.target.classList.contains('net-del')) {
+    collectNetworks();
+    netDraft.splice(i, 1);
+    renderNetworks();
+    return;
+  }
+  if (ev.target.classList.contains('net-gen')) {
+    collectNetworks();
+    netDraft[i].key = generateKey();
+    // Отпечаток считает узел: он зависит от ключа, и вычислять его здесь
+    // значило бы держать две реализации одного правила.
+    netDraft[i].realm = null;
+    renderNetworks();
+    const field = document.querySelectorAll('#netList .net-row')[i]?.querySelector('.net-key');
+    if (field) { field.type = 'text'; field.select(); }
+  }
 });
 
-/** Отпечаток круга доверия: по нему сверяют ключи, не называя их. */
-function renderKeyRealm() {
+/** Итог по кругам доверия: в скольких сетях узел и виден ли он без ключа. */
+function renderRealmNote() {
   const c = state.config;
-  $('#keyRealm').innerHTML = c.hasKey
-    ? `<div class="fed-row muted">Круг доверия: <b>${esc(c.realm)}</b> — на компьютерах
-       с тем же ключом отпечаток будет такой же. Сам ключ по нему не восстанавливается.</div>`
-    : '<div class="fed-row muted">Ключ не задан: подписи не проверяются, узлы из других сетей недоступны.</div>';
+  const rows = [];
+  if (c.isolated) {
+    rows.push('<div class="fed-row err">Узел не состоит ни в одном круге: он никого не видит '
+      + 'и никому не виден. Заведите сеть с ключом или включите открытый круг.</div>');
+  } else {
+    const parts = [];
+    if (c.networkCount) parts.push(`сетей с ключом: ${c.networkCount}`);
+    parts.push(c.seeOpen ? 'узлы без ключа видим' : 'узлы без ключа не видим');
+    parts.push(c.showToOpen ? 'им видны' : 'им не видны');
+    rows.push(`<div class="fed-row muted">Сейчас: ${esc(parts.join('; '))}.</div>`);
+  }
+  $('#realmNote').innerHTML = rows.join('');
 }
 
 /** Состояние обмена каталогом и темпа анонсов — в самих настройках. */
