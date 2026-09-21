@@ -40,12 +40,17 @@ export class TrafficProxy extends EventEmitter {
    * @param {number} o.listenPort — порт, который сообщается клиентам
    * @param {number} o.targetPort — порт usbipd
    * @param {string} [o.cidr] — рабочая сеть; соединения извне не принимаем
+   * @param {(ip: string) => boolean} [o.isKnownPeer] — узел из другой сети,
+   *   которого мы знаем по каталогу. Подписи в тракте данных нет, поэтому
+   *   здесь работает список: пускаем только по адресам узлов, о которых нам
+   *   рассказали, а не всех, до кого есть маршрут.
    */
-  constructor({ listenPort, targetPort, cidr }) {
+  constructor({ listenPort, targetPort, cidr, isKnownPeer = null }) {
     super();
     this.listenPort = listenPort;
     this.targetPort = targetPort;
     this.cidr = cidr;
+    this.isKnownPeer = isKnownPeer;
     this.server = null;
     /** @type {Map<string, object>} deviceId → счётчики */
     this.counters = new Map();
@@ -123,11 +128,13 @@ export class TrafficProxy extends EventEmitter {
 
   _onClient(client) {
     const from = normalizeIp(client.remoteAddress || '');
-    if (this.cidr && !ipInCidr(from, this.cidr) && !from.startsWith('127.')) {
+    const near = !this.cidr || ipInCidr(from, this.cidr) || from.startsWith('127.');
+    if (!near && !this.isKnownPeer?.(from)) {
       log.warn(`соединение с ${from} вне рабочей сети отклонено`);
       client.destroy();
       return;
     }
+    if (!near) log.debug(`соединение из другой сети с ${from} — узел известен по каталогу`);
 
     this.sockets.add(client);
     client.on('close', () => this.sockets.delete(client));

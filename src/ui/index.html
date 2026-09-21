@@ -213,11 +213,21 @@
         Без пароля с других компьютеров доступен только просмотр.</small>
     </label>
 
-    <label class="field">
-      <span>Общий ключ сети <em class="muted">(необязательно)</em></span>
-      <input type="password" id="setKey" placeholder="оставьте пустым — без проверки" autocomplete="new-password">
-      <small>Узлы с разными ключами не видят друг друга. Изменение требует перезапуска.</small>
-    </label>
+    <div class="field">
+      <span>Общий ключ сети <em class="muted">(обязателен для работы между сетями)</em></span>
+      <div class="row-inline">
+        <input type="password" id="setKey" placeholder="оставьте пустым — без проверки" autocomplete="new-password">
+        <button type="button" class="btn" id="btnGenKey">Сгенерировать</button>
+        <button type="button" class="btn" id="btnShowKey">Показать</button>
+      </div>
+      <small>Годятся любые печатаемые символы, не короче 8; пробелы по краям отбрасываются —
+        они невидимы, а из-за них узлы молча перестают видеть друг друга. Сравнивается
+        посимвольно, поэтому на всех компьютерах ключ должен совпадать в точности.
+        Кнопка даёт 125 случайных бит без похожих друг на друга знаков (без O и 0, I и 1),
+        так что его можно продиктовать. Узлы с разными ключами не видят друг друга.
+        Изменение требует перезапуска.</small>
+      <div id="keyRealm" class="fed-state"></div>
+    </div>
 
     <div class="grid2">
       <label class="field">
@@ -244,6 +254,76 @@
         <input type="number" id="setDiscoveryPort" min="1" max="65535">
       </label>
     </div>
+
+    <details class="advanced" id="setFederation">
+      <summary>Узлы в других сетях</summary>
+
+      <p class="dlg-note">Обнаружение по UDP не выходит за пределы подсети: broadcast не
+        маршрутизируется, multicast в корпоративных сетях обычно тоже. Укажите здесь адрес
+        одного узла из другой сети — приложения обменяются списками и расскажут о них своим
+        соседям. Настроить достаточно одну сторону.</p>
+
+      <label class="field">
+        <span>Адреса, по одному в строке</span>
+        <textarea id="setSeeds" rows="3" spellcheck="false" placeholder="10.1.0.5&#10;stend-2.local:47812"></textarea>
+        <small>Требуется общий ключ: за пределами своей подсети он единственное, что отличает
+          свой узел от чужого. Через указанный узел идёт только знакомство — устройства,
+          занятость и сами данные USB/IP каждый забирает у владельца напрямую.</small>
+      </label>
+
+      <div class="grid2">
+        <label class="field">
+          <span>Обмен списками, с</span>
+          <input type="number" id="setGossip" min="5" max="3600" step="5">
+        </label>
+        <label class="field">
+          <span>Опрос этих узлов, с</span>
+          <input type="number" id="setRemotePoll" min="3" max="600" step="1">
+          <small>Анонсов от них не слышно, поэтому об изменениях спрашиваем сами.</small>
+        </label>
+      </div>
+
+      <div id="federationState" class="fed-state"></div>
+    </details>
+
+    <details class="advanced">
+      <summary>Темп анонсов</summary>
+
+      <p class="dlg-note">Анонс присутствия получает каждый компьютер подсети. Пока состояние
+        меняется, узел объявляется часто; в покое интервал сам растёт до медленного и трафик
+        падает на порядок. Любое изменение мгновенно возвращает быстрый темп.</p>
+
+      <div class="grid2">
+        <label class="field">
+          <span>Обычный интервал, с</span>
+          <input type="number" id="setAnnounce" min="1" max="60" step="1">
+        </label>
+        <label class="field">
+          <span>В покое, с</span>
+          <input type="number" id="setAnnounceIdle" min="1" max="600" step="5">
+        </label>
+      </div>
+
+      <label class="field">
+        <span><input type="checkbox" id="setAnnounceBackoff"> Замедляться в покое</span>
+        <small>Выключение возвращает прежнее поведение — ровный темп независимо от того,
+          происходит что-нибудь или нет.</small>
+      </label>
+
+      <label class="field">
+        <span>Канал</span>
+        <select id="setAnnounceTransport">
+          <option value="both">оба (надёжнее)</option>
+          <option value="multicast">только multicast</option>
+          <option value="broadcast">только broadcast</option>
+        </select>
+        <small>По умолчанию оба: где-то режут multicast, где-то broadcast. Если точно известно,
+          какой работает, второй — это ровно вдвое больше пакетов впустую.
+          Изменение применяется сразу.</small>
+      </label>
+
+      <div id="announceState" class="fed-state"></div>
+    </details>
 
     <details class="advanced">
       <summary>Пути к утилитам USB/IP</summary>
