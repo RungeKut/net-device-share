@@ -18,7 +18,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { logger, recentLogs, onLogRecord } from '../log.js';
-import { verify } from '../net/protocol.js';
+import { verify, realmOf } from '../net/protocol.js';
 import { AUTH_HEADER, NODE_HEADER } from '../net/rpc.js';
 import { ipInCidr, normalizeIp, listNetworks } from '../net/interfaces.js';
 
@@ -218,6 +218,10 @@ export class ApiServer {
             // они от нас не слышат, а тянуть полный список устройств ради
             // ответа «всё по-прежнему» — лишний трафик через маршрутизатор.
             stateHash: share.hash(),
+            // Круг доверия. По нему спрашивающий решает, отдавать ли нам
+            // каталог. Ничего не раскрывает: тот же отпечаток уходит в
+            // каждом анонсе открытым текстом.
+            realm: realmOf(key),
           });
 
         case 'GET /api/v1/peer/state':
@@ -245,6 +249,17 @@ export class ApiServer {
           return sendJson(res, 200, this.app.directory.payload());
 
         case 'POST /api/v1/peer/directory': {
+          // Круг доверия сверяем и здесь. Узел БЕЗ ключа принимает любую
+          // подпись, поэтому без этой проверки достаточно было бы вписать
+          // его адрес — и он получил бы карту чужой сети целиком, включая
+          // узлы, которых по обычному обнаружению не видит.
+          if (body?.realm !== realmOf(key)) {
+            log.warn(`каталог от ${remote} отклонён: другой круг доверия (${body?.realm || 'не указан'})`);
+            return sendJson(res, 403, {
+              error: 'other_realm',
+              message: 'другой круг доверия — общие ключи не совпадают',
+            });
+          }
           // Кто принёс каталог, тем и определяется, рассказывать ли о нём
           // дальше. От соседа по подсети — это пересказ, и он на нас
           // заканчивается. Из другой сети — мы становимся мостом для своей.

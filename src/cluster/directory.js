@@ -23,6 +23,7 @@ import crypto from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { logger } from '../log.js';
 import { rpc } from '../net/rpc.js';
+import { realmOf } from '../net/protocol.js';
 
 const log = logger('directory');
 
@@ -137,12 +138,17 @@ export class DirectoryService extends EventEmitter {
     return crypto.createHash('sha1').update(shape).digest('hex').slice(0, 12);
   }
 
+  get realm() {
+    return realmOf(this.opts.key());
+  }
+
   /** Что мы отдаём собеседнику: мы сами плюс те, о ком вправе рассказывать. */
   payload() {
     return {
       nodeId: this.opts.selfEntry().nodeId,
       name: this.opts.selfEntry().name,
       network: this.opts.selfEntry().network,
+      realm: this.realm,
       ts: Date.now(),
       peers: [this.opts.selfEntry(), ...this.peers.directoryEntries()],
     };
@@ -217,9 +223,46 @@ export class DirectoryService extends EventEmitter {
     this.timer.unref?.();
   }
 
-  /** Двусторонний обмен: отдаём свой каталог, забираем чужой одним запросом. */
+  /**
+   * Двусторонний обмен: отдаём свой каталог, забираем чужой.
+   *
+   * Перед тем как что-либо отдать, спрашиваем, из какого собеседник круга
+   * доверия. Проверять это на приёмной стороне недостаточно: узел БЕЗ ключа
+   * принимает любую подпись, поэтому, отправив ему каталог сразу, мы отдали
+   * бы карту всей своей сети тому, кто по обычному обнаружению нас даже не
+   * видит. Один лишний маленький запрос в двадцать секунд — небольшая плата
+   * за то, чтобы круг доверия нельзя было обойти, просто вписав адрес.
+   */
   async _exchange(raw, { host, port }, selfId) {
     try {
+      const pong = await rpc({
+        host,
+        port,
+        path: '/api/v1/peer/ping',
+        key: this.opts.key(),
+        nodeId: selfId,
+        timeoutMs: SEED_TIMEOUT_MS,
+      });
+
+      if (pong?.nodeId === selfId) {
+        this.seedState.set(raw, { address: raw, ok: false, error: 'это адрес самого себя', at: Date.now() });
+        log.warn(`адрес ${raw} указывает на этот же узел — пропускаем`);
+        return;
+      }
+
+      if (pong?.realm !== this.realm) {
+        const why = pong?.realm === 'open'
+          ? 'на том узле не задан общий ключ'
+          : 'общие ключи не совпадают';
+        this.seedState.set(raw, {
+          address: raw, ok: false, at: Date.now(),
+          error: `другой круг доверия — ${why}`,
+          name: pong?.name || null,
+        });
+        log.warn(`обмен с ${raw} отклонён: ${why} — каталог не отправлен`);
+        return;
+      }
+
       const res = await rpc({
         host,
         port,
@@ -230,12 +273,6 @@ export class DirectoryService extends EventEmitter {
         nodeId: selfId,
         timeoutMs: SEED_TIMEOUT_MS,
       });
-
-      if (res?.nodeId === selfId) {
-        this.seedState.set(raw, { address: raw, ok: false, error: 'это адрес самого себя', at: Date.now() });
-        log.warn(`адрес ${raw} указывает на этот же узел — пропускаем`);
-        return;
-      }
 
       const added = this.peers.onDirectory(res?.peers, {
         origin: 'seed',
