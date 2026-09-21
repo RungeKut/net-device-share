@@ -11,6 +11,7 @@ import { logger } from '../log.js';
 import { resolveNetwork, listNetworks } from '../net/interfaces.js';
 import { Discovery } from '../net/discovery.js';
 import { PeerRegistry } from '../cluster/peers.js';
+import { DirectoryService, parseSeed } from '../cluster/directory.js';
 import { ShareManager } from './shareManager.js';
 import { AttachManager, attachKey } from './attachManager.js';
 import { Installer } from './installer.js';
@@ -20,11 +21,32 @@ import { createBackend } from '../devices/backend.js';
 import { DeviceHub } from '../devices/hub.js';
 import { DEVICE_TYPES, RESERVATION_NOTE, typeInfo } from '../devices/types.js';
 import { rpc } from '../net/rpc.js';
+import { realmOf } from '../net/protocol.js';
 import { TrafficProxy } from '../net/trafficProxy.js';
 
 const log = logger('app');
 
 export const VERSION = '2.0.0';
+
+const ANNOUNCE_TRANSPORTS = new Set(['both', 'multicast', 'broadcast']);
+
+/**
+ * Нижняя граница длины общего ключа.
+ *
+ * Ключ защищает управление устройствами, и особенно — работу между сетями,
+ * где проверки адреса уже нет. Восемь символов мало для настоящей стойкости,
+ * но отсекают главное: «1234» и имя отдела, набранные «чтобы просто
+ * заработало». Для настоящего ключа в интерфейсе есть кнопка.
+ */
+const MIN_KEY_LENGTH = 8;
+
+/** Числовая настройка времени: только целое и только в разумных границах. */
+function clampMs(target, field, min, max) {
+  if (target[field] === undefined) return;
+  const value = Number(target[field]);
+  if (!Number.isFinite(value)) throw new Error(`${field}: ожидается число`);
+  target[field] = Math.min(max, Math.max(min, Math.round(value)));
+}
 
 export class App extends EventEmitter {
   constructor(config) {
@@ -40,6 +62,7 @@ export class App extends EventEmitter {
     this.attach = null;
     this.peers = null;
     this.discovery = null;
+    this.directory = null;
     this.api = null;
     this.installer = null;
     this.traffic = null;
@@ -106,6 +129,17 @@ export class App extends EventEmitter {
       preSharedKey: this.config.get('preSharedKey'),
       peerTimeoutMs: this.config.get('peerTimeoutMs'),
       peerForgetMs: this.config.get('peerForgetMs'),
+      announceIntervalMs: this.config.get('announceIntervalMs'),
+      gossipIntervalMs: this.config.get('gossipIntervalMs'),
+      remotePollIntervalMs: this.config.get('remotePollIntervalMs'),
+    });
+    this.directory = new DirectoryService({
+      peers: this.peers,
+      seeds: () => this.config.get('seeds') || [],
+      key: () => this.config.get('preSharedKey'),
+      intervalMs: () => this.config.get('gossipIntervalMs'),
+      defaultPort: () => this.config.get('apiPort'),
+      selfEntry: () => this._selfEntry(),
     });
 
     this.share.on('changed', () => this.onStateChanged());
@@ -153,12 +187,23 @@ export class App extends EventEmitter {
       usbipPort: this.config.get('usbipPort'),
       multicastAddress: this.config.get('multicastAddress'),
       announceIntervalMs: this.config.get('announceIntervalMs'),
+      announceIdleIntervalMs: this.config.get('announceIdleIntervalMs'),
+      announceBackoff: this.config.get('announceBackoff'),
+      announceTransport: this.config.get('announceTransport'),
       preSharedKey: this.config.get('preSharedKey'),
       getSnapshot: () => this._announceSnapshot(),
     });
-    this.discovery.on('announce', (m) => this.peers.onAnnounce(m));
+    this.discovery.on('announce', (m) => {
+      this.peers.onAnnounce(m);
+      // Сосед объявил непустой отпечаток каталога — значит знает узлы из
+      // других сетей, и нам есть что у него забрать.
+      this.directory.onAnnounce(m);
+    });
     this.discovery.on('bye', (m) => this.peers.onBye(m));
     await this.discovery.start();
+
+    this.directory.on('changed', () => this.onStateChanged());
+    this.directory.start();
 
     log.info(`узел "${this.config.get('name')}" готов; сеть ${this.network.cidr}, адрес ${this.network.address}`);
     return this;
@@ -193,6 +238,33 @@ export class App extends EventEmitter {
       version: this.version,
       startedAt: this.startedAt,
       stateHash: this.share.hash(),
+      deviceCount: shared.length,
+      busyCount: shared.filter((d) => d.claim).length,
+      // Непустой отпечаток — приглашение соседям забрать у нас каталог
+      // узлов из других сетей.
+      dir: this.directory?.hash() || null,
+    };
+  }
+
+  /**
+   * Запись о нас самих для каталога.
+   *
+   * Адрес здесь наш собственный и таким же уходит дальше по цепочке
+   * пересказов: кто бы о нас ни рассказал, обращаться к нам будут напрямую.
+   */
+  _selfEntry() {
+    const shared = this.share?.listShared() || [];
+    return {
+      nodeId: this.config.get('nodeId'),
+      name: this.config.get('name'),
+      address: this.network.address,
+      apiPort: this.config.get('apiPort'),
+      usbipPort: this.config.get('usbipPort'),
+      network: this.network.cidr,
+      platform: process.platform,
+      version: this.version,
+      startedAt: this.startedAt,
+      stateHash: this.share?.hash() || null,
       deviceCount: shared.length,
       busyCount: shared.filter((d) => d.claim).length,
     };
@@ -401,6 +473,9 @@ export class App extends EventEmitter {
       listenPort: this.config.get('trafficPort'),
       targetPort: this.config.get('usbipPort'),
       cidr: this.network.cidr,
+      // Узлы из других сетей приходят сюда со своих адресов — в рабочую
+      // подсеть они не попадают. Пускаем ровно тех, о ком нам рассказали.
+      isKnownPeer: (ip) => Boolean(this.peers?.hasAddress(ip)),
     });
     try {
       await proxy.start();
@@ -460,7 +535,9 @@ export class App extends EventEmitter {
     const before = { ...this.config.data };
     const allowed = ['name', 'network', 'preSharedKey', 'autoShareNew', 'claimLeaseMs',
       'apiPort', 'discoveryPort', 'usbipPort', 'usbipdPath', 'usbipPath', 'logLevel', 'enabledTypes',
-      'meterTraffic', 'trafficPort'];
+      'meterTraffic', 'trafficPort',
+      'seeds', 'gossipIntervalMs', 'remotePollIntervalMs', 'announceIntervalMs',
+      'announceIdleIntervalMs', 'announceBackoff', 'announceTransport'];
     const clean = {};
     for (const k of allowed) {
       if (patch[k] !== undefined) clean[k] = patch[k];
@@ -472,6 +549,46 @@ export class App extends EventEmitter {
       clean.enabledTypes = clean.enabledTypes.filter((t) => DEVICE_TYPES[t]);
       if (!clean.enabledTypes.length) clean.enabledTypes = ['usb'];
     }
+    if (clean.seeds !== undefined) clean.seeds = this._cleanSeeds(clean.seeds);
+
+    // Пробелы по краям ключа отбрасываем.
+    //
+    // Ключ переносят копированием, и вместе с ним нередко приезжает
+    // перевод строки или пробел. Отличие невидимо, а узлы после этого молча
+    // не видят друг друга: подпись не сходится, и понять почему нельзя —
+    // ключ ведь «тот же самый».
+    if (clean.preSharedKey !== undefined) {
+      clean.preSharedKey = String(clean.preSharedKey).trim();
+      if (clean.preSharedKey && clean.preSharedKey.length < MIN_KEY_LENGTH) {
+        throw new Error(`общий ключ короче ${MIN_KEY_LENGTH} символов — воспользуйтесь кнопкой «Сгенерировать»`);
+      }
+    }
+    if (clean.announceTransport !== undefined && !ANNOUNCE_TRANSPORTS.has(clean.announceTransport)) {
+      throw new Error(`неизвестный канал анонсов «${clean.announceTransport}»`);
+    }
+    if (clean.announceBackoff !== undefined) clean.announceBackoff = Boolean(clean.announceBackoff);
+    clampMs(clean, 'announceIntervalMs', 1000, 60000);
+    clampMs(clean, 'announceIdleIntervalMs', 1000, 600000);
+    clampMs(clean, 'gossipIntervalMs', 5000, 3600000);
+    clampMs(clean, 'remotePollIntervalMs', 3000, 600000);
+
+    // Медленный темп не может быть быстрее обычного: иначе «в покое»
+    // означало бы «чаще», чего никто не ожидает.
+    const base = clean.announceIntervalMs ?? before.announceIntervalMs;
+    const idle = clean.announceIdleIntervalMs ?? before.announceIdleIntervalMs;
+    if (idle < base) {
+      throw new Error('интервал в покое не может быть меньше обычного интервала анонсов');
+    }
+
+    // Узлы из других сетей без общего ключа не работают, и молча принять
+    // такую настройку значит оставить человека с пустым списком и без
+    // единой подсказки почему.
+    const seedsNow = clean.seeds ?? before.seeds ?? [];
+    const keyNow = clean.preSharedKey ?? before.preSharedKey;
+    if (seedsNow.length && !keyNow) {
+      throw new Error('для узлов из других сетей нужен общий ключ — задайте его в этом же окне');
+    }
+
     this.config.set(clean);
 
     // Пароль удалённого доступа приходит отдельным полем и никогда не
@@ -502,6 +619,45 @@ export class App extends EventEmitter {
       await this.discovery.start();
     }
 
+    // Темп анонсов меняется на лету: интервал читается при каждом анонсе.
+    // А вот канал — это членство в multicast-группе, его без перезапуска
+    // сокета не переключить.
+    for (const k of ['announceIntervalMs', 'announceIdleIntervalMs', 'announceBackoff']) {
+      if (clean[k] !== undefined) this.discovery.opts[k] = clean[k];
+    }
+    if (clean.announceTransport !== undefined && clean.announceTransport !== before.announceTransport) {
+      log.info(`канал анонсов меняется на «${clean.announceTransport}»`);
+      await this.discovery.stop();
+      this.discovery.opts.announceTransport = clean.announceTransport;
+      await this.discovery.start();
+    }
+    if (clean.announceIntervalMs !== undefined || clean.announceBackoff !== undefined) {
+      this.peers.opts.announceIntervalMs = this.config.get('announceIntervalMs');
+      this.discovery.announce();
+    }
+
+    if (clean.remotePollIntervalMs !== undefined && clean.remotePollIntervalMs !== before.remotePollIntervalMs) {
+      this.peers.opts.remotePollIntervalMs = clean.remotePollIntervalMs;
+      this.peers.retimeRemotePoll();
+      log.info(`период опроса узлов из других сетей: ${Math.round(clean.remotePollIntervalMs / 1000)} с`);
+    }
+
+    const seedsChanged = clean.seeds !== undefined
+      && JSON.stringify(clean.seeds) !== JSON.stringify(before.seeds || []);
+    if (seedsChanged || (clean.gossipIntervalMs !== undefined && clean.gossipIntervalMs !== before.gossipIntervalMs)) {
+      this.peers.opts.gossipIntervalMs = this.config.get('gossipIntervalMs');
+      this.peers.opts.remotePollIntervalMs = this.config.get('remotePollIntervalMs');
+      log.info(seedsChanged
+        ? `список узлов из других сетей изменён: ${this.config.get('seeds').length} адрес(ов)`
+        : 'период обмена каталогом изменён');
+      this.directory.stop();
+      // Список опустел — значит связь с другими сетями выключают. Оставлять
+      // узлы висеть до истечения таймаута нельзя: мы бы ещё минуту
+      // рассказывали о них соседям.
+      if (!this.config.get('seeds').length) this.peers.forgetRemote();
+      this.directory.start();
+    }
+
     if (clean.enabledTypes) await this.share.refresh();
     if (clean.name && clean.name !== before.name) log.info(`имя узла изменено на "${clean.name}"`);
 
@@ -509,9 +665,34 @@ export class App extends EventEmitter {
     return { ok: true, needsRestart, config: this.publicConfig() };
   }
 
-  publicConfig() {
+  /** Разбор и проверка адресов узлов из других сетей. */
+  _cleanSeeds(raw) {
+    if (!Array.isArray(raw)) throw new Error('список узлов должен быть массивом адресов');
+    const out = [];
+    for (const item of raw) {
+      const text = String(item ?? '').trim();
+      if (!text) continue;
+      if (!parseSeed(text, this.config.get('apiPort'))) {
+        throw new Error(`адрес «${text}» не разобран — ожидается «хост» или «хост:порт»`);
+      }
+      if (!out.includes(text)) out.push(text);
+    }
+    return out;
+  }
+
+  publicConfig(access = 'full') {
     const c = this.config.data;
     return {
+      // Адреса узлов из других сетей — это карта сети. В режиме
+      // только-чтения отдаём лишь их количество.
+      seeds: access === 'full' ? (c.seeds || []) : [],
+      seedCount: (c.seeds || []).length,
+      gossipIntervalMs: c.gossipIntervalMs,
+      remotePollIntervalMs: c.remotePollIntervalMs,
+      announceIntervalMs: c.announceIntervalMs,
+      announceIdleIntervalMs: c.announceIdleIntervalMs,
+      announceBackoff: c.announceBackoff,
+      announceTransport: c.announceTransport,
       nodeId: c.nodeId,
       name: c.name,
       network: c.network,
@@ -526,6 +707,10 @@ export class App extends EventEmitter {
       logLevel: c.logLevel,
       // Ни ключ, ни пароль наружу не отдаём — только факт их наличия.
       hasKey: Boolean(c.preSharedKey),
+      // Отпечаток круга доверия. По нему видно, совпадают ли ключи на двух
+      // компьютерах, не называя самого ключа. Ничего нового он не раскрывает:
+      // этот же отпечаток едет в каждом анонсе открытым текстом.
+      realm: realmOf(c.preSharedKey),
       hasWebPassword: this.config.hasWebPassword(),
       usbipdPath: c.usbipdPath || null,
       usbipPath: c.usbipPath || null,
@@ -637,7 +822,7 @@ export class App extends EventEmitter {
         port: this.traffic ? this.config.get('trafficPort') : null,
         requested: Boolean(this.config.get('meterTraffic')),
       },
-      config: this.publicConfig(),
+      config: this.publicConfig(access),
       networks: listNetworks(),
       deviceTypes: Object.values(DEVICE_TYPES).map((t) => ({ ...t })),
       reservationNote: RESERVATION_NOTE,
@@ -658,9 +843,36 @@ export class App extends EventEmitter {
         deviceCount: (p.devices || []).length,
         busyCount: (p.devices || []).filter((d) => d.claim).length,
         stateError: p.stateError || null,
+        // Откуда узел известен: из своей подсети или пересказан мостом.
+        // Для разбора «почему устройство видно, а занять не выходит» это
+        // первое, на что нужно смотреть.
+        origin: p.origin,
+        network: p.network || null,
+        viaName: p.viaName || null,
       })),
+      federation: this._federation(access),
       attachments,
       ts: Date.now(),
+    };
+  }
+
+  /**
+   * Состояние обнаружения: темп анонсов и обмен каталогом.
+   *
+   * Адреса известных узлов — это карта сети, и показывать её в режиме
+   * только-чтения незачем; счётчики безобидны и помогают понять, почему
+   * список узлов выглядит именно так.
+   */
+  _federation(access = 'full') {
+    const dir = this.directory?.stats() || null;
+    return {
+      announce: this.discovery?.stats() || null,
+      directory: dir && {
+        ...dir,
+        seeds: access === 'full' ? dir.seeds : [],
+      },
+      localCount: this.peers.list().filter((p) => p.origin === 'local').length,
+      remoteCount: this.peers.list().filter((p) => p.origin !== 'local').length,
     };
   }
 
@@ -747,6 +959,7 @@ export class App extends EventEmitter {
 
     this.attach?.stop();
     this.share?.stop();
+    this.directory?.stop();
     this.peers?.stop();
     await this.discovery?.stop();
     await this.traffic?.stop();

@@ -172,6 +172,9 @@ function render() {
   renderGroups();
   renderAttached();
   renderPeers();
+  // Пока настройки открыты, состояние обмена в них живое: адрес набирают
+  // и тут же смотрят, ответил ли узел, а не переоткрывают окно.
+  if ($('#settings').open) renderFederation();
   handleIncomingRequests();
 }
 
@@ -405,7 +408,7 @@ function deviceCard(d, { insideGroup = false } = {}) {
         </div>
         ${d.purpose ? `<div class="purpose">${esc(d.purpose)}</div>` : ''}
         <div class="card-meta">
-          ${insideGroup ? '' : `<span>владелец: <b>${esc(d.ownerName)}</b> (${esc(d.ownerAddress)})</span>`}
+          ${insideGroup ? '' : `<span>владелец: <b>${esc(d.ownerName)}</b> (${esc(d.ownerAddress)})${remoteMark(d.ownerId)}</span>`}
           <span>${esc(d.typeTitle)}: <span class="mono">${esc(d.subtitle)}</span></span>
           ${meta.map((b) => `<span>${b}</span>`).join('')}
           ${d.connectedSince ? `<span>подключено: ${esc(since(d.connectedSince))} (${esc(at(d.connectedSince))})</span>` : ''}
@@ -437,7 +440,7 @@ function groupCard(g) {
           </div>
           ${g.purpose ? `<div class="purpose">${esc(g.purpose)}</div>` : ''}
           <div class="card-meta">
-            <span>владелец: <b>${esc(g.ownerName)}</b> (${esc(g.ownerAddress)})</span>
+            <span>владелец: <b>${esc(g.ownerName)}</b> (${esc(g.ownerAddress)})${remoteMark(g.ownerId)}</span>
             <span>занимается целиком</span>
           </div>
         </div>
@@ -666,6 +669,25 @@ function renderAttached() {
     </article>`).join('');
 }
 
+/** Метка у владельца из другой сети — прямо в карточке устройства. */
+function remoteMark(ownerId) {
+  const p = (state.peers || []).find((x) => x.nodeId === ownerId);
+  if (!p || p.origin === 'local') return '';
+  return ` <span class="pill remote" title="${esc(remoteHint(p))}">другая сеть</span>`;
+}
+
+/**
+ * Подсказка к метке «другая сеть».
+ *
+ * Важна не сама метка, а то, что за ней стоит: такой узел доступен только
+ * если между сетями есть маршрут и открыты порты. Когда устройство видно,
+ * а занять его не выходит, смотреть надо именно сюда.
+ */
+function remoteHint(p) {
+  const via = p.viaName ? `узнан от «${p.viaName}»` : 'узнан из каталога';
+  return `${via}. Обмен идёт с ним напрямую, посредник в передаче данных не участвует.`;
+}
+
 function renderPeers() {
   const box = $('#peersList');
   const self = state.self;
@@ -688,9 +710,11 @@ function renderPeers() {
     <article class="card ${p.online ? 'free' : 'offline'}">
       <div class="card-main">
         <div class="card-title">${esc(p.name)}
-          <span class="pill ${p.online ? 'free' : 'err'}">${p.online ? 'в сети' : 'не отвечает'}</span></div>
+          <span class="pill ${p.online ? 'free' : 'err'}">${p.online ? 'в сети' : 'не отвечает'}</span>
+          ${p.origin && p.origin !== 'local' ? `<span class="pill remote" title="${esc(remoteHint(p))}">другая сеть</span>` : ''}</div>
         <div class="card-meta">
           <span>адрес: <b>${esc(p.address)}</b>:${esc(p.apiPort)}</span>
+          ${p.origin !== 'local' && p.network ? `<span>сеть: ${esc(p.network)}</span>` : ''}
           <span>платформа: ${esc(p.platform || '—')}</span>
           <span>версия: ${esc(p.version || '—')}</span>
           <span>устройств: <b>${esc(p.deviceCount)}</b> (занято ${esc(p.busyCount)})</span>
@@ -907,6 +931,10 @@ $('#btnSettings').addEventListener('click', () => {
   $('#setName').value = c.name;
   $('#setKey').value = '';
   $('#setKey').placeholder = c.hasKey ? '•••••• (задан) — введите новый или оставьте пустым' : 'оставьте пустым — без проверки';
+  // Поле всегда открывается скрытым: настройки могут смотреть через плечо.
+  $('#setKey').type = 'password';
+  $('#btnShowKey').textContent = 'Показать';
+  renderKeyRealm();
   $('#setWebPassword').value = '';
   $('#setWebPassword').placeholder = c.hasWebPassword ? '•••••• (задан)' : 'не задан — извне только просмотр';
   $('#setLease').value = Math.round(c.claimLeaseMs / 1000);
@@ -916,6 +944,18 @@ $('#btnSettings').addEventListener('click', () => {
   $('#setUsbipdPath').value = c.usbipdPath || '';
   $('#setUsbipPath').value = c.usbipPath || '';
   $('#setMeterTraffic').checked = Boolean(c.meterTraffic);
+
+  $('#setSeeds').value = (c.seeds || []).join('\n');
+  $('#setGossip').value = Math.round(c.gossipIntervalMs / 1000);
+  $('#setRemotePoll').value = Math.round(c.remotePollIntervalMs / 1000);
+  $('#setAnnounce').value = Math.round(c.announceIntervalMs / 1000);
+  $('#setAnnounceIdle').value = Math.round(c.announceIdleIntervalMs / 1000);
+  $('#setAnnounceBackoff').checked = c.announceBackoff !== false;
+  $('#setAnnounceTransport').value = c.announceTransport || 'both';
+  renderFederation();
+  // Раздел сам раскрывается, когда там есть что показать: и настроенные
+  // адреса, и поломки видны без лишнего клика.
+  $('#setFederation').open = Boolean((c.seeds || []).length);
 
   // Автозапуск живёт в системе, а не в конфигурации: галочка отражает то,
   // что показал планировщик, и применяется сразу — «Отмена» его не вернёт.
@@ -957,6 +997,13 @@ $('#settings').addEventListener('close', async () => {
     usbipPath: $('#setUsbipPath').value.trim(),
     enabledTypes: [...document.querySelectorAll('#setTypes input:checked')].map((i) => i.value),
     meterTraffic: $('#setMeterTraffic').checked,
+    seeds: $('#setSeeds').value.split('\n').map((s) => s.trim()).filter(Boolean),
+    gossipIntervalMs: Number($('#setGossip').value) * 1000,
+    remotePollIntervalMs: Number($('#setRemotePoll').value) * 1000,
+    announceIntervalMs: Number($('#setAnnounce').value) * 1000,
+    announceIdleIntervalMs: Number($('#setAnnounceIdle').value) * 1000,
+    announceBackoff: $('#setAnnounceBackoff').checked,
+    announceTransport: $('#setAnnounceTransport').value,
   };
   // Пустое поле означает «не менять»: иначе открытие настроек втихую
   // стирало бы заданный ключ или пароль.
@@ -973,8 +1020,93 @@ $('#settings').addEventListener('close', async () => {
       : 'Настройки сохранены', r.needsRestart ? '' : 'ok');
   } catch (e) {
     toast(e.message, 'err');
+    // Диалог уже закрылся формой, но поля в нём остались заполненными.
+    // Возвращаем его: иначе отвергнутый адрес пришлось бы набирать заново.
+    $('#settingsNote').textContent = e.message;
+    $('#setFederation').open = true;
+    $('#settings').showModal();
   }
 });
+
+/**
+ * Алфавит ключа без похожих друг на друга знаков.
+ *
+ * Ключ переносят на другие компьютеры руками, и нередко — с листка или со
+ * слов. O и 0, I и 1 — самые частые источники «ключ тот же, а узлы друг
+ * друга не видят»; их здесь нет, а регистр только верхний, поэтому не
+ * возникает и пары «строчная l — единица».
+ *
+ * 32 знака — это ровно 5 бит на символ и ровно 8 значений байта на знак,
+ * поэтому 25 символов дают 125 бит без перекоса в вероятностях.
+ */
+const KEY_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+
+function generateKey() {
+  const bytes = new Uint8Array(25);
+  crypto.getRandomValues(bytes);
+  const chars = [...bytes].map((b) => KEY_ALPHABET[b % 32]);
+  // Группами по пять: так его читают вслух и сверяют глазами.
+  return [0, 5, 10, 15, 20].map((i) => chars.slice(i, i + 5).join('')).join('-');
+}
+
+$('#btnGenKey').addEventListener('click', () => {
+  const key = generateKey();
+  $('#setKey').value = key;
+  $('#setKey').type = 'text';
+  $('#btnShowKey').textContent = 'Скрыть';
+  $('#setKey').select();
+  $('#keyRealm').innerHTML = '<div class="fed-row ok">Ключ создан. Скопируйте его сейчас — '
+    + 'после сохранения он больше не показывается. Тот же ключ нужно ввести на остальных компьютерах.</div>';
+});
+
+$('#btnShowKey').addEventListener('click', () => {
+  const f = $('#setKey');
+  const hidden = f.type === 'password';
+  f.type = hidden ? 'text' : 'password';
+  $('#btnShowKey').textContent = hidden ? 'Скрыть' : 'Показать';
+});
+
+/** Отпечаток круга доверия: по нему сверяют ключи, не называя их. */
+function renderKeyRealm() {
+  const c = state.config;
+  $('#keyRealm').innerHTML = c.hasKey
+    ? `<div class="fed-row muted">Круг доверия: <b>${esc(c.realm)}</b> — на компьютерах
+       с тем же ключом отпечаток будет такой же. Сам ключ по нему не восстанавливается.</div>`
+    : '<div class="fed-row muted">Ключ не задан: подписи не проверяются, узлы из других сетей недоступны.</div>';
+}
+
+/** Состояние обмена каталогом и темпа анонсов — в самих настройках. */
+function renderFederation() {
+  const f = state.federation || {};
+  const d = f.directory || {};
+  const a = f.announce || {};
+  const box = $('#federationState');
+
+  const rows = [];
+  if (d.blocked) {
+    rows.push('<div class="fed-row err">Адреса указаны, но общий ключ не задан — обмен выключен.</div>');
+  } else if (!d.enabled) {
+    rows.push('<div class="fed-row muted">Адреса не указаны — работаем только в своей подсети.</div>');
+  } else {
+    for (const s of d.seeds || []) {
+      const mark = s.ok === true ? 'ok' : s.ok === false ? 'err' : 'muted';
+      const what = s.ok === true
+        ? `узел «${esc(s.name || '?')}»${s.network ? `, сеть ${esc(s.network)}` : ''}`
+        : s.ok === false ? esc(s.error || 'нет связи') : 'ещё не опрошен';
+      rows.push(`<div class="fed-row ${mark}"><b>${esc(s.address)}</b> — ${what}</div>`);
+    }
+    rows.push(`<div class="fed-row muted">Узлов из других сетей: ${f.remoteCount || 0};
+      в своей подсети: ${f.localCount || 0}.</div>`);
+  }
+  box.innerHTML = rows.join('');
+
+  const per = a.intervalMs ? Math.round(a.intervalMs / 1000) : null;
+  const channels = [a.multicast ? 'multicast' : null, a.broadcast ? 'broadcast' : null].filter(Boolean);
+  $('#announceState').innerHTML = per
+    ? `<div class="fed-row muted">Сейчас: раз в ${per} с, отправлено ${a.sent || 0};
+       каналы: ${channels.length ? esc(channels.join(' + ')) : '<b class="err">ни одного</b>'}.</div>`
+    : '';
+}
 
 // --------------------------------------------------------------- поток данных
 

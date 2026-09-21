@@ -17,6 +17,27 @@
 // которым работают, это ровно то, что нужно; «работать без входа в систему»
 // — отдельная задача, решаемая службой.
 //
+// ОКНО КОНСОЛИ. Задание, созданное обычной командой schtasks, получает
+// LogonType=InteractiveToken и запускает приложение в сеансе пользователя —
+// с видимым окном консоли, которое встречает его при каждом входе.
+//
+// Убирается это не трюком с сокрытием окна, а штатным режимом планировщика:
+// LogonType=S4U — «выполнять независимо от входа пользователя», но без
+// хранения пароля. Задание выполняется в неинтерактивном сеансе, поэтому
+// окна нет вовсе. Учётная запись остаётся своя, то есть %APPDATA% и
+// настройки те же, что при обычном запуске.
+//
+// Способ намеренно не «спрятать окно, которое всё равно создаётся»: обёртки
+// вроде скрытого wscript или powershell -WindowStyle Hidden неотличимы от
+// того, чем пользуются вредоносные программы, и этого в проекте не делается.
+// Здесь же меняется только настройка задания, а само приложение запускается
+// ровно тем же файлом, что и вручную.
+//
+// S4U задаётся лишь в XML задания, в ключах schtasks его нет, поэтому задание
+// создаётся из XML. Если система откажет (у учётной записи нет права «Вход в
+// качестве пакетного задания»), включается прежний способ — с окном, но
+// работающий, — и об этом сообщается в интерфейсе.
+//
 // На Linux используется пользовательский юнит systemd: root не нужен, потому
 // что там права решаются иначе (модули ядра и группы доступа).
 
@@ -70,16 +91,18 @@ export class Autostart {
   }
 
   async _statusWindows() {
-    const r = await run('schtasks.exe', ['/Query', '/TN', TASK_NAME], { timeoutMs: 15000 });
-    const exists = r.ok;
+    // Запрашиваем сразу XML: в нём и путь, и режим входа, и всё это
+    // машиночитаемо. Текстовый вывод /FO LIST переведён на язык системы,
+    // и разбирать его — значит зависеть от локали.
+    const x = await run('schtasks.exe', ['/Query', '/TN', TASK_NAME, '/XML', 'ONE'], { timeoutMs: 15000 });
+    const exists = x.ok;
+    const xml = exists ? x.stdout : '';
 
-    let runsAsExpected = null;
-    if (exists) {
-      // Задание могли создать раньше и из другой папки — сверяем путь,
-      // иначе галочка показывала бы «включено» для чужого задания.
-      const v = await run('schtasks.exe', ['/Query', '/TN', TASK_NAME, '/FO', 'LIST', '/V'], { timeoutMs: 15000 });
-      runsAsExpected = v.ok ? v.stdout.toLowerCase().includes(this._launcher.toLowerCase()) : null;
-    }
+    // Задание могли создать раньше и из другой папки — сверяем путь,
+    // иначе галочка показывала бы «включено» для чужого задания.
+    const pathMatches = exists ? xml.toLowerCase().includes(this._launcher.toLowerCase()) : null;
+    const logonType = exists ? (/<LogonType>([^<]+)<\/LogonType>/i.exec(xml)?.[1] || null) : null;
+    const silent = logonType === 'S4U';
 
     return {
       supported: true,
@@ -88,12 +111,87 @@ export class Autostart {
       taskName: TASK_NAME,
       launcher: this._launcher,
       launcherPresent: fs.existsSync(this._launcher),
-      pathMatches: runsAsExpected,
+      pathMatches,
+      logonType,
+      silent,
       needsAdmin: true,
+      // Приложение работает без окна, поэтому сразу говорим, где смотреть
+      // журнал и чем останавливать: иначе единственным известным способом
+      // остаётся диспетчер задач.
+      stopCommand: `schtasks /End /TN ${TASK_NAME}`,
+      startCommand: `schtasks /Run /TN ${TASK_NAME}`,
       hint: 'Задание срабатывает при входе пользователя в систему и выполняется '
-        + 'с правами администратора без запроса UAC. Чтобы приложение работало '
-        + 'и без входа в систему, нужна служба Windows.',
+        + 'с правами администратора без запроса UAC. '
+        + (exists && !silent
+          ? 'Сейчас оно запускается в режиме с окном консоли: включите автозапуск заново, '
+            + 'чтобы задание пересоздалось без окна. '
+          : 'Окно консоли не появляется: журнал смотрите на вкладке «Журнал», '
+            + `остановить — командой schtasks /End /TN ${TASK_NAME}. `)
+        + 'Чтобы приложение работало и без входа в систему, нужна служба Windows.',
     };
+  }
+
+  /**
+   * XML задания.
+   *
+   * ExecutionTimeLimit=PT0S обязателен: по умолчанию планировщик убивает
+   * задание через трое суток, и приложение молча исчезало бы раз в три дня.
+   * IgnoreNew не даёт подняться второй копии, если первая ещё работает.
+   */
+  _taskXml(userId) {
+    const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    return `<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>Net Device Share: общий доступ к устройствам по сети</Description>
+    <URI>\\${TASK_NAME}</URI>
+  </RegistrationInfo>
+  <Triggers>
+    <LogonTrigger>
+      <Enabled>true</Enabled>
+      <UserId>${esc(userId)}</UserId>
+    </LogonTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <UserId>${esc(userId)}</UserId>
+      <LogonType>S4U</LogonType>
+      <RunLevel>HighestAvailable</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>false</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <IdleSettings>
+      <StopOnIdleEnd>false</StopOnIdleEnd>
+      <RestartOnIdle>false</RestartOnIdle>
+    </IdleSettings>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>false</Hidden>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <WakeToRun>false</WakeToRun>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <Priority>7</Priority>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>${esc(this._launcher)}</Command>
+      <WorkingDirectory>${esc(ROOT)}</WorkingDirectory>
+    </Exec>
+  </Actions>
+</Task>
+`;
+  }
+
+  get _userId() {
+    const domain = process.env.USERDOMAIN;
+    const user = process.env.USERNAME || os.userInfo().username;
+    return domain ? `${domain}\\${user}` : user;
   }
 
   async _enableWindows() {
@@ -101,19 +199,41 @@ export class Autostart {
       throw new Error(`не найден ${this._launcher} — без него задание запускать нечего`);
     }
 
-    // Аргумент /TR — один путь в кавычках: поэтому задание и вызывает
-    // отдельный файл без параметров. Собирать здесь длинную командную
-    // строку значило бы воевать с тройным экранированием.
-    const tr = `"${this._launcher}"`;
-    const args = ['/Create', '/F', '/TN', TASK_NAME, '/SC', 'ONLOGON', '/RL', 'HIGHEST', '/TR', tr];
+    const xmlFile = path.join(os.tmpdir(), `nds-task-${process.pid}.xml`);
+    let created = false;
+    try {
+      // schtasks /XML читает файл как Unicode. UTF-8 он принимает не везде,
+      // а UTF-16LE с меткой порядка байтов — всегда.
+      await fsp.writeFile(xmlFile, `﻿${this._taskXml(this._userId)}`, 'utf16le');
 
-    const r = await elevated('schtasks.exe', args);
-    if (r.declined) throw new Error('запрос прав администратора отклонён — автозапуск не включён');
-    if (!r.ok) throw new Error(`не удалось создать задание (код ${r.code})`);
+      const r = await elevated('schtasks.exe', ['/Create', '/F', '/TN', TASK_NAME, '/XML', xmlFile]);
+      if (r.declined) throw new Error('запрос прав администратора отклонён — автозапуск не включён');
+      created = r.ok;
+      if (!r.ok) {
+        log.warn(`задание без окна консоли создать не удалось (код ${r.code}) — пробуем обычный режим`);
+      }
+    } finally {
+      await fsp.rm(xmlFile, { force: true }).catch(() => {});
+    }
+
+    if (!created) {
+      // Запасной путь: прежний способ. Окно консоли появится, но автозапуск
+      // будет работать — это лучше, чем не работающий вовсе.
+      const args = ['/Create', '/F', '/TN', TASK_NAME, '/SC', 'ONLOGON', '/RL', 'HIGHEST',
+        '/TR', `"${this._launcher}"`];
+      const r = await elevated('schtasks.exe', args);
+      if (r.declined) throw new Error('запрос прав администратора отклонён — автозапуск не включён');
+      if (!r.ok) throw new Error(`не удалось создать задание (код ${r.code})`);
+    }
 
     const st = await this._statusWindows();
     if (!st.enabled) throw new Error('задание создано, но система его не показывает');
-    log.info(`автозапуск включён: задание «${TASK_NAME}» → ${this._launcher}`);
+    log.info(`автозапуск включён: задание «${TASK_NAME}» → ${this._launcher}`
+      + (st.silent ? ' (без окна консоли)' : ' (с окном консоли: режим S4U недоступен)'));
+    if (!st.silent) {
+      log.warn('окно консоли будет появляться при входе в систему: учётной записи не хватает '
+        + 'права «Вход в качестве пакетного задания» для режима без окна');
+    }
     return st;
   }
 

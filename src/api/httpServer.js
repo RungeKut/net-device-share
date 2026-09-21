@@ -177,13 +177,26 @@ export class ApiServer {
 
   async _handlePeer(req, res, route, remote) {
     const cidr = this.app.network?.cidr;
-    if (cidr && !ipInCidr(remote, cidr) && !isLoopback(remote)) {
-      log.warn(`отклонён вызов ${route} вне рабочей сети (${remote})`);
-      return sendJson(res, 403, { error: 'out_of_network', message: 'адрес вне рабочей сети' });
+    const key = this.app.config.get('preSharedKey');
+    const local = isLoopback(remote) || !cidr || ipInCidr(remote, cidr);
+
+    // Вызов из другой сети принимается только при заданном общем ключе.
+    //
+    // Внутри своей подсети границу доверия держит адрес: чужому надо сперва
+    // в неё попасть. За её пределами такой границы нет, и единственной
+    // остаётся подпись — а без ключа подпись не проверяется вовсе. Пускать
+    // в этом случае значит открыть управление устройствами всем, до кого
+    // дотянется маршрут.
+    if (!local && !key) {
+      log.warn(`отклонён вызов ${route} вне рабочей сети (${remote}): общий ключ не задан`);
+      return sendJson(res, 403, {
+        error: 'out_of_network',
+        message: 'адрес вне рабочей сети, а общий ключ не задан — межсетевая работа отключена',
+      });
     }
+    if (!local) log.trace(`вызов ${route} из другой сети (${remote}) — проверяем подпись`);
 
     const raw = await readBody(req);
-    const key = this.app.config.get('preSharedKey');
     if (!verify(raw, req.headers[AUTH_HEADER] || '', key)) {
       log.warn(`отклонён вызов ${route} с неверной подписью (${remote})`);
       return sendJson(res, 401, { error: 'bad_signature', message: 'неверная подпись — не совпадает общий ключ' });
@@ -196,7 +209,16 @@ export class ApiServer {
     try {
       switch (`${req.method} ${route}`) {
         case 'GET /api/v1/peer/ping':
-          return sendJson(res, 200, { ok: true, nodeId: this.app.config.get('nodeId'), name: this.app.config.get('name') });
+          return sendJson(res, 200, {
+            ok: true,
+            nodeId: this.app.config.get('nodeId'),
+            name: this.app.config.get('name'),
+            // Хеш состояния здесь затем, чтобы узлы из других сетей могли
+            // дёшево проверять, не изменилось ли что-нибудь: анонсов по UDP
+            // они от нас не слышат, а тянуть полный список устройств ради
+            // ответа «всё по-прежнему» — лишний трафик через маршрутизатор.
+            stateHash: share.hash(),
+          });
 
         case 'GET /api/v1/peer/state':
           return sendJson(res, 200, {
@@ -215,6 +237,31 @@ export class ApiServer {
             // Запросы отдаём только те, что касаются спрашивающего.
             requests: callerId ? share.requestsFor(callerId) : [],
           });
+
+        // Каталог узлов. Только «кто есть и по какому адресу» — ни списков
+        // устройств, ни занятости здесь нет: их каждый спрашивает у
+        // владельца напрямую, чтобы мост не оказался в тракте данных.
+        case 'GET /api/v1/peer/directory':
+          return sendJson(res, 200, this.app.directory.payload());
+
+        case 'POST /api/v1/peer/directory': {
+          // Кто принёс каталог, тем и определяется, рассказывать ли о нём
+          // дальше. От соседа по подсети — это пересказ, и он на нас
+          // заканчивается. Из другой сети — мы становимся мостом для своей.
+          const origin = local ? 'relay' : 'seed';
+          const added = this.app.peers.onDirectory(body?.peers, {
+            origin,
+            viaNodeId: body?.nodeId || callerId,
+            viaName: body?.name || null,
+          });
+          if (added && origin === 'seed') {
+            log.info(`каталог от "${body?.name || remote}": узлов принято ${added} — рассказываем своей подсети`);
+            // Анонс уйдёт с новым отпечатком каталога, и соседи заберут
+            // его сами, не дожидаясь своего круга обмена.
+            this.app.onStateChanged();
+          }
+          return sendJson(res, 200, this.app.directory.payload());
+        }
 
         case 'POST /api/v1/peer/claim': {
           if (!body?.target || !callerId) return sendJson(res, 400, { error: 'bad_request', message: 'нужны target и идентификатор узла' });
