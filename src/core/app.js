@@ -109,6 +109,7 @@ export class App extends EventEmitter {
     await this.installer.init();
     this.installer.on('changed', () => this.api?.pushState());
     this.installer.on('finished', () => this.onStateChanged());
+    this._autoInstall();
 
     this.autostart = new Autostart(this.config);
     // Состояние читается у системы один раз при старте: опрашивать
@@ -221,6 +222,34 @@ export class App extends EventEmitter {
 
     log.info(`узел "${this.config.get('name')}" готов; сеть ${this.network.cidr}, адрес ${this.network.address}`);
     return this;
+  }
+
+  /**
+   * Доустановка недостающих компонентов при запуске.
+   *
+   * Без драйверов USB/IP приложение поднимается, но не делает главного:
+   * устройство не появится в «Диспетчере устройств». Ждать, пока человек
+   * найдёт кнопку «Установить», незачем — файлы лежат рядом, суммы и
+   * подписи проверяются те же самые.
+   *
+   * Запуск без ожидания: установка занимает до минуты, а приложение должно
+   * подняться сразу. Ход дела виден в интерфейсе и в журнале, по окончании
+   * бэкенд перепроверяется сам.
+   */
+  _autoInstall() {
+    if (!this.config.get('autoInstall')) return;
+    const plan = this.installer.plan();
+    if (!plan.canInstall) {
+      const missing = plan.components.filter((c) => !c.installed && !c.fileAvailable);
+      for (const c of missing) {
+        log.warn(`не хватает ${c.title}, но и установщика нет: ${c.file || c.id}`);
+      }
+      return;
+    }
+
+    const todo = plan.components.filter((c) => c.needed);
+    log.info(`доустановка при запуске: ${todo.map((c) => c.title).join(', ')}`);
+    this.installer.start().catch((e) => log.error(`доустановка не началась: ${e.message}`));
   }
 
   /**
@@ -566,7 +595,7 @@ export class App extends EventEmitter {
     const wasAnnouncing = this.discovery ? this.realms.announcing().map((r) => ({ realm: r.realm, key: r.key })) : [];
     const allowed = ['name', 'network', 'networks', 'seeOpen', 'showToOpen', 'autoShareNew', 'claimLeaseMs',
       'apiPort', 'discoveryPort', 'usbipPort', 'usbipdPath', 'usbipPath', 'logLevel', 'enabledTypes',
-      'meterTraffic', 'trafficPort',
+      'meterTraffic', 'trafficPort', 'autoInstall',
       'seeds', 'gossipIntervalMs', 'remotePollIntervalMs', 'announceIntervalMs',
       'announceIdleIntervalMs', 'announceBackoff', 'announceTransport'];
     const clean = {};
@@ -791,6 +820,7 @@ export class App extends EventEmitter {
       discoveryPort: c.discoveryPort,
       usbipPort: c.usbipPort,
       autoShareNew: c.autoShareNew,
+      autoInstall: c.autoInstall,
       meterTraffic: c.meterTraffic,
       trafficPort: c.trafficPort,
       enabledTypes: c.enabledTypes,

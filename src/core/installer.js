@@ -91,6 +91,8 @@ export class Installer extends EventEmitter {
           signerNote: c.signerNote || null,
           role: c.role,
           version: c.version,
+          verifyPaths: Array.isArray(c.verifyPaths) ? c.verifyPaths : [],
+          file: c.file,
           sourceUrl: c.sourceUrl,
           project: c.project,
           fileAvailable: size !== null,
@@ -104,9 +106,17 @@ export class Installer extends EventEmitter {
   plan() {
     const info = this.getBackendInfo() || {};
     const components = (this.catalog || []).map((c) => {
+      // Для USB/IP источник истины — проба бэкенда: она ищет утилиты и в
+      // PATH, и в стандартных местах. Для остального (Node.js) роли в
+      // бэкенде нет, и остаётся проверить файлы по путям из манифеста.
+      //
+      // Для Node.js «мы сейчас работаем» ничего не доказывает: приложение
+      // могло подняться на вложенном node.exe из переносимого комплекта,
+      // а в системе Node при этом нет.
       const installed = c.role === 'server' ? Boolean(info.server)
         : c.role === 'client' ? Boolean(info.client)
-        : false;
+        : c.verifyPaths.length ? c.verifyPaths.some((p) => fs.existsSync(p))
+          : false;
       return { ...c, installed, needed: !installed && c.fileAvailable };
     });
 

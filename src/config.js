@@ -56,6 +56,10 @@ export const DEFAULTS = {
   showToOpen: true,
   backend: 'auto',           // auto | windows | linux | mock
   autoShareNew: false,       // автоматически шарить вновь подключённые устройства
+  // Доставить недостающее при запуске: USB/IP без своих драйверов не
+  // работает вовсе, и ждать, пока человек найдёт кнопку, незачем.
+  // Требует прав администратора; без них будет запрос UAC.
+  autoInstall: true,
   enabledTypes: ['usb', 'com', 'lpt', 'net'], // какие типы устройств показывать
   sharedDeviceIds: [],       // какие локальные устройства опубликованы
   devicePurposes: {},        // deviceId → «что это и для чего»

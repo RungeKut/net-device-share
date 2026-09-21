@@ -3,6 +3,34 @@
   "note": "Описание вложенных установщиков. Приложение читает этот файл, сверяет SHA-256 и подпись, и только потом запускает установку.",
   "components": [
     {
+      "id": "nodejs",
+      "platform": "win32",
+      "role": "runtime",
+      "title": "Node.js — среда выполнения приложения",
+      "description": "Нужен, если приложение запускают из исходников. В переносимом комплекте node.exe уже лежит рядом, и тогда этот установщик не требуется.",
+      "version": "24.21.0",
+      "file": "windows/node-v24.21.0-x64.msi",
+      "sha256": "bb0eaee134f9357f22aea915ee793343e627aefc1e66488164bac6915bce2cac",
+      "sourceUrl": "https://nodejs.org/dist/v24.21.0/node-v24.21.0-x64.msi",
+      "project": "https://github.com/nodejs/node",
+      "license": "MIT",
+      "expectedSigner": "OpenJS Foundation",
+      "command": "msiexec.exe",
+      "args": [
+        "/i",
+        "{file}",
+        "/qn",
+        "/norestart",
+        "/l*v",
+        "{log}"
+      ],
+      "verifyPaths": [
+        "C:\\Program Files\\nodejs\\node.exe",
+        "C:\\Program Files (x86)\\nodejs\\node.exe"
+      ],
+      "requiresReboot": false
+    },
+    {
       "id": "usbipd-win",
       "platform": "win32",
       "role": "server",
@@ -16,7 +44,14 @@
       "license": "GPL-3.0",
       "expectedSigner": "Open Source Developer, Frans van Dorsselaer",
       "command": "msiexec.exe",
-      "args": ["/i", "{file}", "/qn", "/norestart", "/l*v", "{log}"],
+      "args": [
+        "/i",
+        "{file}",
+        "/qn",
+        "/norestart",
+        "/l*v",
+        "{log}"
+      ],
       "verifyPaths": [
         "C:\\Program Files\\usbipd-win\\usbipd.exe",
         "C:\\Program Files (x86)\\usbipd-win\\usbipd.exe"
@@ -38,7 +73,13 @@
       "expectedSigner": "Cloudyne Systems (Scheibling Consulting AB)",
       "signerNote": "Установщик подписан сторонней компанией, а не автором проекта. Подпись действительна; для драйвера ядра этот факт стоит учитывать осознанно.",
       "command": "{file}",
-      "args": ["/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/SP-", "/LOG={log}"],
+      "args": [
+        "/VERYSILENT",
+        "/SUPPRESSMSGBOXES",
+        "/NORESTART",
+        "/SP-",
+        "/LOG={log}"
+      ],
       "verifyPaths": [
         "C:\\Program Files\\USBIP\\usbip.exe",
         "C:\\Program Files\\usbip-win2\\usbip.exe",
