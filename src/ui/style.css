@@ -233,6 +233,9 @@ main { padding: 0 20px 40px; }
 .pill.mine { color: var(--mine); background: var(--mine-bg); }
 .pill.err  { color: var(--err);  background: var(--err-bg); }
 .pill.plain { color: var(--muted); background: var(--surface-2); border-color: var(--border); }
+/* «Только бронь»: не деталь оформления, а предупреждение — устройства в
+   системе не появится, сколько его ни занимай. */
+.pill.warn { color: var(--warn); background: var(--warn-bg); }
 /* Узел из другой сети: доступен, только если между сетями есть маршрут
    и открыты порты. Метка нужна, чтобы это не выяснялось опытным путём. */
 .pill.remote { color: var(--busy); background: var(--busy-bg); border-style: dashed; }

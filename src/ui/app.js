@@ -350,9 +350,13 @@ function trafficPill(t) {
 }
 
 function transportPill(hasTransport) {
+  // По сети пробрасывается только USB. Для COM, LPT и сетевых интерфейсов
+  // приложение ведёт учёт занятости, и не сказать об этом заметно — значит
+  // отправить человека искать в системе устройство, которого не будет.
   return hasTransport
     ? ''
-    : '<span class="pill plain" title="Учитывается занятость, данные по сети не пробрасываются">только бронь</span>';
+    : '<span class="pill warn" title="Проброса нет: приложение учитывает, кто занял устройство, '
+      + 'но данные по сети не передаёт. Подключаться к нему нужно физически.">только бронь</span>';
 }
 
 /** Кнопки для записи каталога — и для устройства, и для группы. */
@@ -371,7 +375,17 @@ function entryActions(entry) {
       acts.push(`<button class="btn small" data-ask="${esc(entry.ownerId)}|${esc(entry.target)}|${esc(entry.title)}">Попросить</button>`);
     }
   } else if (entry.ownerOnline && entry.available !== false) {
-    acts.push(`<button class="btn small primary" data-attach="${esc(entry.ownerId)}|${esc(entry.target)}">Занять</button>`);
+    // У COM, LPT и сетевых интерфейсов проброса нет — есть только учёт
+    // занятости. Кнопка «Занять» обещала бы то, чего не будет: человек
+    // жмёт её и идёт искать новое устройство в системе. Поэтому здесь
+    // другое слово и прямое пояснение в подсказке.
+    const reserve = entry.hasTransport === false;
+    acts.push(`<button class="btn small primary" data-attach="${esc(entry.ownerId)}|${esc(entry.target)}"
+      data-reserve="${reserve ? '1' : ''}"
+      title="${reserve
+        ? 'Только бронирование: приложение запишет, что устройство за вами, но в системе оно не появится — подключаться к нему нужно физически'
+        : 'Устройство появится в «Диспетчере устройств» этого компьютера'}"
+      >${reserve ? 'Забронировать' : 'Занять'}</button>`);
   }
   return acts.join('');
 }
@@ -759,7 +773,11 @@ document.addEventListener('click', (ev) => {
 
   if (t.dataset.attach) {
     const [nodeId, target] = t.dataset.attach.split('|');
-    action(t, () => post('/api/v1/attach', { nodeId, target }), 'Занято');
+    const reserve = t.dataset.reserve === '1';
+    action(t, () => post('/api/v1/attach', { nodeId, target }),
+      reserve
+        ? 'Забронировано. В системе устройство не появится: подключайтесь к нему физически'
+        : 'Занято');
   } else if (t.dataset.take) {
     const [nodeId, target] = t.dataset.take.split('|');
     if (confirm('Забрать устройство себе? Тот, кто с ним работает, потеряет соединение без предупреждения.')) {
@@ -946,6 +964,7 @@ $('#btnSettings').addEventListener('click', () => {
   $('#setUsbipdPath').value = c.usbipdPath || '';
   $('#setUsbipPath').value = c.usbipPath || '';
   $('#setMeterTraffic').checked = Boolean(c.meterTraffic);
+  $('#setAutoInstall').checked = c.autoInstall !== false;
 
   $('#setSeeds').value = (c.seeds || []).join('\n');
   $('#setGossip').value = Math.round(c.gossipIntervalMs / 1000);
@@ -1022,6 +1041,7 @@ $('#settings').addEventListener('close', async () => {
     usbipPath: $('#setUsbipPath').value.trim(),
     enabledTypes: [...document.querySelectorAll('#setTypes input:checked')].map((i) => i.value),
     meterTraffic: $('#setMeterTraffic').checked,
+    autoInstall: $('#setAutoInstall').checked,
     seeds: $('#setSeeds').value.split('\n').map((s) => s.trim()).filter(Boolean),
     gossipIntervalMs: Number($('#setGossip').value) * 1000,
     remotePollIntervalMs: Number($('#setRemotePoll').value) * 1000,
