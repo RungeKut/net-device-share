@@ -6,11 +6,14 @@
 // start.bat. Это главное требование к комплекту: он попадает на машины,
 // где установка чего бы то ни было согласуется отдельно.
 //
-// Чего в комплекте НЕТ: установщиков usbipd-win и usbip-win2. Они под
-// GPL-3.0, и класть чужие сборки в свой архив — значит принимать на себя
-// обязательства по выдаче исходных текстов. Вместо них едут manifest.json
-// и scripts/fetch-installers.mjs: файлы забираются у автора и проверяются
-// по SHA-256. Подробности в installers/README.md.
+// Установщики Node.js, usbipd-win и usbip-win2 едут внутри: комплект должен
+// поднимать машину целиком, в том числе без интернета. Приложение ставит
+// недостающее само при запуске, сверив SHA-256 и подпись.
+//
+// Цена — размер: один только Node в комплекте дважды, вложенным node.exe и
+// установщиком для системы. Так и задумано: node.exe нужен, чтобы комплект
+// работал без установки, а установщик — чтобы поставить Node в систему,
+// когда приложение разворачивают из исходников.
 //
 //   node scripts/build-release.mjs            собрать каталог и zip
 //   node scripts/build-release.mjs --no-zip   только каталог (быстрее)
@@ -39,14 +42,12 @@ const NODE = {
 
 // Что кладём в комплект. Каталоги копируются целиком, поэтому новые файлы
 // в src/ и docs/ попадают в сборку сами, без правки этого списка.
-const DIRS = ['src', 'docs'];
+const DIRS = ['src', 'docs', 'installers'];
 const FILES = [
   'start.bat',
   'package.json',
   'README.md',
   'LICENSE',
-  'installers/README.md',
-  'installers/manifest.json',
   'scripts/autostart.bat',
   'scripts/check-files.mjs',
   'scripts/fetch-installers.mjs',
@@ -133,17 +134,21 @@ const START_TXT = `Net Device Share ${pkg.version} - переносимый ко
   start.bat --doctor
   Покажет сеть, найденные устройства и состояние USB/IP.
 
-ДРАЙВЕРЫ USB/IP
-  Передача устройств по сети работает на usbipd-win (раздача своих) и
-  usbip-win2 (подключение чужих). В комплект они не входят: это чужие
-  программы под GPL-3.0. Кнопка "Установить" в интерфейсе ставит их из
-  каталога installers\\windows, а наполнить его можно так:
+ЧТО СТАВИТСЯ САМО
+  Всё нужное лежит в installers\\windows и ставится при первом запуске:
 
-      node.exe scripts\\fetch-installers.mjs
+      Node.js 24.21.0        среда выполнения (для запуска из исходников)
+      usbipd-win 5.3.0       раздача своих устройств
+      usbip-win2 0.9.8.0     подключение чужих устройств
 
-  Машине без интернета проще скопировать готовый каталог installers\\windows
-  с другой машины - контрольные суммы проверяются в любом случае.
-  Без этих драйверов приложение работает как каталог устройств: список,
+  Интернет не нужен. Перед установкой сверяются SHA-256 и подпись
+  Authenticode; не совпало - установка отменяется целиком. Запрос UAC
+  придёт на каждый компонент, если приложение запущено без прав.
+
+  Уже установленное не трогается. Выключается всё это галочкой
+  "Ставить недостающее при запуске" в настройках.
+
+  Без драйверов USB/IP приложение работает как каталог устройств: список,
   занятость, запросы, - но устройство не появится в Диспетчере устройств.
 
 НАСТРОЙКИ
@@ -160,6 +165,9 @@ const START_TXT = `Net Device Share ${pkg.version} - переносимый ко
 ЛИЦЕНЗИИ
   LICENSE           - само приложение, MIT
   NODE-LICENSE.txt  - вложенный node.exe ${NODE.version}, MIT
+  installers\\README.md - вложенные установщики: происхождение, лицензии
+                        и адреса исходных текстов (usbipd-win и usbip-win2
+                        распространяются под GPL-3.0)
 
 Документация - в каталоге docs, начните с README.md.
 `;
@@ -193,6 +201,20 @@ await fsp.writeFile(path.join(OUT, 'START.txt'), '﻿' + START_TXT.replace(/\n/g
 
 // Пусковой файл обязан остаться в CP866 с CRLF. Копирование этого не меняет,
 // но проверить дешевле, чем потом искать, почему комплект не запускается.
+// Комплект без установщиков собирать бессмысленно: выяснится это уже
+// на машине, куда его привезли, и чинить будет нечем.
+const manifest = JSON.parse(await fsp.readFile(path.join(OUT, 'installers', 'manifest.json'), 'utf8'));
+for (const c of manifest.components || []) {
+  const inside = path.join(OUT, 'installers', c.file);
+  if (!fs.existsSync(inside)) {
+    throw new Error(`нет установщика ${c.file} — комплект не поставит «${c.title}»`);
+  }
+  if (await sha256(inside) !== String(c.sha256).toLowerCase()) {
+    throw new Error(`${c.file}: SHA-256 не совпадает с манифестом`);
+  }
+}
+process.stdout.write(`  установщиков вложено: ${(manifest.components || []).length}, суммы сверены\n`);
+
 const started = await fsp.readFile(path.join(OUT, 'start.bat'));
 if (!/main\.js/.test(started.toString('latin1'))) throw new Error('start.bat в комплекте обрезан');
 if (started.includes(0x0a) && !started.includes(0x0d)) throw new Error('start.bat в комплекте с LF');
