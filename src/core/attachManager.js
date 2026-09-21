@@ -28,12 +28,16 @@ export class AttachManager extends EventEmitter {
    * @param {import('../devices/backend.js').UsbBackend} o.backend
    * @param {import('../config.js').Config} o.config
    * @param {import('./shareManager.js').ShareManager} o.share — для целей этого же узла
+   * @param {(nodeId: string) => (string|undefined)} o.keyFor — ключ круга доверия,
+   *   в котором услышан этот узел. Кругов у нас может быть несколько, и
+   *   подписывать вызов надо тем ключом, который примет именно он.
    */
-  constructor({ backend, config, share }) {
+  constructor({ backend, config, share, keyFor }) {
     super();
     this.backend = backend;
     this.config = config;
     this.share = share;
+    this.keyFor = keyFor;
     /** @type {Map<string, object>} attachKey → занятие */
     this.attachments = new Map();
     /** Запросы, где держатель — мы. Приходят в ответах на heartbeat. */
@@ -255,7 +259,7 @@ export class AttachManager extends EventEmitter {
         path: '/api/v1/peer/request-answer',
         method: 'POST',
         body: { requestId, accept: Boolean(accept) },
-        key: this.config.get('preSharedKey'),
+        key: this.keyFor(req.ownerNodeId),
         nodeId: this.config.get('nodeId'),
         timeoutMs: 8000,
       });
@@ -293,7 +297,7 @@ export class AttachManager extends EventEmitter {
         path: '/api/v1/peer/claim',
         method: 'POST',
         body: { target: t.target, holderName: this.config.get('name'), force: Boolean(force) },
-        key: this.config.get('preSharedKey'),
+        key: this.keyFor(t.nodeId),
         nodeId: this.config.get('nodeId'),
         timeoutMs: 15000,
       });
@@ -316,7 +320,7 @@ export class AttachManager extends EventEmitter {
       path: '/api/v1/peer/release',
       method: 'POST',
       body: { target: rec.target },
-      key: this.config.get('preSharedKey'),
+      key: this.keyFor(rec.nodeId),
       nodeId: this.config.get('nodeId'),
       timeoutMs: 8000,
     });
@@ -339,7 +343,7 @@ export class AttachManager extends EventEmitter {
             path: '/api/v1/peer/heartbeat',
             method: 'POST',
             body: { target: rec.target },
-            key: this.config.get('preSharedKey'),
+            key: this.keyFor(rec.nodeId),
             nodeId: this.config.get('nodeId'),
             timeoutMs: 5000,
           });

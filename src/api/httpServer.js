@@ -18,7 +18,6 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { logger, recentLogs, onLogRecord } from '../log.js';
-import { verify, realmOf } from '../net/protocol.js';
 import { AUTH_HEADER, NODE_HEADER } from '../net/rpc.js';
 import { ipInCidr, normalizeIp, listNetworks } from '../net/interfaces.js';
 
@@ -177,29 +176,38 @@ export class ApiServer {
 
   async _handlePeer(req, res, route, remote) {
     const cidr = this.app.network?.cidr;
-    const key = this.app.config.get('preSharedKey');
+    const realms = this.app.realms;
     const local = isLoopback(remote) || !cidr || ipInCidr(remote, cidr);
 
-    // Вызов из другой сети принимается только при заданном общем ключе.
+    // Вызов из другой сети принимается, только если есть хоть один ключ.
     //
     // Внутри своей подсети границу доверия держит адрес: чужому надо сперва
     // в неё попасть. За её пределами такой границы нет, и единственной
-    // остаётся подпись — а без ключа подпись не проверяется вовсе. Пускать
-    // в этом случае значит открыть управление устройствами всем, до кого
-    // дотянется маршрут.
-    if (!local && !key) {
-      log.warn(`отклонён вызов ${route} вне рабочей сети (${remote}): общий ключ не задан`);
+    // остаётся подпись — а в открытом круге подпись не проверяется вовсе.
+    // Пускать в этом случае значит открыть управление устройствами всем, до
+    // кого дотянется маршрут.
+    if (!local && !realms.keyed().length) {
+      log.warn(`отклонён вызов ${route} вне рабочей сети (${remote}): ни одной ключевой сети`);
       return sendJson(res, 403, {
         error: 'out_of_network',
-        message: 'адрес вне рабочей сети, а общий ключ не задан — межсетевая работа отключена',
+        message: 'адрес вне рабочей сети, а ключевых сетей не задано — межсетевая работа отключена',
       });
     }
     if (!local) log.trace(`вызов ${route} из другой сети (${remote}) — проверяем подпись`);
 
     const raw = await readBody(req);
-    if (!verify(raw, req.headers[AUTH_HEADER] || '', key)) {
+
+    // Какому нашему кругу принадлежит вызывающий. Ключевые круги пробуются
+    // первыми: открытый принимает любую подпись и иначе перехватывал бы
+    // вызовы из всех чужих ключевых сетей.
+    const circle = realms.match(raw, req.headers[AUTH_HEADER] || '');
+    if (!circle) {
       log.warn(`отклонён вызов ${route} с неверной подписью (${remote})`);
       return sendJson(res, 401, { error: 'bad_signature', message: 'неверная подпись — не совпадает общий ключ' });
+    }
+    // Вызов без подписи из открытого круга — только если мы в нём состоим.
+    if (circle.open && !local && !realms.keyed().length) {
+      return sendJson(res, 403, { error: 'out_of_network', message: 'открытый круг не выходит за пределы своей подсети' });
     }
 
     const body = parseJson(raw);
@@ -221,7 +229,7 @@ export class ApiServer {
             // Круг доверия. По нему спрашивающий решает, отдавать ли нам
             // каталог. Ничего не раскрывает: тот же отпечаток уходит в
             // каждом анонсе открытым текстом.
-            realm: realmOf(key),
+            realm: circle.realm,
           });
 
         case 'GET /api/v1/peer/state':
@@ -246,14 +254,14 @@ export class ApiServer {
         // устройств, ни занятости здесь нет: их каждый спрашивает у
         // владельца напрямую, чтобы мост не оказался в тракте данных.
         case 'GET /api/v1/peer/directory':
-          return sendJson(res, 200, this.app.directory.payload());
+          return sendJson(res, 200, this.app.directory.payload(circle.realm));
 
         case 'POST /api/v1/peer/directory': {
           // Круг доверия сверяем и здесь. Узел БЕЗ ключа принимает любую
           // подпись, поэтому без этой проверки достаточно было бы вписать
           // его адрес — и он получил бы карту чужой сети целиком, включая
           // узлы, которых по обычному обнаружению не видит.
-          if (body?.realm !== realmOf(key)) {
+          if (body?.realm !== circle.realm) {
             log.warn(`каталог от ${remote} отклонён: другой круг доверия (${body?.realm || 'не указан'})`);
             return sendJson(res, 403, {
               error: 'other_realm',
@@ -266,6 +274,7 @@ export class ApiServer {
           const origin = local ? 'relay' : 'seed';
           const added = this.app.peers.onDirectory(body?.peers, {
             origin,
+            realm: circle.realm,
             viaNodeId: body?.nodeId || callerId,
             viaName: body?.name || null,
           });
@@ -275,7 +284,7 @@ export class ApiServer {
             // его сами, не дожидаясь своего круга обмена.
             this.app.onStateChanged();
           }
-          return sendJson(res, 200, this.app.directory.payload());
+          return sendJson(res, 200, this.app.directory.payload(circle.realm));
         }
 
         case 'POST /api/v1/peer/claim': {

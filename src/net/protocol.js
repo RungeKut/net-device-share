@@ -101,6 +101,7 @@ export function decodeDatagram(buf, key) {
   if (typeof envelope.body !== 'string') return { error: 'malformed' };
   if (!verify(envelope.body, envelope.sig, key)) return { error: 'bad-signature' };
 
+
   let message;
   try {
     message = JSON.parse(envelope.body);
@@ -109,6 +110,52 @@ export function decodeDatagram(buf, key) {
   }
   if (message.proto !== PROTO) return { error: 'proto-mismatch' };
   return { message };
+}
+
+/**
+ * Разбор пакета, когда кругов доверия у узла несколько.
+ *
+ * Ключ выбирается по метке круга из самого пакета, и лишь потом проверяется
+ * подпись. Значит, тело разбирается до проверки — и это осознанно: перебирать
+ * все ключи на каждом чужом пакете дороже, а JSON.parse над недоверенными
+ * данными в JavaScript безопасен (ключ «__proto__» из JSON становится обычным
+ * собственным свойством и прототип не портит).
+ *
+ * До проверки подписи из тела берётся ровно одно поле — realm, и только чтобы
+ * выбрать ключ. Всё остальное идёт в дело после проверки.
+ *
+ * @param {Buffer} buf
+ * @param {(realm: string) => (string|undefined)} resolveKey
+ *   ключ этого круга доверия или undefined, если круг нам чужой
+ */
+export function unpackDatagram(buf, resolveKey) {
+  let envelope;
+  try {
+    envelope = JSON.parse(buf.toString('utf8'));
+  } catch {
+    return { error: 'malformed' };
+  }
+  if (typeof envelope.body !== 'string') return { error: 'malformed' };
+
+  let message;
+  try {
+    message = JSON.parse(envelope.body);
+  } catch {
+    return { error: 'malformed' };
+  }
+  if (message.proto !== PROTO) return { error: 'proto-mismatch' };
+
+  const realm = message.realm || 'open';
+  const key = resolveKey(realm);
+  if (key === undefined) return { error: 'other-realm', realm };
+
+  // В открытом круге ключа нет и проверять нечего — но и подписи там быть не
+  // должно: иначе пакет из чужой ключевой сети, объявивший себя открытым,
+  // прошёл бы как свой (verify с пустым ключом принимает что угодно).
+  if (key === '' && envelope.sig) return { error: 'bad-signature', realm };
+  if (!verify(envelope.body, envelope.sig, key)) return { error: 'bad-signature', realm };
+
+  return { message, realm };
 }
 
 /** Глобальный идентификатор устройства: уникален в пределах всей сети. */

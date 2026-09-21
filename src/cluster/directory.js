@@ -23,7 +23,6 @@ import crypto from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { logger } from '../log.js';
 import { rpc } from '../net/rpc.js';
-import { realmOf } from '../net/protocol.js';
 
 const log = logger('directory');
 
@@ -96,7 +95,7 @@ export class DirectoryService extends EventEmitter {
    * открыто всем, до кого дотянется маршрут.
    */
   get blocked() {
-    return this.enabled && !this.opts.key();
+    return this.enabled && !this.opts.realms.keyed().length;
   }
 
   _seedList() {
@@ -107,8 +106,8 @@ export class DirectoryService extends EventEmitter {
   start() {
     this.stopped = false;
     if (this.blocked) {
-      log.error('указаны узлы из других сетей, но не задан общий ключ — обмен каталогом выключен');
-      log.error('задайте общий ключ в настройках: без него удалённые узлы работать не будут');
+      log.error('указаны узлы из других сетей, но нет ни одной ключевой сети — обмен каталогом выключен');
+      log.error('заведите сеть с общим ключом в настройках: без ключа узлы из других сетей работать не будут');
       return this;
     }
     if (!this.enabled) {
@@ -138,19 +137,23 @@ export class DirectoryService extends EventEmitter {
     return crypto.createHash('sha1').update(shape).digest('hex').slice(0, 12);
   }
 
-  get realm() {
-    return realmOf(this.opts.key());
-  }
-
-  /** Что мы отдаём собеседнику: мы сами плюс те, о ком вправе рассказывать. */
-  payload() {
+  /**
+   * Что мы отдаём собеседнику: мы сами плюс те, о ком вправе рассказывать.
+   *
+   * Каталог всегда принадлежит одному кругу доверия. Узлы из остальных сюда
+   * не попадают: обмен идёт внутри сети, и рассказывать мосту из
+   * «Лаборатории» об узлах «Цеха» значило бы склеить обратно то, что ключи
+   * разделяют.
+   */
+  payload(realm) {
+    const self = this.opts.selfEntry();
     return {
-      nodeId: this.opts.selfEntry().nodeId,
-      name: this.opts.selfEntry().name,
-      network: this.opts.selfEntry().network,
-      realm: this.realm,
+      nodeId: self.nodeId,
+      name: self.name,
+      network: self.network,
+      realm,
       ts: Date.now(),
-      peers: [this.opts.selfEntry(), ...this.peers.directoryEntries()],
+      peers: [self, ...this.peers.directoryEntries(realm)],
     };
   }
 
@@ -181,12 +184,14 @@ export class DirectoryService extends EventEmitter {
         host: peer.address,
         port: peer.apiPort,
         path: '/api/v1/peer/directory',
-        key: this.opts.key(),
+        // Сосед услышан в каком-то одном круге — в нём с ним и говорим.
+        key: this.opts.realms.keyFor(peer.realm),
         nodeId: this.opts.selfEntry().nodeId,
         timeoutMs: LOCAL_TIMEOUT_MS,
       });
       const added = this.peers.onDirectory(res?.peers, {
         origin: 'relay',
+        realm: peer.realm,
         viaNodeId: peer.nodeId,
         viaName: peer.name,
       });
@@ -232,50 +237,80 @@ export class DirectoryService extends EventEmitter {
    * бы карту всей своей сети тому, кто по обычному обнаружению нас даже не
    * видит. Один лишний маленький запрос в двадцать секунд — небольшая плата
    * за то, чтобы круг доверия нельзя было обойти, просто вписав адрес.
+   *
+   * Кругов у нас может быть несколько, а какому принадлежит тот узел —
+   * заранее неизвестно. Поэтому ping отправляется подписанным поочерёдно
+   * каждым нашим ключом, пока один не подойдёт. Подобранный круг
+   * запоминается, и следующие обмены начинаются сразу с него.
    */
   async _exchange(raw, { host, port }, selfId) {
-    try {
-      const pong = await rpc({
-        host,
-        port,
-        path: '/api/v1/peer/ping',
-        key: this.opts.key(),
-        nodeId: selfId,
-        timeoutMs: SEED_TIMEOUT_MS,
-      });
+    const keyed = this.opts.realms.keyed();
+    // Открытый круг в обмене не участвует: подпись там не проверяется, и
+    // «своим» оказался бы кто угодно, до кого есть маршрут.
+    if (!keyed.length) return;
 
-      if (pong?.nodeId === selfId) {
-        this.seedState.set(raw, { address: raw, ok: false, error: 'это адрес самого себя', at: Date.now() });
-        log.warn(`адрес ${raw} указывает на этот же узел — пропускаем`);
-        return;
-      }
+    // Круг, подошедший в прошлый раз, пробуем первым.
+    const known = this.seedState.get(raw)?.realm;
+    const order = keyed.slice().sort((a, b) => (b.realm === known) - (a.realm === known));
 
-      if (pong?.realm !== this.realm) {
-        const why = pong?.realm === 'open'
-          ? 'на том узле не задан общий ключ'
-          : 'общие ключи не совпадают';
-        this.seedState.set(raw, {
-          address: raw, ok: false, at: Date.now(),
-          error: `другой круг доверия — ${why}`,
-          name: pong?.name || null,
+    let lastError = null;
+    for (const circle of order) {
+      try {
+        const pong = await rpc({
+          host,
+          port,
+          path: '/api/v1/peer/ping',
+          key: circle.key,
+          nodeId: selfId,
+          timeoutMs: SEED_TIMEOUT_MS,
         });
-        log.warn(`обмен с ${raw} отклонён: ${why} — каталог не отправлен`);
-        return;
-      }
 
+        if (pong?.nodeId === selfId) {
+          this.seedState.set(raw, { address: raw, ok: false, error: 'это адрес самого себя', at: Date.now() });
+          log.warn(`адрес ${raw} указывает на этот же узел — пропускаем`);
+          return;
+        }
+        // Ответить он мог и по другому ключу — сверяем, что круг тот самый.
+        if (pong?.realm !== circle.realm) {
+          lastError = `другой круг доверия (${pong?.realm || 'не назван'})`;
+          continue;
+        }
+
+        await this._share(raw, { host, port }, selfId, circle, pong);
+        return;
+      } catch (e) {
+        // Неверная подпись означает лишь «не этот ключ» — пробуем следующий.
+        lastError = e.message;
+        if (e.code !== 'bad_signature' && e.status !== 401) break;
+      }
+    }
+
+    const why = lastError && /подпис|bad_signature|круг/i.test(lastError)
+      ? 'ни один из общих ключей не подошёл'
+      : lastError || 'нет ответа';
+    const prev = this.seedState.get(raw);
+    this.seedState.set(raw, { address: raw, ok: false, at: Date.now(), error: why, name: prev?.name || null });
+    if (prev?.ok !== false) log.warn(`обмен с ${raw} не удался: ${why}`);
+    else log.debug(`обмен с ${raw} не удался: ${why}`);
+  }
+
+  /** Отдать каталог и забрать чужой — уже внутри выясненного круга. */
+  async _share(raw, { host, port }, selfId, circle, pong) {
+    try {
       const res = await rpc({
         host,
         port,
         path: '/api/v1/peer/directory',
         method: 'POST',
-        body: this.payload(),
-        key: this.opts.key(),
+        body: this.payload(circle.realm),
+        key: circle.key,
         nodeId: selfId,
         timeoutMs: SEED_TIMEOUT_MS,
       });
 
       const added = this.peers.onDirectory(res?.peers, {
         origin: 'seed',
+        realm: circle.realm,
         viaNodeId: res?.nodeId || null,
         viaName: res?.name || raw,
       });
@@ -286,8 +321,10 @@ export class DirectoryService extends EventEmitter {
         error: null,
         at: Date.now(),
         nodeId: res?.nodeId || null,
-        name: res?.name || null,
+        name: res?.name || pong?.name || null,
         network: res?.network || null,
+        realm: circle.realm,
+        label: circle.label,
         received: Array.isArray(res?.peers) ? res.peers.length : 0,
       });
       if (added) log.info(`обмен с ${raw} ("${res?.name || '?'}"): новых или изменившихся узлов ${added}`);

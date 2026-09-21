@@ -18,7 +18,7 @@
 import dgram from 'node:dgram';
 import { EventEmitter } from 'node:events';
 import { logger } from '../log.js';
-import { PROTO, MSG, encodeDatagram, decodeDatagram, realmOf } from './protocol.js';
+import { PROTO, MSG, encodeDatagram, unpackDatagram } from './protocol.js';
 import { broadcastAddress, ipInCidr, normalizeIp } from './interfaces.js';
 
 const log = logger('discovery');
@@ -41,7 +41,6 @@ export class Discovery extends EventEmitter {
     super();
     this.opts = opts;
     this.socket = null;
-    this.realm = realmOf(opts.preSharedKey);
     this.timer = null;
     this.seq = 0;
     this.stopped = false;
@@ -131,28 +130,25 @@ export class Discovery extends EventEmitter {
       return;
     }
 
-    const { message, error } = decodeDatagram(buf, this.opts.preSharedKey);
+    // Ключ выбирается по метке круга доверия из самого пакета. Круг, в
+    // котором мы не состоим, отсекается здесь же — и это единственное, что
+    // отделяет соседние сети друг от друга: проверки подписи мало, потому
+    // что узел без ключа принимает любую.
+    const { message, error, realm } = unpackDatagram(buf, (r) => this.opts.realms.keyFor(r, 'listening'));
     if (error) {
-      if (error === 'bad-signature') log.warn('отклонён пакет с неверной подписью от', from);
+      if (error === 'bad-signature') log.warn(`отклонён пакет с неверной подписью от ${from} (круг ${realm})`);
+      else if (error === 'other-realm') log.trace(`пакет из чужого круга доверия (${realm}) от ${from}`);
       else log.trace(`пакет отброшен (${error}) от ${from}`);
       return;
     }
     if (message.nodeId === this.opts.nodeId) return; // собственный анонс
 
-    // Узлы с другим общим ключом — не наша сеть. Проверять только подпись
-    // недостаточно: узел без ключа принимает любые пакеты и иначе показывал
-    // бы в списке соседей, с которыми не сможет договориться.
-    if (message.realm !== this.realm) {
-      log.trace(`пакет из другого круга доверия (${message.realm}) от ${from}`);
-      return;
-    }
-
     switch (message.type) {
       case MSG.ANNOUNCE:
-        this.emit('announce', { ...message, address: from });
+        this.emit('announce', { ...message, address: from, realm });
         break;
       case MSG.BYE:
-        this.emit('bye', { ...message, address: from });
+        this.emit('bye', { ...message, address: from, realm });
         break;
       case MSG.QUERY:
         // Новый узел просит представиться — отвечаем без ожидания таймера.
@@ -170,14 +166,28 @@ export class Discovery extends EventEmitter {
     return targets;
   }
 
-  _send(message) {
+  /**
+   * Отправка в каждый круг доверия, в котором мы объявляем о себе.
+   *
+   * Подпись в пакете одна, а кругов несколько, поэтому и пакетов столько же:
+   * узел с ключом «Цех» обязан принять наш анонс, и узел с ключом
+   * «Лаборатория» тоже, а один пакет удовлетворить обоим не может.
+   *
+   * Цена прямая: трафик умножается на число кругов. Поэтому замедление
+   * анонсов в покое (см. выше) с несколькими сетями важнее, чем с одной.
+   */
+  _send(base) {
     if (!this.socket) return;
-    const buf = encodeDatagram(message, this.opts.preSharedKey);
+    const targets = this._targets();
+    if (!targets.length) return;
 
-    for (const addr of this._targets()) {
-      this.socket.send(buf, 0, buf.length, this.opts.port, addr, (err) => {
-        if (err) log.debug(`отправка на ${addr} не удалась: ${err.message}`);
-      });
+    for (const r of this.opts.realms.announcing()) {
+      const buf = encodeDatagram({ ...base, realm: r.realm }, r.key);
+      for (const addr of targets) {
+        this.socket.send(buf, 0, buf.length, this.opts.port, addr, (err) => {
+          if (err) log.debug(`отправка на ${addr} не удалась: ${err.message}`);
+        });
+      }
     }
   }
 
@@ -245,7 +255,6 @@ export class Discovery extends EventEmitter {
       proto: PROTO,
       type: MSG.ANNOUNCE,
       nodeId: this.opts.nodeId,
-      realm: this.realm,
       name: snapshot.name,
       seq: ++this.seq,
       ts: now,
@@ -270,12 +279,53 @@ export class Discovery extends EventEmitter {
     this._reschedule(this.interval);
   }
 
+  /**
+   * Объявиться заново немедленно и попросить соседей представиться.
+   *
+   * Нужно при смене кругов доверия. Обычный announce здесь бесполезен: он
+   * отправляет пакет, только если изменилось СОДЕРЖИМОЕ анонса, а при смене
+   * ключей меняется не оно, а набор подписей — и узел молча оставался бы
+   * невидимым для новой сети до ближайшего тика, то есть до полуминуты.
+   *
+   * Запрос соседям нужен по обратной причине: спокойный узел мог уйти на
+   * медленный темп, и, войдя в его круг, мы ждали бы его анонса те же
+   * полминуты, хотя он всё это время рядом.
+   */
+  refresh() {
+    this.lastHash = null;
+    this.lastDir = null;
+    this.announce('change');
+    this.query();
+  }
+
+  /**
+   * Прощание в кругах, которые мы покидаем.
+   *
+   * Без него бывшие соседи держали бы узел в списке до истечения таймаута —
+   * на медленном темпе это полторы минуты, и всё это время его устройства
+   * выглядели бы доступными, хотя занять их уже нельзя.
+   */
+  farewell(circles) {
+    if (!this.socket || !circles?.length) return;
+    for (const r of circles) {
+      const buf = encodeDatagram(
+        { proto: PROTO, type: MSG.BYE, nodeId: this.opts.nodeId, realm: r.realm, ts: Date.now() },
+        r.key,
+      );
+      for (const addr of this._targets()) {
+        this.socket.send(buf, 0, buf.length, this.opts.port, addr, (err) => {
+          if (err) log.debug(`прощание в круге ${r.realm} не ушло: ${err.message}`);
+        });
+      }
+      log.debug(`прощание отправлено в круг ${r.realm}`);
+    }
+  }
+
   query() {
     this._send({
       proto: PROTO,
       type: MSG.QUERY,
       nodeId: this.opts.nodeId,
-      realm: this.realm,
       ts: Date.now(),
     });
   }
@@ -289,6 +339,10 @@ export class Discovery extends EventEmitter {
       multicast: Boolean(this.multicastOk),
       broadcast: Boolean(this.broadcastAddr),
       sent: this.sent,
+      // Пакетов на один анонс: кругов доверия × каналов. Полезно видеть,
+      // потому что число кругов умножает широковещательный трафик.
+      realms: this.opts.realms.announcing().length,
+      perAnnounce: this.opts.realms.announcing().length * this._targets().length,
     };
   }
 
@@ -302,13 +356,21 @@ export class Discovery extends EventEmitter {
     // Прощальный пакет: соседи уберут узел из списка сразу,
     // не дожидаясь истечения таймаута.
     try {
-      const buf = encodeDatagram(
-        { proto: PROTO, type: MSG.BYE, nodeId: this.opts.nodeId, realm: this.realm, ts: Date.now() },
-        this.opts.preSharedKey,
-      );
-      await Promise.all(this._targets().map((a) => new Promise((res) => {
-        this.socket.send(buf, 0, buf.length, this.opts.port, a, () => res());
-      })));
+      // Прощаться нужно в каждом круге, где мы объявлялись: иначе соседи из
+      // остальных будут ещё минуту показывать узел, которого уже нет.
+      const sends = [];
+      for (const r of this.opts.realms.announcing()) {
+        const buf = encodeDatagram(
+          { proto: PROTO, type: MSG.BYE, nodeId: this.opts.nodeId, realm: r.realm, ts: Date.now() },
+          r.key,
+        );
+        for (const a of this._targets()) {
+          sends.push(new Promise((res) => {
+            this.socket.send(buf, 0, buf.length, this.opts.port, a, () => res());
+          }));
+        }
+      }
+      await Promise.all(sends);
     } catch { /* сеть уже могла отвалиться — не мешаем завершению */ }
 
     this.stopped = true;

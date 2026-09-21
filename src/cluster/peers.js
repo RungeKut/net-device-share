@@ -92,7 +92,7 @@ export class PeerRegistry extends EventEmitter {
           host: peer.address,
           port: peer.apiPort,
           path: '/api/v1/peer/ping',
-          key: this.opts.preSharedKey,
+          key: this.opts.realms.keyFor(peer.realm),
           nodeId: this.opts.nodeId,
           timeoutMs: 4000,
         });
@@ -145,6 +145,9 @@ export class PeerRegistry extends EventEmitter {
       via: null,
       viaName: null,
       network: null,
+      // Круг доверия, в котором узел услышан. По нему выбирается ключ
+      // для вызовов к нему и понятное название сети в списке.
+      realm: null,
       devices: [],
       groups: [],
       requests: [],
@@ -170,6 +173,7 @@ export class PeerRegistry extends EventEmitter {
       origin: 'local',
       via: null,
       viaName: null,
+      realm: msg.realm,
       name: msg.name,
       address: msg.address,
       apiPort: msg.apiPort,
@@ -233,7 +237,7 @@ export class PeerRegistry extends EventEmitter {
    * @param {string} [src.viaName]
    * @returns {number} сколько записей реально что-то изменили
    */
-  onDirectory(entries, { origin, viaNodeId = null, viaName = null }) {
+  onDirectory(entries, { origin, realm, viaNodeId = null, viaName = null }) {
     if (!Array.isArray(entries)) return 0;
     const now = Date.now();
     let touched = 0;
@@ -262,6 +266,9 @@ export class PeerRegistry extends EventEmitter {
         origin,
         via: viaNodeId,
         viaName,
+        // Круг берётся из обмена, а не из самой записи: рассказать о себе
+        // можно что угодно, а подписаться чужим ключом — нет.
+        realm,
         name: e.name || peer.name,
         address: e.address,
         apiPort: e.apiPort,
@@ -302,11 +309,15 @@ export class PeerRegistry extends EventEmitter {
   }
 
   /** Записи о узлах, которыми мы делимся с другими. Без пересказа пересказа. */
-  directoryEntries() {
+  directoryEntries(realm) {
     const out = [];
     for (const p of this.peers.values()) {
       if (!SHAREABLE.has(p.origin)) continue;
       if (!p.online) continue;
+      // Только свой круг доверия. Обмен идёт внутри одной сети, и
+      // рассказывать мосту из «Лаборатории» об узлах «Цеха» значило бы
+      // склеить обратно то, что ключи разделяют.
+      if (p.realm !== realm) continue;
       out.push({
         nodeId: p.nodeId,
         name: p.name,
@@ -323,6 +334,30 @@ export class PeerRegistry extends EventEmitter {
       });
     }
     return out;
+  }
+
+  /**
+   * Забыть узлы из кругов доверия, в которых мы больше не состоим.
+   *
+   * Ключ убрали из настроек — значит, его узлы нам больше не свои. Ждать,
+   * пока они отвалятся по таймауту, нельзя: минуту после снятия ключа их
+   * устройства оставались бы в каталоге, и попытка занять такое устройство
+   * упиралась бы в неверную подпись без внятного объяснения.
+   */
+  retainRealms(realms) {
+    const keep = new Set(realms);
+    let dropped = 0;
+    for (const [id, peer] of this.peers) {
+      if (keep.has(peer.realm)) continue;
+      this.peers.delete(id);
+      this.emit('peer-down', peer);
+      dropped++;
+    }
+    if (dropped) {
+      log.info(`забыты узлы из кругов доверия, которых у нас больше нет: ${dropped}`);
+      this.emit('changed');
+    }
+    return dropped;
   }
 
   /** Есть ли у нас узлы, полученные из других сетей, — то есть мост ли мы. */
@@ -370,7 +405,7 @@ export class PeerRegistry extends EventEmitter {
         host: peer.address,
         port: peer.apiPort,
         path: '/api/v1/peer/state',
-        key: this.opts.preSharedKey,
+        key: this.opts.realms.keyFor(peer.realm),
         nodeId: this.opts.nodeId,
         timeoutMs: 4000,
       });

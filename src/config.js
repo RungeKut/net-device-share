@@ -47,7 +47,13 @@ export const DEFAULTS = {
   remotePollIntervalMs: 15000,
   claimLeaseMs: 30000,       // аренда занятости; продлевается heartbeat-ом
   heartbeatIntervalMs: 10000,
-  preSharedKey: '',          // пусто → аутентификация выключена
+  // Круги доверия. Каждая запись — [{ id, label, key }]: своё название и свой
+  // общий ключ. Узел состоит сразу во всех перечисленных.
+  networks: [],
+  // Открытый круг — узлы без ключа. Две половины участия независимы:
+  // видеть их и быть видимым для них. См. net/realms.js.
+  seeOpen: true,
+  showToOpen: true,
   backend: 'auto',           // auto | windows | linux | mock
   autoShareNew: false,       // автоматически шарить вновь подключённые устройства
   enabledTypes: ['usb', 'com', 'lpt', 'net'], // какие типы устройств показывать
@@ -74,6 +80,7 @@ export class Config {
   constructor(file) {
     this.file = file || path.join(configDir(), 'config.json');
     this.data = { ...DEFAULTS };
+    this.runtimeOverrides = {};
     this.load();
   }
 
@@ -127,15 +134,51 @@ export class Config {
       dirty = true;
     }
 
+    // Перенос со второй версии, где круг доверия был ровно один.
+    //
+    // Поведение обеих прежних настроек сохраняется в точности. Ключ был задан
+    // — значит, узлы без ключа и раньше были не видны и не видели нас, и обе
+    // половины открытого круга выключаются. Ключа не было — узел жил именно в
+    // открытом круге, и обе остаются включёнными (как в значениях по
+    // умолчанию). Молча поменять это при обновлении нельзя: в первом случае
+    // узел стал бы виден посторонним, во втором — исчез бы из сети целиком.
+    if (typeof this.data.preSharedKey === 'string') {
+      const key = this.data.preSharedKey.trim();
+      if (key) {
+        if (!Array.isArray(this.data.networks)) this.data.networks = [];
+        if (!this.data.networks.some((n) => n?.key === key)) {
+          this.data.networks.unshift({ id: crypto.randomUUID(), label: 'Основная сеть', key });
+        }
+        this.data.seeOpen = false;
+        this.data.showToOpen = false;
+      }
+      delete this.data.preSharedKey;
+      dirty = true;
+    }
+    if (!Array.isArray(this.data.networks)) {
+      this.data.networks = [];
+      dirty = true;
+    }
+
     if (dirty) this.save();
   }
 
   save() {
     try {
       fs.mkdirSync(path.dirname(this.file), { recursive: true });
+
+      // Ключи, действующие только на текущий запуск, в файл не попадают.
+      //
+      // Не записать их при разборе аргументов мало: они лежат в data, и любое
+      // последующее сохранение настроек унесло бы их в файл — то есть один
+      // запуск с «--backend mock» всё равно закреплял бы имитацию навсегда,
+      // стоило потом нажать «Сохранить». Отсекаем в одном месте, здесь.
+      const data = { ...this.data };
+      for (const k of Object.keys(this.runtimeOverrides || {})) delete data[k];
+
       // Пишем через временный файл: при сбое старая конфигурация уцелеет.
       const tmp = `${this.file}.tmp`;
-      fs.writeFileSync(tmp, JSON.stringify(this.data, null, 2), 'utf8');
+      fs.writeFileSync(tmp, JSON.stringify(data, null, 2), 'utf8');
       fs.renameSync(tmp, this.file);
     } catch (e) {
       log.error('не удалось сохранить конфигурацию:', e.message);
@@ -250,7 +293,9 @@ export const CLI_MAP = {
  * имитацию навсегда, и совет «уберите --backend mock» становился
  * бессмысленным: убирать было нечего.
  */
-const RUNTIME_ONLY = new Set(['backend']);
+// «--key» тоже действует только на запуск: это отладочный и испытательный
+// ключ, а постоянные круги доверия задаются в настройках списком.
+const RUNTIME_ONLY = new Set(['backend', 'preSharedKey']);
 
 export function applyCliOverrides(config, args) {
   const patch = {};
