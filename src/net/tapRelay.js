@@ -49,6 +49,8 @@ export class TapRelay extends EventEmitter {
     this.rxFrames = 0;
     this.txFrames = 0;
     this._buf = Buffer.alloc(0);
+    this.attached = null;
+    this._onStdout = (chunk) => this._onData(chunk);
   }
 
   start() {
@@ -66,7 +68,7 @@ export class TapRelay extends EventEmitter {
         this.stop();
       }, READY_TIMEOUT_MS);
 
-      this.child.stdout.on('data', (chunk) => this._onData(chunk));
+      this.child.stdout.on('data', this._onStdout);
 
       // Диагностика посредника идёт в поток ошибок: поток вывода занят
       // кадрами и обязан оставаться двоично чистым.
@@ -131,9 +133,61 @@ export class TapRelay extends EventEmitter {
     }
   }
 
+  /**
+   * Сквозной режим: поток кадров уходит прямо в переданный поток.
+   *
+   * Формат обмена с посредником и формат на проводе совпадают, поэтому
+   * связать их можно перекачкой, и кадры не попадают в JavaScript вовсе.
+   * Через канал идёт весь трафик карты — разбирать каждый кадр в основном
+   * процессе значило бы получить приложение, которое тормозит тем сильнее,
+   * чем активнее им пользуются.
+   *
+   * Пока действует сквозной режим, событие «frame» не возникает.
+   *
+   * @param {import('node:stream').Duplex} duplex
+   * @returns {object|null} null, если посредник не готов
+   */
+  attach(duplex) {
+    if (!this.child || !this.ready) return null;
+    if (this.attached) throw new Error('посредник уже переключён на сквозную передачу');
+
+    this.child.stdout.removeListener('data', this._onStdout);
+    if (this._buf.length) {
+      // Хвост, накопленный до переключения, дописываем как есть: это
+      // те же кадры в том же формате.
+      duplex.write(this._buf);
+      this._buf = Buffer.alloc(0);
+    }
+
+    this.child.stdout.pipe(duplex);
+    // end: false — обрыв связи не должен закрывать ввод посредника:
+    // адаптер остаётся поднятым и ждёт, пока подключатся заново.
+    duplex.pipe(this.child.stdin, { end: false });
+
+    this.attached = duplex;
+    duplex.once('close', () => this.detach());
+    return { detach: () => this.detach() };
+  }
+
+  /** Вернуться к разбору кадров внутри приложения. */
+  detach() {
+    if (!this.attached) return;
+    const duplex = this.attached;
+    this.attached = null;
+    try {
+      this.child?.stdout.unpipe(duplex);
+      duplex.unpipe(this.child?.stdin);
+    } catch { /* поток мог уже закрыться */ }
+    if (this.child) this.child.stdout.on('data', this._onStdout);
+  }
+
   /** Отправить кадр в адаптер. */
   write(frame) {
     if (!this.child || !this.ready) return false;
+    if (this.attached) {
+      log.warn('кадр не отправлен: посредник в сквозном режиме');
+      return false;
+    }
     if (!Buffer.isBuffer(frame) || !frame.length || frame.length > MAX_FRAME) {
       log.warn(`кадр длиной ${frame?.length} не отправлен: вне допустимого размера`);
       return false;
