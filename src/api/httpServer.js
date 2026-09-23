@@ -11,6 +11,14 @@
 // Разделение «локально всё, извне по паролю» отражает простой факт:
 // у того, кто сидит за этой машиной, и так есть все возможности — он может
 // выдернуть устройство из разъёма. Требовать с него пароль бессмысленно.
+//
+// ЧУЖИЕ СТРАНИЦЫ. «Локально всё» означает: любой запрос с этой машины. Его
+// может отправить и посторонняя страница, открытая в браузере здесь же, —
+// браузер пошлёт простой POST на 127.0.0.1 куда угодно. Раньше это давало
+// ей публикацию и занятие устройств, с настройкой сети — ещё и мосты и
+// адреса. Поэтому каждый изменяющий запрос интерфейса несёт заголовок
+// X-NDS-UI: свой заголовок браузер со сторонней страницы без
+// предварительного запроса CORS не пошлёт, а на него мы не отвечаем.
 
 import http from 'node:http';
 import fs from 'node:fs';
@@ -42,7 +50,15 @@ const MUTATING = new Set([
   '/api/v1/group/save', '/api/v1/group/delete', '/api/v1/group/share',
   '/api/v1/request', '/api/v1/request/answer', '/api/v1/request/cancel',
   '/api/v1/autostart',
+  '/api/v1/net/switch/create', '/api/v1/net/switch/delete', '/api/v1/net/switch/rename',
+  '/api/v1/net/switch/nic', '/api/v1/net/switch/host',
+  '/api/v1/net/vnic/create', '/api/v1/net/vnic/delete', '/api/v1/net/vnic/update',
+  '/api/v1/net/adapter/ip', '/api/v1/net/adapter/category', '/api/v1/net/bridge/ip',
+  '/api/v1/net/held/ip',
 ]);
+
+/** Заголовок, по которому видно, что запрос отправил наш интерфейс. */
+export const UI_HEADER = 'x-nds-ui';
 
 export class ApiServer {
   /** @param {object} app — объект приложения (см. core/app.js) */
@@ -52,6 +68,7 @@ export class ApiServer {
     /** @type {Map<import('node:http').ServerResponse, string>} поток → уровень доступа */
     this.sseClients = new Map();
     this.pushTimer = null;
+    this.netTimer = null;
   }
 
   async start() {
@@ -104,6 +121,16 @@ export class ApiServer {
       }
     }, 150);
     this.pushTimer.unref?.();
+  }
+
+  /**
+   * Карта сети поменялась. Самой карты в снимке нет — её опись стоит
+   * секунду PowerShell, — поэтому интерфейсу уходит только знак «перечитай».
+   */
+  notifyNet() {
+    clearTimeout(this.netTimer);
+    this.netTimer = setTimeout(() => this._broadcast('net', { ts: Date.now(), busy: this.app.netManager?.busy || null }, 'full'), 200);
+    this.netTimer.unref?.();
   }
 
   _broadcast(event, data, minAccess = 'readonly') {
@@ -295,6 +322,8 @@ export class ApiServer {
             // Чужой узел не может «забрать без спроса»: право владельца
             // действует только на своём узле.
             force: false,
+            // Канал сетевой карты пускает только с адреса, с которого заняли.
+            holderAddress: remote,
           });
           this.app.onStateChanged();
           return sendJson(res, 200, result);
@@ -327,6 +356,23 @@ export class ApiServer {
         case 'POST /api/v1/peer/request-answer': {
           if (!body?.requestId || !callerId) return sendJson(res, 400, { error: 'bad_request', message: 'нужен requestId' });
           const r = await share.answerRequest(body.requestId, callerId, Boolean(body.accept));
+          this.app.onStateChanged();
+          return sendJson(res, 200, r);
+        }
+
+        case 'POST /api/v1/peer/net-ip': {
+          // Держатель брони меняет настройки карты под себя. Право — только
+          // у того, кто её держит; вернутся настройки при освобождении.
+          if (!body?.target || !callerId) return sendJson(res, 400, { error: 'bad_request', message: 'нужны target и идентификатор узла' });
+          const claim = share.claims.get(body.target);
+          if (!claim || claim.holderId !== callerId) {
+            return sendJson(res, 403, { error: 'forbidden', message: 'карта занята не вами — менять её настройки нельзя' });
+          }
+          const dev = share.get(body.target);
+          if (!dev) return sendJson(res, 404, { error: 'not_found', message: 'карта не найдена' });
+          const r = await this.app.net.holderSetIp(dev, body.ip);
+          this.app.hub.invalidateSlow();
+          await share.refresh();
           this.app.onStateChanged();
           return sendJson(res, 200, r);
         }
@@ -381,12 +427,27 @@ export class ApiServer {
       if (access !== 'full') return sendJson(res, 403, { error: 'forbidden', message: 'журнал доступен только при полном доступе' });
       return sendJson(res, 200, { records: recentLogs(Number(url.searchParams.get('limit')) || 200) });
     }
+    if (req.method === 'GET' && route === '/api/v1/net/map') {
+      if (access !== 'full') {
+        return sendJson(res, 403, { error: 'forbidden', message: 'карта сети доступна только при полном доступе — войдите по паролю' });
+      }
+      try {
+        return sendJson(res, 200, await this.app.netManager.map());
+      } catch (e) {
+        return sendJson(res, 500, { error: 'failed', message: e.message });
+      }
+    }
     if (req.method === 'GET' && route === '/api/v1/networks') {
       if (access !== 'full') return sendJson(res, 403, { error: 'forbidden' });
       return sendJson(res, 200, { networks: listNetworks(), current: this.app.network });
     }
 
     if (req.method !== 'POST') return sendJson(res, 404, { error: 'not_found' });
+
+    if (req.headers[UI_HEADER] !== '1') {
+      log.warn(`отклонён ${route} без заголовка интерфейса (${normalizeIp(req.socket.remoteAddress || '')}, origin ${req.headers.origin || '—'})`);
+      return sendJson(res, 403, { error: 'foreign_page', message: 'запрос пришёл не из интерфейса приложения' });
+    }
 
     const body = parseJson(await readBody(req)) || {};
 
@@ -477,6 +538,39 @@ export class ApiServer {
         case '/api/v1/refresh':
           await this.app.refreshAll();
           return sendJson(res, 200, { ok: true });
+        // ------------------------------------------------ сеть компьютера
+        case '/api/v1/net/switch/create':
+          return sendJson(res, 200, await this.app.netManager.createSwitch({
+            name: body.name, nics: Array.isArray(body.nics) ? body.nics : [], hostAccess: body.hostAccess !== false,
+          }));
+        case '/api/v1/net/switch/delete':
+          return sendJson(res, 200, await this.app.netManager.deleteSwitch(body.id));
+        case '/api/v1/net/switch/rename':
+          return sendJson(res, 200, await this.app.netManager.renameSwitch(body.id, body.name));
+        case '/api/v1/net/switch/nic':
+          return sendJson(res, 200, await this.app.netManager.setSwitchNic(body.id, body.guid, Boolean(body.add)));
+        case '/api/v1/net/switch/host':
+          return sendJson(res, 200, await this.app.netManager.setHostAccess(body.id, Boolean(body.enabled)));
+        case '/api/v1/net/vnic/create':
+          return sendJson(res, 200, await this.app.netManager.createVnic({
+            name: body.name, switchId: body.switchId || null, mac: body.mac || null, ip: body.ip || null, category: body.category,
+          }));
+        case '/api/v1/net/vnic/delete':
+          return sendJson(res, 200, await this.app.netManager.deleteVnic(body.guid));
+        case '/api/v1/net/vnic/update': {
+          const patch = {};
+          for (const k of ['name', 'mac', 'switchId']) if (body[k] !== undefined) patch[k] = body[k];
+          return sendJson(res, 200, await this.app.netManager.updateVnic(body.guid, patch));
+        }
+        case '/api/v1/net/adapter/ip':
+          return sendJson(res, 200, await this.app.netManager.setAdapterIp(body.guid, body.ip, { category: body.category }));
+        case '/api/v1/net/adapter/category':
+          return sendJson(res, 200, await this.app.netManager.setAdapterCategory(body.guid, body.category));
+        case '/api/v1/net/bridge/ip':
+          return sendJson(res, 200, await this.app.netManager.setBridgeHostIp(Boolean(body.enabled)));
+        case '/api/v1/net/held/ip':
+          return sendJson(res, 200, await this.app.setHeldIp(body.attachmentId, body.deviceId, body.ip, { category: body.category }));
+
         case '/api/v1/install': {
           const r = await this.app.installer.start();
           this.pushState();
@@ -487,7 +581,7 @@ export class ApiServer {
       }
     } catch (e) {
       log.warn(`${route}: ${e.message}`);
-      const status = e.code === 'busy' ? 409 : e.code === 'forbidden' ? 403 : 400;
+      const status = e.code === 'busy' ? 409 : e.code === 'forbidden' ? 403 : e.code === 'not_found' ? 404 : 400;
       return sendJson(res, status, { error: e.code || 'failed', message: e.message, claim: e.claim || null });
     }
   }

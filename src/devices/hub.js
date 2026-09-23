@@ -2,9 +2,9 @@
 //
 // Выше этого слоя типы не различаются: каталог, занятость, аренда, группы и
 // запросы работают с любым устройством одинаково. Различие ровно одно —
-// есть ли у типа проброс данных по сети (`hasTransport`). Для USB он есть,
-// для COM, LPT и сетевых интерфейсов пока нет, и такие устройства
-// бронируются, а не пробрасываются.
+// есть ли у устройства проброс данных по сети (`hasTransport`). У USB он
+// есть всегда, у сетевой карты — если её можно отдать мостом (решает
+// NetShare), у COM и LPT пока нет. Без проброса устройство бронируется.
 
 import { logger } from '../log.js';
 import { listPorts, listNetInterfaces } from './ports.js';
@@ -17,9 +17,11 @@ export class DeviceHub {
    * @param {object} o
    * @param {import('./backend.js').UsbBackend} o.backend — бэкенд USB/IP
    * @param {() => string[]} o.enabledTypes — какие типы показывать
+   * @param {import('../core/netShare.js').NetShare} [o.net] — проброс сетевых карт
    */
-  constructor({ backend, enabledTypes }) {
+  constructor({ backend, enabledTypes, net = null }) {
     this.backend = backend;
+    this.net = net;
     this.enabledTypes = enabledTypes || (() => ['usb', 'com', 'lpt', 'net']);
     /** Кеш медленных источников: { ts, ports, nets }. */
     this._slow = { ts: 0, ports: [], nets: [] };
@@ -59,7 +61,7 @@ export class DeviceHub {
       if (this._enabled(p.type)) out.push(fromPort(p));
     }
     if (wantNet) {
-      for (const n of slow.nets) out.push(fromPort(n));
+      for (const n of slow.nets) out.push(this._fromNet(n));
     }
     return out;
   }
@@ -95,16 +97,44 @@ export class DeviceHub {
     return this._slowInFlight;
   }
 
-  // Операции с драйвером имеют смысл только для типов с пробросом.
+  /**
+   * Сетевая карта: проброс есть, если её можно отдать мостом. Почему нельзя
+   * — записывается рядом, чтобы человек видел причину, а не просто «бронь».
+   */
+  _fromNet(n) {
+    const d = fromPort(n);
+    const blocker = this.net ? this.net.lendBlocker(d) : 'проброс сетевых карт недоступен';
+    d.hasTransport = !blocker;
+    d.meta = { ...d.meta, transportNote: blocker };
+    d.bound = Boolean(this.net?.isLent(d.deviceId));
+    return d;
+  }
+
+  // Операции с драйвером имеют смысл только для устройств с пробросом.
   // Для остальных они успешно ничего не делают: занятость — это запись
   // в каталоге, а не действие над оборудованием.
 
-  async bind(device) {
+  /**
+   * @param {object} device
+   * @param {{ holderId?: string, holderAddress?: string|null }} [holder] —
+   *   кому отдаётся: сетевой карте нужно знать, кого пускать в канал
+   */
+  async bind(device, holder = {}) {
     if (!device.hasTransport) return { ok: true, reservationOnly: true };
+    if (device.type === 'net') {
+      if (!this.net) throw new Error('проброс сетевых карт недоступен');
+      const link = await this.net.lend(device, holder);
+      return { ok: true, link };
+    }
     return this.backend.bind(device.key);
   }
 
   async unbind(device) {
+    if (device.type === 'net') {
+      // Проброс мог исчезнуть, пока карта отдана (сменились права, пропал
+      // драйвер), — вернуть её всё равно нужно.
+      return this.net ? this.net.unlend(device) : { ok: true };
+    }
     if (!device.hasTransport) return { ok: true, reservationOnly: true };
     return this.backend.unbind(device.key);
   }

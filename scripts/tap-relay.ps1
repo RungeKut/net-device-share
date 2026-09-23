@@ -68,6 +68,27 @@ public static class TapRelay {
 
   static IntPtr handle = IntPtr.Zero;
 
+  // Сколько пережидать адаптер на паузе. NDIS ставит адаптер на паузу и
+  // перезапускает, когда меняется стек над ним: мост меняет состав, сетевой
+  // фильтр (Kaspersky и т. п.) переподключается при смене профиля сети. На
+  // это время чтение и запись отвечают отменой, хотя адаптер никуда не делся.
+  // Выйти в такой момент — значит оборвать проброс на пересоздание
+  // посредника и переподключение канала; переждать — дёшево.
+  const int PAUSE_LIMIT_MS = 8000;
+
+  /// <summary>
+  /// Отмена, которая переживается: адаптер на паузе, а не пропал. .NET
+  /// сообщает её по-разному: отменённое чтение асинхронного файла —
+  /// исключением OperationCanceledException («Операция была отменена»),
+  /// остальное — кодом Win32 внутри IOException.
+  /// </summary>
+  static bool Transient(Exception e) {
+    if (e is OperationCanceledException) return true;
+    int code = Marshal.GetHRForException(e) & 0xFFFF;
+    // ERROR_OPERATION_ABORTED, ERROR_NOT_READY, ERROR_INVALID_PARAMETER
+    return code == 995 || code == 21 || code == 87;
+  }
+
   static void Log(string s) { Console.Error.WriteLine(s); Console.Error.Flush(); }
 
   /// <summary>
@@ -106,10 +127,32 @@ public static class TapRelay {
   static void DeviceToPipe(FileStream dev, Stream output) {
     byte[] frame = new byte[MAX_FRAME];
     byte[] header = new byte[2];
+    DateTime paused = DateTime.MinValue;
     while (true) {
       int n;
-      try { n = dev.Read(frame, 0, MAX_FRAME); }
-      catch (Exception e) { Log("чтение из адаптера прервано: " + e.Message); return; }
+      try {
+        n = dev.Read(frame, 0, MAX_FRAME);
+        if (paused != DateTime.MinValue) {
+          Log("адаптер вернулся через " + (int)(DateTime.UtcNow - paused).TotalMilliseconds + " мс");
+          paused = DateTime.MinValue;
+        }
+      }
+      catch (Exception e) {
+        if (Transient(e)) {
+          if (paused == DateTime.MinValue) {
+            paused = DateTime.UtcNow;
+            Log("чтение прервано (" + e.Message.Trim() + ") — адаптер на паузе, ждём");
+          }
+          if ((DateTime.UtcNow - paused).TotalMilliseconds < PAUSE_LIMIT_MS) {
+            // После перезапуска адаптер мог забыть, что «кабель подключён».
+            SetMedia(handle, true);
+            Thread.Sleep(100);
+            continue;
+          }
+        }
+        Log("чтение из адаптера прервано: " + e.Message);
+        return;
+      }
       if (n <= 0) return;
 
       header[0] = (byte)(n >> 8);
@@ -126,6 +169,7 @@ public static class TapRelay {
   static void PipeToDevice(Stream input, FileStream dev) {
     byte[] header = new byte[2];
     byte[] frame = new byte[MAX_FRAME];
+    DateTime failedSince = DateTime.MinValue;
     while (true) {
       if (!ReadExact(input, header, 2)) return;
       int len = (header[0] << 8) | header[1];
@@ -134,8 +178,16 @@ public static class TapRelay {
         return;
       }
       if (!ReadExact(input, frame, len)) return;
-      try { dev.Write(frame, 0, len); dev.Flush(); }
-      catch (Exception e) { Log("запись в адаптер не удалась: " + e.Message); return; }
+      try { dev.Write(frame, 0, len); dev.Flush(); failedSince = DateTime.MinValue; }
+      catch (Exception e) {
+        // На паузе кадр теряется — как в проводе, — но обмен продолжается.
+        if (Transient(e)) {
+          if (failedSince == DateTime.MinValue) failedSince = DateTime.UtcNow;
+          if ((DateTime.UtcNow - failedSince).TotalMilliseconds < PAUSE_LIMIT_MS) continue;
+        }
+        Log("запись в адаптер не удалась: " + e.Message);
+        return;
+      }
     }
   }
 

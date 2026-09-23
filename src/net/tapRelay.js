@@ -11,8 +11,18 @@
 // DeviceIoControl, а из Node он недоступен вовсе.
 //
 // ФОРМАТ. Длина кадра двумя байтами (старший первый), затем сам кадр.
-// Одинаково в обе стороны. Полутора килобайт хватает на кадр Ethernet с
-// запасом на теги VLAN, поэтому двух байтов длины достаточно.
+// Одинаково в обе стороны и одинаково на проводе между машинами. Полутора
+// килобайт хватает на кадр Ethernet с запасом на теги VLAN, поэтому двух
+// байтов длины достаточно.
+//
+// ГРАНИЦЫ КАДРОВ. Кадры по-прежнему не разбираются на объекты: поток
+// режется на куски, в каждом из которых только целые кадры, и эти куски
+// уходят дальше как есть. Но следить за границами обязательно. Связь
+// рвётся посреди кадра, и если просто переключить трубу на новое
+// соединение, другая сторона прочтёт половину кадра как длину следующего —
+// а посредник на такой поток отвечает завершением. Поэтому в посредника
+// пишутся только целые кадры, и новый получатель получает поток с начала
+// кадра, а не с середины.
 
 import { spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
@@ -26,7 +36,7 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '.
 const RELAY = path.join(ROOT, 'scripts', 'tap-relay.ps1');
 
 /** Кадр Ethernet с запасом на теги VLAN — столько же, сколько у посредника. */
-const MAX_FRAME = 2048;
+export const MAX_FRAME = 2048;
 
 /**
  * Сколько ждать готовности посредника.
@@ -36,6 +46,45 @@ const MAX_FRAME = 2048;
  */
 const READY_TIMEOUT_MS = 20000;
 
+/**
+ * Нарезка потока «длина + кадр» на куски из целых кадров.
+ *
+ * Отдаёт срезы исходных буферов, не копируя их. Копируется только хвост —
+ * начатый, но не дошедший кадр, а он не длиннее одного кадра.
+ */
+export class FrameCutter {
+  constructor(maxFrame = MAX_FRAME) {
+    this.max = maxFrame;
+    this.tail = null;
+  }
+
+  /**
+   * @param {Buffer} chunk
+   * @returns {Buffer|null} целые кадры подряд, либо null, если ни один не
+   *   дошёл целиком
+   * @throws если в потоке недопустимая длина — дальше его читать нельзя
+   */
+  push(chunk) {
+    const buf = this.tail ? Buffer.concat([this.tail, chunk]) : chunk;
+    let end = 0;
+    while (buf.length - end >= 2) {
+      const len = buf.readUInt16BE(end);
+      if (len === 0 || len > this.max) {
+        this.tail = null;
+        throw new Error(`кадр недопустимой длины ${len}`);
+      }
+      if (buf.length - end < 2 + len) break;
+      end += 2 + len;
+    }
+    this.tail = end < buf.length ? Buffer.from(buf.subarray(end)) : null;
+    return end ? buf.subarray(0, end) : null;
+  }
+
+  reset() {
+    this.tail = null;
+  }
+}
+
 export class TapRelay extends EventEmitter {
   /** @param {string} guid GUID сетевого интерфейса TAP-адаптера */
   constructor(guid) {
@@ -44,13 +93,13 @@ export class TapRelay extends EventEmitter {
     this.child = null;
     this.ready = false;
     this.stopping = false;
-    this.rx = 0;
-    this.tx = 0;
-    this.rxFrames = 0;
-    this.txFrames = 0;
-    this._buf = Buffer.alloc(0);
-    this.attached = null;
-    this._onStdout = (chunk) => this._onData(chunk);
+    /** Байты из адаптера (то, что система отправила в «провод»). */
+    this.fromTap = 0;
+    /** Байты в адаптер (то, что пришло из «провода»). */
+    this.toTap = 0;
+    this._out = new FrameCutter();
+    /** Куда уходят кадры из адаптера. Нет получателя — кадры отбрасываются. */
+    this.sink = null;
   }
 
   start() {
@@ -64,11 +113,14 @@ export class TapRelay extends EventEmitter {
         { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
 
       const timer = setTimeout(() => {
-        reject(new Error(`посредник не ответил за ${READY_TIMEOUT_MS} мс`));
+        reject(new Error(`посредник не ответил за ${READY_TIMEOUT_MS / 1000} с`));
         this.stop();
       }, READY_TIMEOUT_MS);
 
-      this.child.stdout.on('data', this._onStdout);
+      this.child.stdout.on('data', (chunk) => this._fromAdapter(chunk));
+      // Запись в посредника после его смерти даёт EPIPE. Это не авария
+      // приложения: о завершении посредника и так сообщит событие exit.
+      this.child.stdin.on('error', (e) => log.debug(`канал в посредника: ${e.message}`));
 
       // Диагностика посредника идёт в поток ошибок: поток вывода занят
       // кадрами и обязан оставаться двоично чистым.
@@ -99,7 +151,7 @@ export class TapRelay extends EventEmitter {
         this.ready = false;
         if (!this.stopping) {
           const why = EXIT_REASONS[code] || `код ${code}`;
-          log.warn(`посредник завершился: ${why}`);
+          log.warn(`посредник ${this.guid} завершился: ${why}`);
           this.emit('closed', why);
           reject(new Error(why));
         }
@@ -107,113 +159,95 @@ export class TapRelay extends EventEmitter {
     });
   }
 
-  /**
-   * Разбор потока кадров.
-   *
-   * Канал отдаёт байты как придётся: кадр может прийти по частям, а может
-   * несколько сразу. Поэтому накапливаем и отрезаем по длине.
-   */
-  _onData(chunk) {
-    this.rx += chunk.length;
-    this._buf = this._buf.length ? Buffer.concat([this._buf, chunk]) : chunk;
-
-    while (this._buf.length >= 2) {
-      const len = this._buf.readUInt16BE(0);
-      if (len === 0 || len > MAX_FRAME) {
-        log.error(`посредник прислал кадр длиной ${len} — обмен прекращён`);
-        this.stop();
-        return;
-      }
-      if (this._buf.length < 2 + len) return; // кадр ещё не целиком
-
-      const frame = this._buf.subarray(2, 2 + len);
-      this._buf = this._buf.subarray(2 + len);
-      this.rxFrames++;
-      this.emit('frame', Buffer.from(frame));
-    }
-  }
-
-  /**
-   * Сквозной режим: поток кадров уходит прямо в переданный поток.
-   *
-   * Формат обмена с посредником и формат на проводе совпадают, поэтому
-   * связать их можно перекачкой, и кадры не попадают в JavaScript вовсе.
-   * Через канал идёт весь трафик карты — разбирать каждый кадр в основном
-   * процессе значило бы получить приложение, которое тормозит тем сильнее,
-   * чем активнее им пользуются.
-   *
-   * Пока действует сквозной режим, событие «frame» не возникает.
-   *
-   * @param {import('node:stream').Duplex} duplex
-   * @returns {object|null} null, если посредник не готов
-   */
-  attach(duplex) {
-    if (!this.child || !this.ready) return null;
-    if (this.attached) throw new Error('посредник уже переключён на сквозную передачу');
-
-    this.child.stdout.removeListener('data', this._onStdout);
-    if (this._buf.length) {
-      // Хвост, накопленный до переключения, дописываем как есть: это
-      // те же кадры в том же формате.
-      duplex.write(this._buf);
-      this._buf = Buffer.alloc(0);
-    }
-
-    this.child.stdout.pipe(duplex);
-    // end: false — обрыв связи не должен закрывать ввод посредника:
-    // адаптер остаётся поднятым и ждёт, пока подключатся заново.
-    duplex.pipe(this.child.stdin, { end: false });
-
-    this.attached = duplex;
-    duplex.once('close', () => this.detach());
-    return { detach: () => this.detach() };
-  }
-
-  /** Вернуться к разбору кадров внутри приложения. */
-  detach() {
-    if (!this.attached) return;
-    const duplex = this.attached;
-    this.attached = null;
+  /** Поток из адаптера: целыми кадрами — получателю, если он есть. */
+  _fromAdapter(chunk) {
+    let frames;
     try {
-      this.child?.stdout.unpipe(duplex);
-      duplex.unpipe(this.child?.stdin);
-    } catch { /* поток мог уже закрыться */ }
-    if (this.child) this.child.stdout.on('data', this._onStdout);
+      frames = this._out.push(chunk);
+    } catch (e) {
+      log.error(`посредник прислал ${e.message} — обмен прекращён`);
+      this.stop();
+      return;
+    }
+    if (!frames) return;
+    this.fromTap += frames.length;
+
+    const sink = this.sink;
+    if (!sink) return;
+    // Встречный напор: сеть не успевает — перестаём читать посредника,
+    // и он притормозит чтение адаптера, а не наберёт гигабайт в память.
+    if (!sink.write(frames) && this.child) {
+      const out = this.child.stdout;
+      out.pause();
+      const resume = () => {
+        sink.removeListener('drain', resume);
+        sink.removeListener('close', resume);
+        if (this.sink === sink || !this.sink) out.resume();
+      };
+      sink.once('drain', resume);
+      sink.once('close', resume);
+    }
   }
 
-  /** Отправить кадр в адаптер. */
+  /**
+   * Назначить получателя кадров из адаптера.
+   *
+   * Поток уже выровнен по кадрам, так что новый получатель начинает ровно с
+   * начала кадра.
+   *
+   * @param {import('node:stream').Writable|null} sink
+   */
+  setSink(sink) {
+    this.sink = sink;
+    // Если чтение стояло из-за прежнего получателя — возобновляем.
+    if (this.child && this.child.stdout.isPaused()) this.child.stdout.resume();
+  }
+
+  /**
+   * Отправить в адаптер целые кадры (один или несколько подряд).
+   * @returns {boolean} false — посредник не успевает, подождите onceDrain
+   */
+  writeFrames(frames) {
+    if (!this.child || !this.ready) return true;
+    this.toTap += frames.length;
+    return this.child.stdin.write(frames);
+  }
+
+  /** Сколько байт ждут отправки в посредника. */
+  backlog() {
+    return this.child ? this.child.stdin.writableLength : 0;
+  }
+
+  /** Ждать, пока посредник примет накопленное. */
+  onceDrain(fn) {
+    if (!this.child) { fn(); return; }
+    this.child.stdin.once('drain', fn);
+  }
+
+  /** Отправить в адаптер один кадр. */
   write(frame) {
-    if (!this.child || !this.ready) return false;
-    if (this.attached) {
-      log.warn('кадр не отправлен: посредник в сквозном режиме');
-      return false;
-    }
     if (!Buffer.isBuffer(frame) || !frame.length || frame.length > MAX_FRAME) {
       log.warn(`кадр длиной ${frame?.length} не отправлен: вне допустимого размера`);
       return false;
     }
     const header = Buffer.allocUnsafe(2);
     header.writeUInt16BE(frame.length, 0);
-    const ok = this.child.stdin.write(header) && this.child.stdin.write(frame);
-    this.tx += frame.length;
-    this.txFrames++;
-    return ok;
+    return this.writeFrames(Buffer.concat([header, frame]));
   }
 
   stats() {
     return {
       guid: this.guid,
       ready: this.ready,
-      rxFrames: this.rxFrames,
-      txFrames: this.txFrames,
-      rxBytes: this.rx,
-      txBytes: this.tx,
+      fromTap: this.fromTap,
+      toTap: this.toTap,
     };
   }
 
   async stop() {
     if (!this.child) return;
     this.stopping = true;
+    this.sink = null;
     const child = this.child;
 
     // Закрытие потока ввода — это и есть просьба завершиться: посредник
@@ -237,6 +271,6 @@ export class TapRelay extends EventEmitter {
 
 /** Коды возврата посредника — чтобы в журнале была причина, а не число. */
 const EXIT_REASONS = {
-  2: 'адаптер не найден — проверьте, что драйвер установлен и адаптер создан',
+  2: 'адаптер не найден или занят другой программой',
   3: 'адаптер не удалось поднять (DeviceIoControl)',
 };

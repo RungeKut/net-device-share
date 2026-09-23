@@ -54,6 +54,12 @@ export class ShareManager extends EventEmitter {
     this.reservations = new Map();
     /** @type {Map<string, object>} requestId → запрос */
     this.requests = new Map();
+    /**
+     * Устройства, которые прямо сейчас готовятся к выдаче. Подготовка
+     * сетевой карты — это сборка моста, секунды; без этой отметки второй
+     * узел успел бы пройти проверку занятости за это время.
+     */
+    this.preparing = new Set();
     this.pollTimer = null;
     this.sweepTimer = null;
     this.lastHash = null;
@@ -134,6 +140,9 @@ export class ShareManager extends EventEmitter {
         this.emit('claim-revoked', { deviceId: id, claim, reason: 'device_gone' });
       }
       this.reservations.delete(id);
+      // Отданная сетевая карта пропала (выдернули USB-адаптер) — мост с её
+      // TAP-адаптером больше ни к чему, и сам он не разберётся.
+      if (dev.type === 'net') this.hub.unbind(dev).catch((e) => log.warn(e.message));
       log.info(`устройство ${id} (${dev.description}) больше не доступно`);
     }
 
@@ -308,12 +317,30 @@ export class ShareManager extends EventEmitter {
 
   /**
    * Занять устройство или группу.
-   * @param {object} who { holderId, holderName, force }
+   * @param {object} who { holderId, holderName, force, holderAddress }
    *   force разрешён только владельцу — это его право забрать своё
-   *   оборудование без спроса.
+   *   оборудование без спроса. holderAddress — откуда пришёл вызов: канал
+   *   сетевой карты пускает только с него.
    */
-  async claim(target, { holderId, holderName, force = false }) {
+  async claim(target, { holderId, holderName, force = false, holderAddress = null }) {
     const { kind, group, devices } = this._resolve(target);
+    const busyPreparing = devices.find((d) => this.preparing.has(d.deviceId));
+    if (busyPreparing) {
+      throw errWith('busy', `${busyPreparing.title} прямо сейчас занимается — попробуйте через несколько секунд`);
+    }
+    for (const d of devices) this.preparing.add(d.deviceId);
+    // Каталог сразу видит «готовится»: и владелец у себя, и соседи — иначе
+    // до конца сборки моста карта выглядела бы свободной.
+    this._emitIfChanged(true);
+    try {
+      return await this._claim(target, { kind, group, devices }, { holderId, holderName, force, holderAddress });
+    } finally {
+      for (const d of devices) this.preparing.delete(d.deviceId);
+      this._emitIfChanged(true);
+    }
+  }
+
+  async _claim(target, { kind, group, devices }, { holderId, holderName, force, holderAddress }) {
     const isOwner = holderId === this.config.get('nodeId');
     const preempt = force && isOwner;
 
@@ -363,9 +390,13 @@ export class ShareManager extends EventEmitter {
 
     // Готовим устройства к работе. Если хоть одно не далось — откатываем всё.
     const prepared = [];
+    // Каналы сетевых карт: куда подключаться и с каким пропуском. Уходят
+    // только тому, кто занял, — в каталог и анонсы они не попадают.
+    const links = [];
     try {
       for (const dev of devices) {
-        await this.hub.bind(dev);
+        const r = await this.hub.bind(dev, { holderId, holderAddress });
+        if (r?.link) links.push({ deviceId: dev.deviceId, ...r.link });
         dev.bindState = dev.hasTransport ? BIND_STATE.BOUND : BIND_STATE.UNBOUND;
         dev.stateStamp = Date.now();
         dev.lastError = null;
@@ -408,6 +439,7 @@ export class ShareManager extends EventEmitter {
       target,
       kind,
       usbipPort: this.dataPort(),
+      links,
       leaseMs: lease,
       devices: devices.map((d) => this.toDto(d)),
     };
@@ -652,6 +684,8 @@ export class ShareManager extends EventEmitter {
       sharedSince: dev.sharedSince,
       unavailableReason: dev.unavailableReason || null,
       lastError: dev.lastError || null,
+      // Идёт выдача: для сетевой карты это сборка моста, секунды.
+      preparing: this.preparing.has(dev.deviceId),
       traffic: this.trafficOf(dev.deviceId),
       meta: dev.meta || {},
     };
@@ -691,6 +725,7 @@ export class ShareManager extends EventEmitter {
         // все устройства группы заняты вместе.
         partial: claims.length > 0 && claims.length !== g.members.length,
         reservedFor: reserved ? { ...reserved } : null,
+        preparing: g.members.some((m) => this.preparing.has(m)),
       };
     });
   }

@@ -297,7 +297,7 @@ function psQuote(s) {
   return String(s).replace(/'/g, "''");
 }
 
-async function isElevated() {
+export async function isElevated() {
   // fltmc отрабатывает только с повышенными правами — этим и проверяем.
   const r = await run('fltmc.exe', [], { timeoutMs: 8000 });
   return r.ok;

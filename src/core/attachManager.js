@@ -3,7 +3,8 @@
 // Занятие — это две отдельные вещи, и их важно не путать:
 //   1. ПРАВО на цель: аренда у владельца, выдаётся по RPC.
 //   2. ФАКТ подключения: usbip attach, после которого устройство
-//      появляется в «Диспетчере устройств».
+//      появляется в «Диспетчере устройств», либо — для сетевой карты —
+//      свой TAP-адаптер, соединённый каналом с картой владельца.
 // Право берём первым: откажут — локальный VHCI трогать незачем.
 // При освобождении порядок обратный: сначала отцепляем, потом отдаём право.
 //
@@ -31,10 +32,12 @@ export class AttachManager extends EventEmitter {
    * @param {(nodeId: string) => (string|undefined)} o.keyFor — ключ круга доверия,
    *   в котором услышан этот узел. Кругов у нас может быть несколько, и
    *   подписывать вызов надо тем ключом, который примет именно он.
+   * @param {import('./netShare.js').NetShare} [o.net] — сетевые карты
    */
-  constructor({ backend, config, share, keyFor }) {
+  constructor({ backend, config, share, keyFor, net = null }) {
     super();
     this.backend = backend;
+    this.net = net;
     this.config = config;
     this.share = share;
     this.keyFor = keyFor;
@@ -158,14 +161,26 @@ export class AttachManager extends EventEmitter {
         deviceId: d.deviceId,
         key: d.key,
         type: d.type,
+        title: d.title,
         description: d.description,
         hasTransport: Boolean(d.hasTransport),
         vhciPort: null,
+        // Сетевая карта: ключ взятого адаптера, его имя в системе и
+        // настройки IP, перенесённые с карты владельца.
+        netKey: null,
+        adapter: null,
+        ip: null,
+        ipApplied: null,
+        // Почему владелец не прислал настройки (карта в его коммутаторе).
+        ipNote: null,
         error: null,
       })),
       since: Date.now(),
       attachedAt: null,
       state: 'attaching',
+      // Что происходит прямо сейчас. Занятие сетевой карты длится секунды,
+      // и без этого человек видит только «…» на кнопке и не знает, ждать ли.
+      stage: null,
       lastError: null,
       self: t.nodeId === this.config.get('nodeId'),
     };
@@ -173,6 +188,10 @@ export class AttachManager extends EventEmitter {
     this.emit('changed');
 
     try {
+      const net = rec.parts.some((p) => p.type === 'net' && p.hasTransport);
+      this._stage(rec, net
+        ? 'владелец готовит карту: адаптер и мост, до минуты'
+        : 'запрос права у владельца');
       const grant = await this._requestClaim(t, force);
       rec.usbipPort = grant.usbipPort || rec.usbipPort;
       rec.leaseMs = grant.leaseMs;
@@ -181,24 +200,35 @@ export class AttachManager extends EventEmitter {
       // забронированными — для них локально делать нечего.
       for (const part of rec.parts) {
         if (!part.hasTransport) continue;
+        if (part.type === 'net') {
+          await this._attachNet(rec, part, grant);
+          continue;
+        }
+        this._stage(rec, `подключение ${part.description || part.key}`);
         const result = await this.backend.attach({ host: rec.host, busid: part.key, port: rec.usbipPort });
         part.vhciPort = result.vhciPort;
       }
 
       rec.state = 'attached';
+      rec.stage = null;
       rec.attachedAt = Date.now();
       const attached = rec.parts.filter((p) => p.hasTransport).length;
       log.info(`${rec.title} занято у "${rec.nodeName}"${attached ? `, подключено устройств: ${attached}` : ' (бронь)'}`);
       this.emit('changed');
       return { ...rec };
     } catch (e) {
+      // На каком шаге сорвалось — половина ответа на вопрос «почему».
+      const at = rec.stage;
       rec.state = 'error';
+      rec.stage = null;
       rec.lastError = e.message;
-      log.error(`не удалось занять ${rec.title} у "${rec.nodeName}": ${e.message}`);
+      log.error(`не удалось занять ${rec.title} у "${rec.nodeName}"${at ? ` (шаг: ${at})` : ''}: ${e.message}`);
+      if (at) e.message = `${e.message} — на шаге «${at}»`;
 
       // Откат: отцепляем то, что успели, и возвращаем право — иначе цель
       // останется занятой из-за нашей же неудачи.
       for (const part of rec.parts) {
+        if (part.netKey) await this.net?.giveBack(part.netKey).catch(() => {});
         if (part.vhciPort === null || part.vhciPort === undefined) continue;
         await this.backend.detach(part.vhciPort).catch(() => {});
       }
@@ -218,6 +248,11 @@ export class AttachManager extends EventEmitter {
     this.emit('changed');
 
     for (const part of rec.parts) {
+      if (part.netKey) {
+        await this.net?.giveBack(part.netKey).catch((e) => log.warn(`адаптер ${part.adapter} не отключён: ${e.message}`));
+        part.netKey = null;
+        continue;
+      }
       if (part.vhciPort === null || part.vhciPort === undefined) continue;
       try {
         await this.backend.detach(part.vhciPort);
@@ -280,6 +315,50 @@ export class AttachManager extends EventEmitter {
     return answer;
   }
 
+  /**
+   * Сетевая карта: свой TAP-адаптер, соединённый с каналом владельца.
+   * Адаптер называется по карте и владельцу — так его и узнают в
+   * «Сетевых подключениях».
+   */
+  async _attachNet(rec, part, grant) {
+    if (!this.net) throw new Error('проброс сетевых карт на этом компьютере недоступен');
+    const link = (grant.links || []).find((l) => l.deviceId === part.deviceId);
+    if (!link) throw new Error(`владелец не выдал канал для «${part.description}» — возможно, у него старая версия приложения`);
+
+    const key = `${rec.id}|${part.deviceId}`;
+    const owner = String(rec.nodeName || '').replace(/\s*\(этот компьютер\)$/, '');
+    const res = await this.net.borrow({
+      key,
+      host: rec.host,
+      port: link.port,
+      token: link.token,
+      label: `${part.title || part.key} на ${owner}`,
+      ip: link.ip || null,
+      onStage: (s) => this._stage(rec, s),
+    });
+    part.netKey = key;
+    part.adapter = res.name;
+    part.ip = res.ip;
+    part.ipApplied = res.ipApplied;
+    part.ipNote = link.ipNote || null;
+  }
+
+  /** Держатель поменял настройки IP карты — запомнить, что теперь на ней. */
+  setPartIp(attachmentId, deviceId, { ip, ipApplied }) {
+    const rec = this.attachments.get(attachmentId);
+    const part = rec?.parts.find((p) => p.deviceId === deviceId);
+    if (!part) return;
+    part.ip = ip;
+    part.ipApplied = ipApplied;
+    part.ipNote = null;
+    this.emit('changed');
+  }
+
+  _stage(rec, text) {
+    rec.stage = text;
+    this.emit('changed');
+  }
+
   // --------------------------------------------------------------- вызовы
 
   async _requestClaim(t, force) {
@@ -290,6 +369,9 @@ export class AttachManager extends EventEmitter {
         force,
       });
     }
+    // Сетевую карту владелец готовит секундами: собирает мост, а при первом
+    // занятии ещё и создаёт TAP-адаптер. Пятнадцати секунд на это мало.
+    const slow = (t.devices || []).some((d) => d.type === 'net' && d.hasTransport);
     try {
       return await rpc({
         host: t.host,
@@ -299,7 +381,7 @@ export class AttachManager extends EventEmitter {
         body: { target: t.target, holderName: this.config.get('name'), force: Boolean(force) },
         key: this.keyFor(t.nodeId),
         nodeId: this.config.get('nodeId'),
-        timeoutMs: 15000,
+        timeoutMs: slow ? 180000 : 15000,
       });
     } catch (e) {
       if (e instanceof RpcError && e.body) {

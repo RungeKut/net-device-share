@@ -526,3 +526,67 @@ dialog::backdrop { background: rgba(8, 12, 20, .5); }
   background: var(--surface-2);
   border-color: var(--border);
 }
+
+/* ------------------------------------------------------------ вкладка «Сеть» */
+
+h3.sub { margin: 22px 0 8px; font-size: 14px; font-weight: 650; color: var(--muted); letter-spacing: .2px; }
+.card.sel { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+.netmap-wrap {
+  overflow-x: auto;
+  padding: 14px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+.netmap { position: relative; min-height: 40px; margin: 0 auto; }
+.nm-edges { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none; }
+
+.nm-edge { fill: none; stroke: var(--muted); stroke-width: 1.6; }
+.nm-edge.nm-solid { stroke: var(--muted); }
+.nm-edge.nm-off { stroke: var(--border); stroke-dasharray: 2 4; }
+.nm-edge.nm-forward { stroke: var(--accent); stroke-width: 2; stroke-dasharray: 7 5; }
+.nm-edge.nm-reserve { stroke: var(--busy); stroke-dasharray: 2 4; stroke-width: 2; }
+.nm-elabel { font-size: 11px; fill: var(--muted); text-anchor: middle; paint-order: stroke; stroke: var(--surface); stroke-width: 4px; }
+
+.nm-node {
+  position: absolute;
+  padding: 6px 9px;
+  border-radius: 9px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  overflow: hidden;
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1.35;
+}
+.nm-node:hover { border-color: var(--accent); }
+.nm-node.nm-sel { outline: 2px solid var(--accent); }
+.nm-title { font-weight: 650; font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.nm-sub { color: var(--muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.nm-line { font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.nm-line.err { color: var(--err); }
+.nm-badges { display: flex; gap: 4px; flex-wrap: nowrap; overflow: hidden; margin-top: 2px; }
+.nm-b {
+  font-size: 10.5px; padding: 0 6px; border-radius: 999px; white-space: nowrap;
+  background: var(--surface); border: 1px solid var(--border); color: var(--muted);
+}
+.nm-b.warn, .nm-b.busy { color: var(--busy); border-color: currentColor; background: var(--busy-bg); }
+.nm-b.off { color: var(--muted); }
+
+.nm-node.nm-switch, .nm-node.nm-bridge { background: var(--mine-bg); border-color: var(--mine); }
+.nm-node.nm-bridge .nm-title, .nm-node.nm-switch .nm-title { color: var(--mine); }
+.nm-node.nm-remote { background: transparent; border: 1.5px dashed var(--accent); }
+.nm-node.nm-a-vnic, .nm-node.nm-a-borrow, .nm-node.nm-a-bridge { background: var(--ok-bg); border-color: var(--ok); }
+.nm-node.nm-down { opacity: .7; }
+.nm-node.nm-problem { border-color: var(--err); background: var(--err-bg); }
+.nm-node.nm-a-virtual, .nm-node.nm-a-tap { opacity: .75; }
+
+.netmap-legend { display: flex; gap: 18px; flex-wrap: wrap; font-size: 12px; color: var(--muted); margin: 8px 2px 0; }
+.leg { display: inline-block; width: 26px; height: 0; vertical-align: middle; border-top: 2px solid var(--muted); margin-right: 4px; }
+.leg.forward { border-top: 2px dashed var(--accent); }
+.leg.reserve { border-top: 2px dotted var(--busy); }
+
+.sw-addnic { margin-top: 6px; }
+.sw-addnic select { max-width: 360px; }

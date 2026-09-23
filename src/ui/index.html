@@ -40,6 +40,7 @@
   <button class="tab" data-tab="groups" type="button">Группы <span class="badge" id="cntGroups">0</span></button>
   <button class="tab" data-tab="attached" type="button">Занято мной <span class="badge" id="cntAttached">0</span></button>
   <button class="tab" data-tab="peers" type="button">Узлы <span class="badge" id="cntPeers">0</span></button>
+  <button class="tab" data-tab="net" type="button" id="tabNet" hidden>Сеть</button>
   <button class="tab" data-tab="log" type="button">Журнал</button>
 </nav>
 
@@ -88,6 +89,32 @@
   <section class="panel" id="tab-peers">
     <div class="panel-head"><h2>Узлы в сети</h2></div>
     <div id="peersList" class="cards"></div>
+  </section>
+
+  <section class="panel" id="tab-net">
+    <div class="panel-head">
+      <h2>Сеть этого компьютера</h2>
+      <div class="head-controls">
+        <button class="btn primary" id="btnNewSwitch" type="button">Создать коммутатор</button>
+        <button class="btn" id="btnNewVnic" type="button">Создать виртуальный адаптер</button>
+        <button class="btn" id="btnNetRefresh" type="button">Обновить</button>
+      </div>
+    </div>
+    <p class="hint">Коммутатор соединяет адаптеры этого компьютера как обычный коммутатор — кадрами по MAC.
+      Включите в него физическую карту, и всё подключённое окажется в её сети. Виртуальный адаптер — ещё
+      один сетевой адаптер Windows со своим MAC и адресом: так компьютер выглядит в сети стенда несколькими
+      устройствами. Здесь же видно, какие карты отданы по сети и какие забронированы.</p>
+    <div id="netNotes"></div>
+    <div class="netmap-wrap"><div id="netMap" class="netmap"></div></div>
+    <div class="netmap-legend">
+      <span><i class="leg solid"></i> в одном сегменте (мост, коммутатор)</span>
+      <span><i class="leg forward"></i> проброс по сети</span>
+      <span><i class="leg reserve"></i> бронь</span>
+    </div>
+    <h3 class="sub">Коммутаторы</h3>
+    <div id="netSwitches" class="cards"></div>
+    <h3 class="sub">Адаптеры</h3>
+    <div id="netAdapters" class="cards"></div>
   </section>
 
   <section class="panel" id="tab-log">
@@ -364,6 +391,79 @@
            стало бы невозможно именно тогда, когда это нужнее всего. -->
       <button class="btn" type="button" id="btnCancelSettings">Отмена</button>
       <button class="btn primary" value="save" type="submit" id="btnSaveSettings">Сохранить</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- Коммутатор -->
+<dialog id="switchDialog">
+  <form method="dialog" class="dlg">
+    <h2>Новый коммутатор</h2>
+    <label class="field">
+      <span>Имя</span>
+      <input type="text" id="swName" maxlength="48" placeholder="например: Стенд">
+    </label>
+    <div class="field">
+      <span>Физическая карта — выход в её сеть</span>
+      <div id="swNics" class="member-picker"></div>
+      <small>Без карты коммутатор внутренний: соединяет только адаптеры этого компьютера. Две карты —
+        это две сети, слитые в одну; так делают, только когда это и нужно.</small>
+    </div>
+    <label class="field">
+      <span><input type="checkbox" id="swHost" checked> Оставить этому компьютеру доступ к сети карты</span>
+      <small>Адрес карты переедет на адаптер «Сетевой мост» — компьютер останется в сети под тем же
+        адресом. Без галочки на мосту не будет IP: сеть карты — только для подключённых адаптеров.</small>
+    </label>
+    <p class="dlg-note" id="swWarn"></p>
+    <div class="dlg-actions">
+      <button class="btn" value="cancel" type="submit">Отмена</button>
+      <button class="btn primary" value="save" type="submit">Создать</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- Виртуальный адаптер -->
+<dialog id="vnicDialog">
+  <form method="dialog" class="dlg">
+    <h2 id="vnicTitle">Новый виртуальный адаптер</h2>
+    <label class="field">
+      <span>Имя в «Сетевых подключениях»</span>
+      <input type="text" id="vnicName" maxlength="48">
+    </label>
+    <label class="field">
+      <span>Коммутатор</span>
+      <select id="vnicSwitch"></select>
+    </label>
+    <div class="field">
+      <span>MAC-адрес</span>
+      <select id="vnicMacMode">
+        <option value="">свой у адаптера (не менять)</option>
+        <option value="random">случайный</option>
+        <option value="set">задать…</option>
+      </select>
+      <input type="text" id="vnicMac" maxlength="17" placeholder="02-AA-BB-CC-DD-01" hidden>
+      <small>Драйвер TAP принимает только локальные MAC-адреса — первый байт 02, 06, 0A…
+        Заводской адрес настоящей карты (00-15-…) он не примет.</small>
+    </div>
+    <div id="vnicIp"></div>
+    <p class="dlg-note" id="vnicNote"></p>
+    <div class="dlg-actions">
+      <button class="btn" value="cancel" type="submit">Отмена</button>
+      <button class="btn primary" value="save" type="submit" id="vnicSave">Создать</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- Настройки IP -->
+<dialog id="ipDialog">
+  <form method="dialog" class="dlg">
+    <h2 id="ipTitle">Настройки IP</h2>
+    <p class="dlg-note" id="ipSub"></p>
+    <div id="ipEditor"></div>
+    <p class="dlg-note" id="ipNote"></p>
+    <div class="dlg-actions">
+      <button class="btn" value="cancel" type="submit">Отмена</button>
+      <button class="btn primary" value="save" type="submit">Применить</button>
     </div>
   </form>
 </dialog>

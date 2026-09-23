@@ -3,10 +3,12 @@
     Правила брандмауэра для Net Device Share.
 
 .DESCRIPTION
-    Открывает три порта, нужных для работы приложения:
+    Открывает порты, нужные для работы приложения:
       47811/UDP — обнаружение узлов;
       47812/TCP — каталог устройств и учёт занятости;
-       3240/TCP — данные USB/IP.
+      47813/TCP — данные USB/IP через счётчик трафика;
+      47814/TCP — кадры отданной сетевой карты;
+       3240/TCP — данные USB/IP напрямую.
 
     Правило для 3240 обычно создаёт установщик usbipd-win. Скрипт проверяет
     это и заводит своё правило, только если чужого нет.
@@ -23,6 +25,12 @@
 
 .PARAMETER ApiPort
     Порт HTTP API, если он изменён при запуске приложения.
+
+.PARAMETER TrafficPort
+    Порт счётчика трафика USB/IP.
+
+.PARAMETER NetLinkPort
+    Порт канала сетевой карты.
 
 .PARAMETER UsbipPort
     Порт данных USB/IP. Задан протоколом, менять почти никогда не нужно.
@@ -43,6 +51,8 @@ param(
     [switch] $Remove,
     [int] $DiscoveryPort = 47811,
     [int] $ApiPort = 47812,
+    [int] $TrafficPort = 47813,
+    [int] $NetLinkPort = 47814,
     [int] $UsbipPort = 3240,
     [switch] $SkipUsbip
 )
@@ -61,7 +71,9 @@ if (-not $isAdmin) {
 
 $rules = @(
     @{ Name = 'Net Device Share - обнаружение (UDP)'; Protocol = 'UDP'; Port = $DiscoveryPort },
-    @{ Name = 'Net Device Share - каталог и занятость (TCP)'; Protocol = 'TCP'; Port = $ApiPort }
+    @{ Name = 'Net Device Share - каталог и занятость (TCP)'; Protocol = 'TCP'; Port = $ApiPort },
+    @{ Name = 'Net Device Share - счётчик трафика USB/IP (TCP)'; Protocol = 'TCP'; Port = $TrafficPort },
+    @{ Name = 'Net Device Share - кадры сетевой карты (TCP)'; Protocol = 'TCP'; Port = $NetLinkPort }
 )
 
 # Порт данных USB/IP обычно открывает установщик usbipd-win. Своё правило
@@ -118,7 +130,7 @@ foreach ($rule in $rules) {
 
     New-NetFirewallRule `
         -DisplayName $rule.Name `
-        -Description 'Net Device Share: общий доступ к USB-устройствам по сети' `
+        -Description 'Net Device Share: общий доступ к устройствам по сети' `
         -Direction Inbound `
         -Action Allow `
         -Protocol $rule.Protocol `
