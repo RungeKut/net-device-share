@@ -55,6 +55,27 @@ export function run(cmd, args = [], { timeoutMs = 15000, cwd } = {}) {
   });
 }
 
+/** Строка в одинарных кавычках PowerShell: кавычка внутри удваивается. */
+export function psQuote(s) {
+  return `'${String(s).replace(/'/g, "''")}'`;
+}
+
+/** Общая обёртка над PowerShell: кодировка и разбор JSON в одном месте. */
+export async function psJson(script, { timeoutMs = 20000 } = {}) {
+  // Без явной кодировки PowerShell пишет в перенаправленный поток в кодировке
+  // консоли (на русской Windows — CP866), и кириллица приходит мусором.
+  const full = '[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; ' + script;
+  const r = await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', full], { timeoutMs });
+  if (!r.ok || !r.stdout.trim()) return [];
+  try {
+    const parsed = JSON.parse(r.stdout);
+    return Array.isArray(parsed) ? parsed : [parsed];
+  } catch (e) {
+    log.debug('не разобрался вывод PowerShell:', e.message);
+    return [];
+  }
+}
+
 export function firstExistingPath(candidates) {
   for (const p of candidates) {
     try {

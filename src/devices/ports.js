@@ -11,27 +11,12 @@
 
 import os from 'node:os';
 import fsp from 'node:fs/promises';
-import { run } from './backend.js';
+import { psJson } from './backend.js';
+import { registryExpr, fromRegistry } from '../net/ipConfig.js';
 import { logger } from '../log.js';
 import { makeDeviceId } from './types.js';
 
 const log = logger('devices:ports');
-
-/** Общая обёртка над PowerShell: кодировка и разбор JSON в одном месте. */
-async function psJson(script, { timeoutMs = 20000 } = {}) {
-  // Без явной кодировки PowerShell пишет в перенаправленный поток в кодировке
-  // консоли (на русской Windows — CP866), и кириллица приходит мусором.
-  const full = '[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; ' + script;
-  const r = await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', full], { timeoutMs });
-  if (!r.ok || !r.stdout.trim()) return [];
-  try {
-    const parsed = JSON.parse(r.stdout);
-    return Array.isArray(parsed) ? parsed : [parsed];
-  } catch (e) {
-    log.debug('не разобрался вывод PowerShell:', e.message);
-    return [];
-  }
-}
 
 // ------------------------------------------------------------- COM и LPT
 
@@ -125,32 +110,60 @@ export async function listNetInterfaces() {
 
 async function listNetWindows() {
   const adapters = await psJson(
-    'Get-NetAdapter -ErrorAction SilentlyContinue | Select-Object -Property '
-    + 'Name,InterfaceDescription,InterfaceGuid,Status,MacAddress,LinkSpeed,Virtual '
-    + '| ConvertTo-Json -Compress -Depth 3',
+    // Настройки IP — из реестра тем же вызовом: у отданной карты стек IP
+    // отвязан, а показать, с какими настройками она работает, всё равно надо.
+    'Get-NetAdapter -ErrorAction SilentlyContinue | ForEach-Object { [pscustomobject]@{ '
+    + 'Name = $_.Name; InterfaceDescription = $_.InterfaceDescription; InterfaceGuid = $_.InterfaceGuid; '
+    + 'Status = [string]$_.Status; MacAddress = $_.MacAddress; LinkSpeed = $_.LinkSpeed; Virtual = $_.Virtual; '
+    + 'ComponentID = $_.ComponentID; HardwareInterface = $_.HardwareInterface; '
+    + 'NdisPhysicalMedium = $_.NdisPhysicalMedium; '
+    + `Reg = ${registryExpr('$_.InterfaceGuid')} } } `
+    + '| ConvertTo-Json -Compress -Depth 4',
   );
   if (!adapters.length) return listNetGeneric();
 
   const addrs = addressesByIface();
-  return adapters.map((a) => {
-    const name = a.Name || a.InterfaceDescription || 'интерфейс';
-    return {
-      type: 'net',
-      key: normalizeKey(name),
-      deviceId: makeDeviceId('net', normalizeKey(name)),
-      title: name,
-      description: a.InterfaceDescription || 'Сетевой интерфейс',
-      details: {
-        guid: a.InterfaceGuid || null,
-        status: a.Status || null,
-        mac: a.MacAddress || null,
-        linkSpeed: a.LinkSpeed || null,
-        virtual: a.Virtual === true || a.Virtual === 'True',
-        addresses: addrs.get(name) || [],
-      },
-      present: true,
-    };
-  }).sort((x, y) => x.title.localeCompare(y.title));
+  return adapters
+    // TAP-адаптеры и сам мост — это наша же проводка для проброса. В
+    // каталоге им не место: занять TAP значило бы пробросить проброс.
+    .filter((a) => !isPlumbing(a))
+    .map((a) => {
+      const name = a.Name || a.InterfaceDescription || 'интерфейс';
+      return {
+        type: 'net',
+        key: normalizeKey(name),
+        deviceId: makeDeviceId('net', normalizeKey(name)),
+        title: name,
+        description: a.InterfaceDescription || 'Сетевой интерфейс',
+        details: {
+          guid: a.InterfaceGuid || null,
+          status: a.Status || null,
+          mac: a.MacAddress || null,
+          linkSpeed: a.LinkSpeed || null,
+          virtual: a.Virtual === true || a.Virtual === 'True',
+          // Настоящая карта, а не программный адаптер: пробросить можно
+          // только её — мостом с физическим проводом.
+          hardware: a.HardwareInterface === true || a.HardwareInterface === 'True',
+          wireless: WIRELESS_MEDIA.has(Number(a.NdisPhysicalMedium)),
+          addresses: addrs.get(name) || [],
+          ip: fromRegistry(a.Reg),
+        },
+        present: true,
+      };
+    }).sort((x, y) => x.title.localeCompare(y.title));
+}
+
+/**
+ * NdisPhysicalMedium беспроводных сред: WirelessLan, WirelessWan, Native802_11.
+ * Wi-Fi не пропускает кадры с чужим MAC-адресом отправителя, и мост Windows
+ * на нём подменяет адреса — сеть за ним работает лишь частично.
+ */
+const WIRELESS_MEDIA = new Set([1, 8, 9]);
+
+/** TAP-адаптер или мост Windows — служебная проводка проброса. */
+export function isPlumbing(a) {
+  return /^tap0901$/i.test(a.ComponentID || '')
+    || /Multiplexor|MAC Bridge/i.test(a.InterfaceDescription || '');
 }
 
 function listNetGeneric() {
