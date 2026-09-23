@@ -24,6 +24,8 @@ import { DEVICE_TYPES, RESERVATION_NOTE, typeInfo } from '../devices/types.js';
 import { rpc } from '../net/rpc.js';
 import { Realms } from '../net/realms.js';
 import { TrafficProxy } from '../net/trafficProxy.js';
+import { NetShare } from './netShare.js';
+import { NetManager } from './netManager.js';
 
 const log = logger('app');
 
@@ -73,6 +75,8 @@ export class App extends EventEmitter {
     this.api = null;
     this.installer = null;
     this.traffic = null;
+    this.net = null;
+    this.netManager = null;
     this.autostart = null;
     this.autostartState = null;
     this.stopping = false;
@@ -97,9 +101,32 @@ export class App extends EventEmitter {
     for (const issue of this.backendInfo.issues || []) log.warn(issue);
     for (const note of this.backendInfo.notes || []) log.info(note);
 
+    // Проброс сетевых карт. Нужен раньше опроса устройств: какую карту можно
+    // отдать, а какую только забронировать, решается при каждом опросе.
+    this.net = new NetShare({
+      config: this.config,
+      workingIface: () => this.network?.iface || null,
+    });
+    // Коммутаторы и настройка адаптеров. Создаётся до запуска проброса:
+    // тот должен знать, не собран ли мост коммутатором.
+    this.netManager = new NetManager({
+      config: this.config,
+      net: this.net,
+      workingIface: () => this.network?.iface || null,
+      devices: () => new Map((this.share?.listAll() || []).filter((d) => d.type === 'net').map((d) => [d.title, d])),
+    });
+    await this.net.start();
+    await this.netManager.start();
+    this.net.on('changed', () => this.onStateChanged());
+    this.net.on('traffic', () => this.api?.pushState());
+    // Карта сети в снимок не входит (её опись — секунда PowerShell); здесь
+    // только знак «поменялось, перечитай».
+    this.netManager.on('changed', () => this.api?.notifyNet());
+
     this.hub = new DeviceHub({
       backend: this.backend,
       enabledTypes: () => this.config.get('enabledTypes') || ['usb'],
+      net: this.net,
     });
 
     this.installer = new Installer({
@@ -128,7 +155,9 @@ export class App extends EventEmitter {
       // Клиенту сообщается порт счётчика, если он работает, и порт usbipd,
       // если нет. Всё остальное приложение об этой подмене не знает.
       dataPort: () => (this.traffic ? this.config.get('trafficPort') : this.config.get('usbipPort')),
-      trafficOf: (deviceId) => (this.traffic ? this.traffic.statsFor(deviceId) : null),
+      // Скорость сетевой карты считает сам проброс: через счётчик USB/IP
+      // её кадры не идут.
+      trafficOf: (deviceId) => this.net?.statsFor(deviceId) || this.traffic?.statsFor(deviceId) || null,
       trafficBegin: (deviceId) => this.traffic?.begin(deviceId),
     });
     this.attach = new AttachManager({
@@ -138,6 +167,7 @@ export class App extends EventEmitter {
       // Ключ зависит от того, в каком круге услышан владелец, поэтому
       // менеджер подключений спрашивает его по узлу, а не хранит у себя.
       keyFor: (nodeId) => this.keyForNode(nodeId),
+      net: this.net,
     });
     this.peers = new PeerRegistry({
       nodeId: this.config.get('nodeId'),
@@ -424,14 +454,62 @@ export class App extends EventEmitter {
   async attachTarget(nodeId, target, { force = false } = {}) {
     const info = this._targetInfo(nodeId, target);
 
-    const needsClient = info.devices.some((d) => d.hasTransport);
+    const needsClient = info.devices.some((d) => d.hasTransport && d.type !== 'net');
     if (needsClient && !this.backendInfo.client) {
       throw new Error('на этом компьютере нет клиентской части USB/IP — подключать устройства невозможно. См. docs/WINDOWS-SETUP.md');
+    }
+    if (info.devices.some((d) => d.hasTransport && d.type === 'net')) {
+      const why = this.net.borrowBlocker();
+      if (why) throw new Error(why);
     }
 
     const r = await this.attach.attach(info, { force });
     const peer = this.peers.get(nodeId);
     if (peer) this.peers.refreshPeerState(peer).catch(() => {});
+    this.onStateChanged();
+    return r;
+  }
+
+  /**
+   * Держатель меняет настройки IP занятой сетевой карты под себя.
+   *
+   * Проброшенная карта — это наш адаптер, и меняется он здесь же. Карта в
+   * брони остаётся у владельца, и менять её настройки просим его: он
+   * запомнит прежние и вернёт их при освобождении.
+   */
+  async setHeldIp(attachmentId, deviceId, ip, { category } = {}) {
+    const rec = this.attach.attachments.get(attachmentId);
+    if (!rec) throw new Error('занятие не найдено');
+    const part = rec.parts.find((p) => p.deviceId === deviceId && p.type === 'net');
+    if (!part) throw new Error('в этом занятии нет такой сетевой карты');
+    if (part.netKey) {
+      const r = await this.net.setBorrowIp(part.netKey, ip, { category });
+      this.attach.setPartIp(attachmentId, deviceId, { ip: r.ip, ipApplied: r.ipApplied });
+      return r;
+    }
+    let r;
+    if (rec.self) {
+      const dev = this.share.get(deviceId);
+      if (!dev) throw new Error('карта не найдена');
+      r = await this.net.holderSetIp(dev, ip);
+      this.hub.invalidateSlow();
+      await this.share.refresh();
+    } else {
+      const peer = this.peers.get(rec.nodeId);
+      if (!peer) throw new Error('владелец карты сейчас не в сети');
+      r = await rpc({
+        host: peer.address,
+        port: peer.apiPort,
+        path: '/api/v1/peer/net-ip',
+        method: 'POST',
+        body: { target: deviceId, ip },
+        key: this.realms.keyFor(peer.realm),
+        nodeId: this.config.get('nodeId'),
+        timeoutMs: 60000,
+      });
+      this.peers.refreshPeerState(peer).catch(() => {});
+    }
+    this.attach.setPartIp(attachmentId, deviceId, { ip: r.ip, ipApplied: { ok: true, own: true, remote: true } });
     this.onStateChanged();
     return r;
   }
@@ -595,7 +673,7 @@ export class App extends EventEmitter {
     const wasAnnouncing = this.discovery ? this.realms.announcing().map((r) => ({ realm: r.realm, key: r.key })) : [];
     const allowed = ['name', 'network', 'networks', 'seeOpen', 'showToOpen', 'autoShareNew', 'claimLeaseMs',
       'apiPort', 'discoveryPort', 'usbipPort', 'usbipdPath', 'usbipPath', 'logLevel', 'enabledTypes',
-      'meterTraffic', 'trafficPort', 'autoInstall',
+      'meterTraffic', 'trafficPort', 'netLinkPort', 'autoInstall',
       'seeds', 'gossipIntervalMs', 'remotePollIntervalMs', 'announceIntervalMs',
       'announceIdleIntervalMs', 'announceBackoff', 'announceTransport'];
     const clean = {};
@@ -657,7 +735,7 @@ export class App extends EventEmitter {
       setLevel(clean.logLevel);
     }
 
-    const needsRestart = ['apiPort', 'discoveryPort', 'usbipPort', 'meterTraffic', 'trafficPort']
+    const needsRestart = ['apiPort', 'discoveryPort', 'usbipPort', 'meterTraffic', 'trafficPort', 'netLinkPort']
       .some((k) => clean[k] !== undefined && clean[k] !== before[k]);
 
     if (clean.network !== undefined && clean.network !== before.network) {
@@ -823,6 +901,7 @@ export class App extends EventEmitter {
       autoInstall: c.autoInstall,
       meterTraffic: c.meterTraffic,
       trafficPort: c.trafficPort,
+      netLinkPort: c.netLinkPort,
       enabledTypes: c.enabledTypes,
       claimLeaseMs: c.claimLeaseMs,
       logLevel: c.logLevel,
@@ -951,6 +1030,11 @@ export class App extends EventEmitter {
         requested: Boolean(this.config.get('meterTraffic')),
       },
       config: this.publicConfig(access),
+      netAdmin: this.netManager ? {
+        supported: this.netManager.supported,
+        elevated: this.netManager.elevated,
+        busy: this.netManager.busy,
+      } : null,
       networks: listNetworks(),
       deviceTypes: Object.values(DEVICE_TYPES).map((t) => ({ ...t })),
       reservationNote: RESERVATION_NOTE,
@@ -1042,7 +1126,14 @@ export class App extends EventEmitter {
       busyByMe: Boolean(d.claim && d.claim.holderId === selfId),
       attachmentId: held ? held.id : null,
       attachState: held ? held.state : null,
+      attachStage: held?.stage || null,
+      preparing: Boolean(d.preparing),
       vhciPort: held ? (held.parts.find((p) => p.vhciPort !== null)?.vhciPort ?? null) : null,
+      // Сетевая карта у нас: как называется наш адаптер и какие настройки
+      // IP на него перенесены с карты владельца.
+      adapter: held ? (held.parts.find((p) => p.adapter)?.adapter ?? null) : null,
+      adapterIp: held ? (held.parts.find((p) => p.adapter)?.ip ?? null) : null,
+      adapterIpApplied: held ? (held.parts.find((p) => p.adapter)?.ipApplied ?? null) : null,
     };
   }
 
@@ -1072,6 +1163,8 @@ export class App extends EventEmitter {
       busyByMe: Boolean(g.claim && g.claim.holderId === selfId),
       attachmentId: held ? held.id : null,
       attachState: held ? held.state : null,
+      attachStage: held?.stage || null,
+      preparing: Boolean(g.preparing),
       hasTransport: members.some((m) => m.hasTransport),
     };
   }
@@ -1091,6 +1184,10 @@ export class App extends EventEmitter {
 
     this.attach?.stop();
     this.share?.stop();
+    // Отданную карту — системе. Иначе компьютер остался бы без неё до
+    // следующего запуска.
+    await this.netManager?.stop().catch((e) => log.warn('коммутаторы:', e.message));
+    await this.net?.stop().catch((e) => log.warn('сетевые карты:', e.message));
     this.directory?.stop();
     this.peers?.stop();
     await this.discovery?.stop();

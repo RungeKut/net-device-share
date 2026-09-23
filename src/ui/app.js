@@ -8,8 +8,12 @@
 // чтения интерфейс не рисует действий, но полагаться на это нельзя —
 // права проверяет сервер, здесь лишь убираем заведомо бесполезные кнопки.
 
+import { initNet } from './net.js';
+
 const $ = (sel) => document.querySelector(sel);
 let state = null;
+/** Вкладка «Сеть» (net.js); заводится перед подключением к потоку. */
+let net = null;
 let logBuffer = [];
 let bannerDismissed = false;
 let shownRequestIds = new Set();
@@ -53,7 +57,9 @@ function toast(message, kind = '') {
 async function post(path, body) {
   const res = await fetch(path, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    // Свой заголовок: по нему сервер отличает наш интерфейс от посторонней
+    // страницы, которая тоже может послать POST на 127.0.0.1.
+    headers: { 'content-type': 'application/json', 'x-nds-ui': '1' },
     body: JSON.stringify(body || {}),
   });
   const data = await res.json().catch(() => ({}));
@@ -172,6 +178,7 @@ function render() {
   renderGroups();
   renderAttached();
   renderPeers();
+  net?.onState();
   // Пока настройки открыты, состояние обмена в них живое: адрес набирают
   // и тут же смотрят, ответил ли узел, а не переоткрывают окно.
   if ($('#settings').open) { renderFederation(); renderRealmNote(); }
@@ -309,6 +316,12 @@ function renderNotes(notes) {
 // ------------------------------------------------------------------ каталог
 
 function statusPill(entry) {
+  // Занятие идёт: показываем, что именно сейчас происходит. Сетевая карта
+  // занимается секундами, и «…» на кнопке ничего не говорит о том, ждать ли.
+  if (entry.attachState === 'attaching') {
+    return `<span class="pill warn">занимается${entry.attachStage ? `: ${esc(entry.attachStage)}` : '…'}</span>`;
+  }
+  if (entry.preparing && !entry.busy) return '<span class="pill warn">готовится к выдаче…</span>';
   if (entry.busyByMe) return `<span class="pill mine">занято вами · ${esc(since(entry.claim.since))}</span>`;
   if (entry.busy) return `<span class="pill busy">занято: ${esc(entry.claim.holderName)} · ${esc(since(entry.claim.since))}</span>`;
   if (entry.reservedFor) return `<span class="pill warn">придержано за ${esc(entry.reservedFor.nodeName)}</span>`;
@@ -349,14 +362,18 @@ function trafficPill(t) {
     + `${idle ? '⏸' : '⇅'} ${esc(formatRate(total))}</span>`;
 }
 
-function transportPill(hasTransport) {
-  // По сети пробрасывается только USB. Для COM, LPT и сетевых интерфейсов
-  // приложение ведёт учёт занятости, и не сказать об этом заметно — значит
-  // отправить человека искать в системе устройство, которого не будет.
-  return hasTransport
-    ? ''
-    : '<span class="pill warn" title="Проброса нет: приложение учитывает, кто занял устройство, '
-      + 'но данные по сети не передаёт. Подключаться к нему нужно физически.">только бронь</span>';
+function transportPill(hasTransport, note) {
+  // По сети пробрасываются USB и сетевые карты. Для COM, LPT и карт, которые
+  // отдать нельзя, приложение ведёт только учёт занятости, и не сказать об
+  // этом заметно — значит отправить человека искать в системе устройство,
+  // которого не будет. У карты причина своя, и её надо показать: «бронь»
+  // рядом с соседней картой, которая пробрасывается, иначе непонятна.
+  if (hasTransport) return '';
+  const why = note
+    ? `Проброса нет: ${note}. Приложение учитывает, кто занял устройство, но данные по сети не передаёт.`
+    : 'Проброса нет: приложение учитывает, кто занял устройство, '
+      + 'но данные по сети не передаёт. Подключаться к нему нужно физически.';
+  return `<span class="pill warn" title="${esc(why)}">только бронь</span>`;
 }
 
 /** Кнопки для записи каталога — и для устройства, и для группы. */
@@ -384,7 +401,9 @@ function entryActions(entry) {
       data-reserve="${reserve ? '1' : ''}"
       title="${reserve
         ? 'Только бронирование: приложение запишет, что устройство за вами, но в системе оно не появится — подключаться к нему нужно физически'
-        : 'Устройство появится в «Диспетчере устройств» этого компьютера'}"
+        : entry.type === 'net'
+          ? 'На этом компьютере появится сетевой адаптер, подключённый к сети за картой владельца. Первое занятие занимает до минуты: владелец собирает мост'
+          : 'Устройство появится в «Диспетчере устройств» этого компьютера'}"
       >${reserve ? 'Забронировать' : 'Занять'}</button>`);
   }
   return acts.join('');
@@ -399,10 +418,43 @@ function deviceMeta(d) {
   if (m.status) bits.push(`состояние: ${esc(m.status)}`);
   if (m.mac) bits.push(`MAC: <span class="mono">${esc(m.mac)}</span>`);
   if (m.linkSpeed) bits.push(`скорость: ${esc(m.linkSpeed)}`);
-  if (Array.isArray(m.addresses) && m.addresses.length) {
+  if (m.ip) {
+    // Настройки карты, с которыми её получит занявший.
+    bits.push(ipText(m.ip));
+  } else if (Array.isArray(m.addresses) && m.addresses.length) {
     bits.push(`адреса: <span class="mono">${esc(m.addresses.map((a) => a.address).join(', '))}</span>`);
   }
   return bits;
+}
+
+/** Настройки IPv4 одной строкой: адрес, шлюз, DNS — или DHCP. */
+function ipText(ip) {
+  const mono = (list) => `<span class="mono">${esc(list.join(', '))}</span>`;
+  const parts = [];
+  if (ip.dhcp) {
+    const l = ip.lease;
+    parts.push(l ? `IPv4: DHCP, сейчас ${mono([`${l.address}/${l.prefixLength ?? '?'}`])}` : 'IPv4: DHCP');
+    if (l && l.gateways?.length) parts.push(`шлюз ${mono(l.gateways)}`);
+  } else if (ip.addresses?.length) {
+    parts.push(`IPv4: ${mono(ip.addresses.map((a) => `${a.address}/${a.prefixLength}`))} вручную`);
+    if (ip.gateways?.length) parts.push(`шлюз ${mono(ip.gateways)}`);
+  } else {
+    parts.push('IPv4: не настроен');
+  }
+  const dns = ip.dns?.length ? ip.dns : (ip.dhcp ? ip.lease?.dns || [] : []);
+  if (dns.length) parts.push(`DNS ${mono(dns)}`);
+  return parts.join(' · ');
+}
+
+/** Что перенесено на наш адаптер и удалось ли. */
+function adapterIpText(ip, applied) {
+  if (!ip) return '';
+  if (applied && !applied.ok) {
+    return `<span class="pill err" title="${esc(applied.error || '')}">настройки IP не перенесены: ${esc(applied.error || 'ошибка')}</span>`;
+  }
+  if (applied?.remote) return `настройки карты у владельца заданы вами — ${ipText(ip)}; при освобождении вернутся прежние`;
+  if (applied?.own) return `ваши настройки — ${ipText(ip)}`;
+  return `настройки как у карты владельца — ${ipText(ip)}`;
 }
 
 function deviceCard(d, { insideGroup = false } = {}) {
@@ -416,7 +468,7 @@ function deviceCard(d, { insideGroup = false } = {}) {
           ${esc(d.title)}
           ${insideGroup ? '' : statusPill(d)}
           ${d.busy ? trafficPill(d.traffic) : ''}
-          ${transportPill(d.hasTransport)}
+          ${transportPill(d.hasTransport, d.meta?.transportNote)}
           ${d.ownerSelf ? '<span class="pill plain">моё</span>' : ''}
           ${d.ownerOnline ? '' : '<span class="pill err">владелец офлайн</span>'}
         </div>
@@ -427,6 +479,8 @@ function deviceCard(d, { insideGroup = false } = {}) {
           ${meta.map((b) => `<span>${b}</span>`).join('')}
           ${d.connectedSince ? `<span>подключено: ${esc(since(d.connectedSince))} (${esc(at(d.connectedSince))})</span>` : ''}
           ${d.vhciPort !== null && d.vhciPort !== undefined ? `<span>порт VHCI: <b>${esc(d.vhciPort)}</b></span>` : ''}
+          ${d.adapter ? `<span>адаптер у вас: <b>${esc(d.adapter)}</b></span>` : ''}
+          ${d.adapter && d.adapterIp ? `<span>${adapterIpText(d.adapterIp, d.adapterIpApplied)}</span>` : ''}
           ${d.lastError ? `<span class="pill err">${esc(d.lastError)}</span>` : ''}
         </div>
       </div>
@@ -555,7 +609,9 @@ function renderMine() {
     // не опубликована, устройство публикуется и занимается само по себе.
     const inGroup = Boolean(d.groupPublished);
     const cls = blocked ? 'offline' : d.claim ? 'busy' : d.shared ? 'free' : '';
-    const status = d.claim
+    const status = d.preparing && !d.claim
+      ? '<span class="pill warn">готовится к выдаче…</span>'
+      : d.claim
       ? `<span class="pill busy">занято: ${esc(d.claim.holderName)} · ${esc(since(d.claim.since))}</span>`
       : d.shared ? '<span class="pill free">опубликовано, свободно</span>'
         : '<span class="pill plain">не опубликовано</span>';
@@ -577,7 +633,7 @@ function renderMine() {
             ${esc(d.description)}
             ${blocked ? '' : status}
             ${d.claim ? trafficPill(d.traffic) : ''}
-            ${transportPill(d.hasTransport)}
+            ${transportPill(d.hasTransport, d.meta?.transportNote)}
             ${d.groupId ? `<span class="pill group-pill">${inGroup ? 'отдано группой' : 'в группе (не опубл.)'} «${esc(d.groupName || '')}»</span>` : ''}
           </div>
           <div class="card-meta">
@@ -659,6 +715,7 @@ function renderAttached() {
           ${a.kind === 'group' ? '<span class="type-icon">🧩</span>' : ''}
           ${esc(a.title)}
           <span class="pill ${a.state === 'error' ? 'err' : 'mine'}">${esc(label[a.state] || a.state)}</span>
+          ${a.state === 'attaching' && a.stage ? `<span class="pill warn">${esc(a.stage)}</span>` : ''}
           ${a.self ? '<span class="pill plain">своё устройство</span>' : ''}
           ${a.orphan ? '<span class="pill plain">вне приложения</span>' : ''}
         </div>
@@ -669,18 +726,30 @@ function renderAttached() {
           ${a.lastError ? `<span class="pill err">${esc(a.lastError)}</span>` : ''}
         </div>
         <div class="card-meta">
-          ${a.parts.map((p) => `<span>${esc(p.description || p.deviceId)}${
-            p.hasTransport
-              ? (p.vhciPort !== null && p.vhciPort !== undefined ? ` → порт VHCI ${esc(p.vhciPort)}` : ' → подключается')
-              : ' → бронь'} ${p.traffic ? trafficPill(p.traffic) : ''}</span>`).join('')}
+          ${a.parts.map((p) => `<span>${esc(p.description || p.deviceId)}${partState(p)} ${p.traffic ? trafficPill(p.traffic) : ''}</span>`).join('')}
         </div>
+        ${a.parts.filter((p) => p.adapter && (p.ip || p.ipNote)).map((p) => `<div class="card-meta"><span>${
+          p.ip ? adapterIpText(p.ip, p.ipApplied) : `<span class="pill warn">${esc(p.ipNote)}</span>`}</span></div>`).join('')}
         ${a.parts.some((p) => p.hasTransport) && !a.parts.some((p) => p.traffic)
           ? '<p class="hint">Скорость не показывается: у владельца выключен учёт трафика.</p>' : ''}
       </div>
       <div class="card-actions">
+        ${canEdit() && a.state === 'attached' ? a.parts.filter((p) => p.type === 'net').map((p) => `<button class="btn small"
+          data-held-ip="${esc(a.id)}|${esc(p.deviceId)}" title="${p.adapter
+            ? 'Поменять настройки вашего адаптера этой карты'
+            : 'Карта в брони: попросить владельца поменять её настройки — при освобождении вернутся прежние'}"
+          >Настройки IP${a.parts.filter((x) => x.type === 'net').length > 1 ? ` · ${esc(p.title || p.key)}` : ''}</button>`).join('') : ''}
         ${canEdit() ? `<button class="btn small danger" data-detach="${esc(a.id)}">Освободить</button>` : ''}
       </div>
     </article>`).join('');
+}
+
+/** Во что превратилось устройство занятия на этом компьютере. */
+function partState(p) {
+  if (!p.hasTransport) return ' → бронь';
+  if (p.adapter) return ` → адаптер «${esc(p.adapter)}»`;
+  if (p.vhciPort !== null && p.vhciPort !== undefined) return ` → порт VHCI ${esc(p.vhciPort)}`;
+  return ' → подключается';
 }
 
 /** Метка у владельца из другой сети — прямо в карточке устройства. */
@@ -765,6 +834,7 @@ document.addEventListener('click', (ev) => {
     const name = tab.dataset.tab;
     document.querySelectorAll('.panel').forEach((p) => p.classList.toggle('active', p.id === `tab-${name}`));
     if (name === 'log') renderLog();
+    if (name === 'net') net?.onShow();
     return;
   }
 
@@ -806,6 +876,9 @@ document.addEventListener('click', (ev) => {
       flag === '1' ? 'Группа опубликована' : 'Группа снята с публикации');
   } else if (t.dataset.editGroup) {
     openGroupDialog(state.localGroups.find((g) => g.id === t.dataset.editGroup));
+  } else if (t.dataset.heldIp) {
+    const [attachmentId, deviceId] = t.dataset.heldIp.split('|');
+    net?.openHeldIp(attachmentId, deviceId);
   }
 });
 
@@ -1233,6 +1306,7 @@ function connect() {
     if (logBuffer.length > 500) logBuffer = logBuffer.slice(-500);
     if ($('#tab-log').classList.contains('active')) renderLog();
   });
+  es.addEventListener('net', () => net?.onNetEvent());
   es.addEventListener('error', () => { $('#connDot').className = 'dot off'; });
 }
 
@@ -1241,6 +1315,7 @@ fetch('/api/v1/logs?limit=300')
   .then((d) => { logBuffer = d.records || []; renderLog(); })
   .catch(() => {});
 
+net = initNet({ $, esc, post, action, toast, canEdit, getState: () => state });
 connect();
 ensureNotificationPermission();
 

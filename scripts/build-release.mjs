@@ -52,6 +52,11 @@ const FILES = [
   'scripts/check-files.mjs',
   'scripts/fetch-installers.mjs',
   'scripts/firewall-windows.ps1',
+  // Проброс сетевой карты: без них карта в комплекте только бронируется.
+  'scripts/tap-relay.ps1',
+  'scripts/net-bridge.ps1',
+  // Создание и удаление TAP-адаптеров по одному (коммутаторы, проброс).
+  'scripts/tap-device.ps1',
 ];
 
 const noZip = process.argv.includes('--no-zip');
