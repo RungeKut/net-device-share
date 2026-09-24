@@ -103,7 +103,9 @@
     <p class="hint">Коммутатор соединяет адаптеры этого компьютера как обычный коммутатор — кадрами по MAC.
       Включите в него физическую карту, и всё подключённое окажется в её сети. Виртуальный адаптер — ещё
       один сетевой адаптер Windows со своим MAC и адресом: так компьютер выглядит в сети стенда несколькими
-      устройствами. Здесь же видно, какие карты отданы по сети и какие забронированы.</p>
+      устройствами. Адаптеры, созданные не приложением (OpenVPN, VirtualBox, сами карты), тоже можно
+      переименовать, отключить, сменить им MAC, программные — удалить, и соединить коммутатором.
+      Здесь же видно, какие карты отданы по сети и какие забронированы.</p>
     <div id="netNotes"></div>
     <div class="netmap-wrap"><div id="netMap" class="netmap"></div></div>
     <div class="netmap-legend">
@@ -404,10 +406,17 @@
       <input type="text" id="swName" maxlength="48" placeholder="например: Стенд">
     </label>
     <div class="field">
-      <span>Физическая карта — выход в её сеть</span>
+      <span>Карта — выход в её сеть</span>
       <div id="swNics" class="member-picker"></div>
       <small>Без карты коммутатор внутренний: соединяет только адаптеры этого компьютера. Две карты —
-        это две сети, слитые в одну; так делают, только когда это и нужно.</small>
+        это две сети, слитые в одну; так делают, только когда это и нужно. Кроме физических карт, в мост
+        входят и программные адаптеры других программ (VirtualBox и т. п.).</small>
+    </div>
+    <div class="field">
+      <span>Адаптеры, которые уже есть, — подключить к коммутатору</span>
+      <div id="swPorts" class="member-picker"></div>
+      <small>TAP-адаптеры: созданные здесь и чужие (OpenVPN и т. п.). Чужой адаптер, пока он подключён,
+        другая программа открыть не может — его можно отпустить в любой момент.</small>
     </div>
     <label class="field">
       <span><input type="checkbox" id="swHost" checked> Оставить этому компьютеру доступ к сети карты</span>
@@ -422,28 +431,30 @@
   </form>
 </dialog>
 
-<!-- Виртуальный адаптер -->
+<!-- Адаптер: новый виртуальный или правка любого -->
 <dialog id="vnicDialog">
   <form method="dialog" class="dlg">
     <h2 id="vnicTitle">Новый виртуальный адаптер</h2>
-    <label class="field">
+    <p class="dlg-note" id="vnicSub"></p>
+    <label class="field" id="vnicNameRow">
       <span>Имя в «Сетевых подключениях»</span>
       <input type="text" id="vnicName" maxlength="48">
     </label>
-    <label class="field">
+    <label class="field" id="vnicSwitchRow">
       <span>Коммутатор</span>
       <select id="vnicSwitch"></select>
+      <small id="vnicSwitchHint"></small>
     </label>
-    <div class="field">
+    <div class="field" id="vnicMacRow">
       <span>MAC-адрес</span>
       <select id="vnicMacMode">
         <option value="">свой у адаптера (не менять)</option>
         <option value="random">случайный</option>
         <option value="set">задать…</option>
+        <option value="factory">заводской</option>
       </select>
       <input type="text" id="vnicMac" maxlength="17" placeholder="02-AA-BB-CC-DD-01" hidden>
-      <small>Драйвер TAP принимает только локальные MAC-адреса — первый байт 02, 06, 0A…
-        Заводской адрес настоящей карты (00-15-…) он не примет.</small>
+      <small id="vnicMacHint"></small>
     </div>
     <div id="vnicIp"></div>
     <p class="dlg-note" id="vnicNote"></p>

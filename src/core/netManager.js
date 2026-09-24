@@ -19,6 +19,14 @@
 //     у Hyper-V с «общим доступом управляющей ОС»). При создании коммутатора
 //     ему переходят настройки IP карты, чтобы компьютер не потерял адрес.
 //
+//   ЧУЖОЙ АДАПТЕР — всё, что создало не приложение: карты, адаптеры OpenVPN,
+//     VirtualBox, Hyper-V. Их можно переименовать, отключить, сменить им MAC,
+//     программные — удалить. И соединить: чужой TAP подключается к
+//     коммутатору портом, как виртуальный адаптер (запись с adopted: пока
+//     он подключён, другая программа открыть его не может — его можно
+//     отпустить), прочие — мостом, как карта. Сама по себе программа чужого
+//     не трогает — только по команде человека.
+//
 // Всё это живёт, пока работает приложение: кадры между портами пересылает
 // оно. Мост Windows и настройки адаптеров остаются и без него, а
 // виртуальные адаптеры между запусками видны как «кабель не подключён».
@@ -31,7 +39,13 @@
 //     и с узлами, и с тем, кто управляет этим компьютером через браузер;
 //   * Wi-Fi — в мост: он не пропускает кадры с чужими MAC;
 //   * адрес карте, которая в мосту: он у неё не действует, адрес — у моста;
-//   * чужие TAP-адаптеры (OpenVPN) — удалять и менять им MAC.
+//   * рабочую карту отключать, переименовывать и менять ей MAC: приложение
+//     знает её по имени, а без неё оборвётся связь;
+//   * занятую карту — трогать вовсе, опубликованную — переименовывать: имя
+//     карты — её адрес в каталоге;
+//   * удалять физическую карту (Windows найдёт её снова — её отключают) и
+//     адаптер Hyper-V (он удаляется вместе с коммутатором Hyper-V);
+//   * служебные адаптеры приложения — всё, кроме того, что делает оно само.
 
 import crypto from 'node:crypto';
 import os from 'node:os';
@@ -40,8 +54,8 @@ import { logger } from '../log.js';
 import { VSwitch, garpFrame, macBytes } from '../net/vswitch.js';
 import { keepRelay, plugRelay } from '../net/relayKeeper.js';
 import {
-  createTap, removeTap, renameAdapter, friendlyName, setTapMac, macProblem, normalizeMac,
-  formatMac, randomMac, driverFilesPresent,
+  createTap, removeTap, removeAdapter, renameAdapter, friendlyName, setTapMac, setAdapterMac, setAdapterEnabled,
+  macProblem, normalizeMac, formatMac, randomMac, driverFilesPresent,
 } from '../net/tapAdapters.js';
 import { bridge, unbridge, bridgeMembers, bridgeAdapter, setBridgeIp } from '../net/bridge.js';
 import { readIpConfig, applyIpConfig, validateIpConfig, ensureCategories } from '../net/ipConfig.js';
@@ -115,10 +129,21 @@ export class NetManager extends EventEmitter {
 
   async start() {
     if (!this.supported) return this;
+    // Запись о коммутаторе, которого уже нет: свой адаптер остаётся
+    // неподключённым, чужой отпускается.
+    const ids = new Set(this._switchRecs().map((r) => r.id));
+    for (const v of this._vnicRecs().filter((r) => r.switchId && !ids.has(r.switchId))) {
+      if (v.adopted) this._dropTap(v.guid);
+      else this._setTap(v.guid, { switchId: null });
+    }
     for (const rec of this._switchRecs()) this._startSwitch(rec);
     // Виртуальные адаптеры без коммутатора тоже поднимаются: у поднятого
-    // адаптера «кабель подключён», и Windows хранит ему адрес.
-    for (const v of this._vnicRecs().filter((r) => !r.switchId)) this._plugLoose(v.guid);
+    // адаптера «кабель подключён», и Windows хранит ему адрес. Чужой адаптер
+    // без коммутатора не держим — он вернулся к своей программе.
+    for (const v of this._vnicRecs().filter((r) => !r.switchId)) {
+      if (v.adopted) this._dropTap(v.guid);
+      else this._plugLoose(v.guid);
+    }
     this.timers.push(setInterval(() => this._enforceCategories(), CATEGORY_EVERY_MS));
     this.timers.push(setInterval(() => this._watchVnicAddresses(), ADDRESS_WATCH_MS));
     for (const t of this.timers) t.unref?.();
@@ -333,15 +358,140 @@ export class NetManager extends EventEmitter {
     return a;
   }
 
-  /** Можно ли включить эту карту в мост (null — можно). */
+  /**
+   * Можно ли включить этот адаптер в мост (null — можно). Кроме карт годятся
+   * и программные адаптеры других программ (VirtualBox и т. п.): мост
+   * соединяет сети любых адаптеров Ethernet.
+   */
   _nicProblem(a) {
-    if (!this.isCard(a)) return `«${a.name}» — не физическая карта`;
+    if (!this.isCard(a)) {
+      if (a.tap) return `«${a.name}» — TAP-адаптер: к коммутатору он подключается портом, а не мостом`;
+      if (a.bridge) return 'адаптер моста в мост не включается';
+      if (a.hyperv) {
+        return `«${a.name}» — адаптер Hyper-V: у Hyper-V свой коммутатор, соединяйте его сеть с картой в Диспетчере Hyper-V (внешний коммутатор)`;
+      }
+    }
     if (a.wireless) return `«${a.name}» — Wi-Fi: он не пропускает кадры с чужими MAC, в мост его включать нельзя`;
     if (a.name === this.workingIface()) {
       return `через «${a.name}» работает само приложение: в мосту она на время потеряет адрес, и связь с узлами оборвётся`;
     }
+    const dev = this.devices().get(a.name);
+    if (dev?.claim || dev?.preparing) return `«${a.name}» занята — сначала её освобождают`;
     if (this.net.lends.size) return `сейчас отдана карта «${this.net.currentLend().nic}» — мост занят пробросом`;
     return null;
+  }
+
+  // ------------------------------------------------------------ права
+
+  /** То, что нужно, чтобы решить про любой адаптер: записи, пробросы, каталог. */
+  _context() {
+    const described = this.net.describe();
+    return {
+      taps: new Map(this._taps().map((r) => [r.guid, r])),
+      lendByTap: new Map(described.lends.filter((l) => l.tap).map((l) => [l.tap.guid, l])),
+      borrowByTap: new Map(described.borrows.filter((b) => b.guid).map((b) => [b.guid, b])),
+      devices: this.devices(),
+      working: this.workingIface(),
+    };
+  }
+
+  /** Кто этот адаптер для приложения. */
+  _role(a, ctx) {
+    const rec = ctx.taps.get(a.guid);
+    if (a.bridge) return 'bridge';
+    if (rec?.role === 'vnic') return 'vnic';
+    if (rec?.role === 'uplink') return 'uplink';
+    if (ctx.lendByTap.get(a.guid) || rec?.role === 'server') return 'lend';
+    if (ctx.borrowByTap.get(a.guid) || rec?.role === 'client') return 'borrow';
+    if (a.tap) return 'tap';
+    // HardwareInterface бывает и у программных устройств: адаптер замыкания
+    // KM-TEST (ROOT\NET\…) называет себя оборудованием.
+    if (a.hardware && !a.software) return a.wireless ? 'wifi' : 'physical';
+    return 'virtual';
+  }
+
+  /**
+   * Что можно сделать с адаптером и почему нельзя остального. Одно правило и
+   * для кнопок на карте, и для самих операций: те проверяют по свежей описи.
+   *
+   * @returns {{ can: Record<string, boolean>, why: Record<string, string> }}
+   *   can: ip, category, rename, mac, enable, delete, move (порт
+   *   коммутатора — TAP), bridge (в мост — остальные), unbridge, release;
+   *   why — причины отказа по тем же ключам, why.manage — отказ во всём
+   */
+  _rights(a, role, ctx) {
+    const rec = ctx.taps.get(a.guid);
+    const dev = ctx.devices.get(a.name) || null;
+    const can = {
+      ip: false, category: false, rename: false, mac: false, enable: false, delete: false,
+      move: false, bridge: false, unbridge: false, release: false,
+    };
+    const why = {};
+
+    if (a.bridged) why.ip = 'в мосту: адрес задаётся у моста';
+    else if (a.name === ctx.working) why.ip = 'через эту карту работает приложение — меняйте на месте';
+    else if (role === 'uplink' || role === 'lend') why.ip = 'служебный адаптер моста';
+    else if (a.bridge && a.tcpip === false) why.ip = 'IP на мосту выключен';
+    else can.ip = true;
+    can.category = Boolean(a.profile) || role === 'vnic' || role === 'borrow';
+
+    // То, что запрещает всё остальное разом.
+    why.manage = role === 'uplink' ? 'служебный адаптер коммутатора: он живёт и удаляется вместе с коммутатором'
+      : role === 'lend' ? 'служебный адаптер проброса: он удалится при освобождении карты'
+        : role === 'borrow' ? 'адаптер занятой вами карты: он удалится при освобождении'
+          : a.name === ctx.working ? 'через эту карту работает приложение: отключить её или сменить ей адрес — оборвать связь и с узлами, и с этой страницей; меняйте её на месте, в свойствах Windows'
+            : dev?.claim || dev?.preparing ? `карта занята${dev.claim?.holderName ? ` («${dev.claim.holderName}»)` : ''} — сначала её освобождают`
+              : null;
+    if (why.manage) return { can, why };
+    delete why.manage;
+
+    if (dev?.shared) why.rename = 'карта опубликована, а имя карты — её адрес в каталоге: снимите публикацию, переименуйте и опубликуйте снова';
+    else can.rename = true;
+    if (role === 'bridge') {
+      why.manage = 'адаптер моста появляется и пропадает вместе с мостом';
+      return { can, why };
+    }
+
+    const inSwitch = this._switchRecs().find((r) => r.nics.some((n) => n.guid === a.guid));
+    const bridged = a.bridged ? `в мосту${inSwitch ? ` коммутатора «${inSwitch.name}»` : ''}: сначала выведите из него` : null;
+    const off = a.status === 'Disabled' ? 'адаптер отключён — сначала включите его' : null;
+
+    if (role === 'vnic') why.enable = 'порт коммутатора: из сети его выводят, отключая от коммутатора';
+    else if (bridged) why.enable = bridged;
+    else can.enable = true;
+
+    if (a.hyperv) why.mac = 'MAC адаптера Hyper-V задаёт Hyper-V';
+    else if (bridged) why.mac = bridged;
+    else if (off) why.mac = off;
+    else if (!a.tap && !a.macSettable) why.mac = 'драйвер адаптера не умеет менять MAC';
+    else can.mac = true;
+
+    if (role === 'vnic') can.delete = true;
+    else if (a.hyperv) why.delete = 'адаптер Hyper-V удаляется вместе с его коммутатором — в Диспетчере Hyper-V';
+    else if (!a.software) why.delete = 'физическую карту Windows найдёт снова при следующем опросе оборудования — её можно отключить';
+    else if (bridged) why.delete = bridged;
+    else can.delete = true;
+
+    if (a.tap && !this.isCard(a)) {
+      if (off) why.move = off;
+      else can.move = true;
+    } else if (inSwitch) {
+      can.unbridge = true;
+    } else if (a.bridged) {
+      why.move = 'в мосту, собранном не приложением';
+    } else {
+      const p = this._nicProblem(a);
+      if (p) why.move = p;
+      else can.bridge = true;
+    }
+    can.release = Boolean(rec?.adopted);
+    return { can, why };
+  }
+
+  /** Права на адаптер по нынешнему состоянию — для операций. */
+  _rightsNow(a) {
+    const ctx = this._context();
+    return this._rights(a, this._role(a, ctx), ctx);
   }
 
   // -------------------------------------------------------- коммутаторы
@@ -349,11 +499,15 @@ export class NetManager extends EventEmitter {
   /**
    * Новый коммутатор.
    *
-   * @param {{ name: string, nics?: string[], hostAccess?: boolean }} o
-   *   nics — GUID физических карт (пусто — внутренний коммутатор);
-   *   hostAccess — оставить ли самому компьютеру доступ к сети карты
+   * @param {{ name: string, nics?: string[], ports?: string[], hostAccess?: boolean }} o
+   *   nics — GUID карт, которые войдут в мост (пусто — внутренний коммутатор);
+   *   ports — GUID уже существующих TAP-адаптеров: своих или чужих, они
+   *   станут портами; hostAccess — оставить ли самому компьютеру доступ к
+   *   сети карты
+   * @returns {Promise<object>} коммутатор и warnings — какие адаптеры не
+   *   подключились (сам коммутатор при этом создан)
    */
-  createSwitch({ name, nics = [], hostAccess = true }) {
+  createSwitch({ name, nics = [], ports = [], hostAccess = true }) {
     return this._op('создаётся коммутатор', async () => {
       const clean = cleanName(name, 'коммутатор');
       if (this._switchRecs().some((r) => r.name === clean)) throw errWith('exists', `коммутатор «${clean}» уже есть`);
@@ -366,7 +520,17 @@ export class NetManager extends EventEmitter {
       this._saveSwitches([...this._switchRecs(), rec]);
       this._startSwitch(rec);
       log.info(`коммутатор «${clean}» создан${rec.nics.length ? ` (сеть карты ${rec.nics.map((n) => n.name).join(', ')})` : ' (внутренний)'}`);
-      return this._publicSwitch(rec);
+      const warnings = [];
+      for (const g of ports) {
+        try {
+          const a = await this._adapter(g);
+          if (!a.tap) throw errWith('bad_request', `«${a.name}» — не TAP-адаптер: его соединяют с коммутатором мостом, как карту`);
+          await this._setPort(a, rec.id);
+        } catch (e) {
+          warnings.push(e.message);
+        }
+      }
+      return { ...this._publicSwitch(rec), warnings };
     });
   }
 
@@ -444,10 +608,12 @@ export class NetManager extends EventEmitter {
       if (rec.uplink) await this._dropUplink(rec);
       // Виртуальные адаптеры остаются — отключёнными, со своими настройками:
       // их можно подключить к другому коммутатору или удалить отдельно.
+      // Чужие отпускаются — к своим программам.
       const rt = this.switches.get(id);
       for (const v of this._vnicRecs().filter((r) => r.switchId === id)) {
         const h = rt?.ports.get(v.guid);
         if (h) { rt.ports.delete(v.guid); await this._unplugHolder(h); }
+        if (v.adopted) { this._dropTap(v.guid); continue; }
         this._setTap(v.guid, { switchId: null });
         this._plugLoose(v.guid);
       }
@@ -474,39 +640,42 @@ export class NetManager extends EventEmitter {
   /** Включить карту в коммутатор или вывести из него (мост Windows). */
   setSwitchNic(id, nicGuid, add) {
     return this._op(add ? 'карта включается в коммутатор' : 'карта выводится из коммутатора', async () => {
-      const rec = this._switchRecs().find((r) => r.id === id);
-      if (!rec) throw errWith('not_found', 'коммутатор не найден');
-      const a = await this._adapter(nicGuid);
-      const lend = this.net.currentLend();
-      if (lend && lend.nic === a.name) throw errWith('busy', `карта «${a.name}» сейчас отдана — сначала освободите её`);
-      if (add) {
-        if (rec.nics.some((n) => n.guid === a.guid)) return this._publicSwitch(rec);
-        if (!rec.uplink) {
-          await this._buildUplink(rec, [a]);
-          this._updateSwitch(id, { uplink: rec.uplink, nics: rec.nics, bridgeBefore: rec.bridgeBefore });
-          const rt = this.switches.get(id);
-          if (rt) this._plug(rt, rec.uplink, `коммутатор «${rec.name}»: выход в сеть`);
-        } else {
-          const why = this._nicProblem(a);
-          if (why) throw errWith('forbidden', why);
-          await bridge([a.name], { hostIp: true });
-          this._updateSwitch(id, { nics: [...rec.nics, { guid: a.guid, name: a.name }] });
-        }
-        log.info(`карта «${a.name}» включена в коммутатор «${rec.name}»`);
-      } else {
-        if (!rec.nics.some((n) => n.guid === a.guid)) return this._publicSwitch(rec);
-        if (lend?.shared?.id === id) throw errWith('busy', `через коммутатор отдана карта «${lend.nic}» — сначала освободите её`);
-        if (rec.nics.length === 1) {
-          await this._dropUplink(rec);
-          this._updateSwitch(id, { uplink: null, nics: [], bridgeBefore: null });
-        } else {
-          await unbridge([a.name]);
-          this._updateSwitch(id, { nics: rec.nics.filter((n) => n.guid !== a.guid) });
-        }
-        log.info(`карта «${a.name}» выведена из коммутатора «${rec.name}»`);
-      }
-      return this._publicSwitch(this._switchRecs().find((r) => r.id === id));
+      return this._switchNic(id, await this._adapter(nicGuid), add);
     });
+  }
+
+  async _switchNic(id, a, add) {
+    const rec = this._switchRecs().find((r) => r.id === id);
+    if (!rec) throw errWith('not_found', 'коммутатор не найден');
+    const lend = this.net.currentLend();
+    if (lend && lend.nic === a.name) throw errWith('busy', `карта «${a.name}» сейчас отдана — сначала освободите её`);
+    if (add) {
+      if (rec.nics.some((n) => n.guid === a.guid)) return this._publicSwitch(rec);
+      if (!rec.uplink) {
+        await this._buildUplink(rec, [a]);
+        this._updateSwitch(id, { uplink: rec.uplink, nics: rec.nics, bridgeBefore: rec.bridgeBefore });
+        const rt = this.switches.get(id);
+        if (rt) this._plug(rt, rec.uplink, `коммутатор «${rec.name}»: выход в сеть`);
+      } else {
+        const why = this._nicProblem(a);
+        if (why) throw errWith('forbidden', why);
+        await bridge([a.name], { hostIp: true });
+        this._updateSwitch(id, { nics: [...rec.nics, { guid: a.guid, name: a.name }] });
+      }
+      log.info(`«${a.name}» включена в коммутатор «${rec.name}»`);
+    } else {
+      if (!rec.nics.some((n) => n.guid === a.guid)) return this._publicSwitch(rec);
+      if (lend?.shared?.id === id) throw errWith('busy', `через коммутатор отдана карта «${lend.nic}» — сначала освободите её`);
+      if (rec.nics.length === 1) {
+        await this._dropUplink(rec);
+        this._updateSwitch(id, { uplink: null, nics: [], bridgeBefore: null });
+      } else {
+        await unbridge([a.name]);
+        this._updateSwitch(id, { nics: rec.nics.filter((n) => n.guid !== a.guid) });
+      }
+      log.info(`«${a.name}» выведена из коммутатора «${rec.name}»`);
+    }
+    return this._publicSwitch(this._switchRecs().find((r) => r.id === id));
   }
 
   /** Есть ли у самого компьютера доступ к сети внешнего коммутатора. */
@@ -568,52 +737,157 @@ export class NetManager extends EventEmitter {
   }
 
   deleteVnic(guid) {
-    return this._op('удаляется виртуальный адаптер', async () => {
-      const rec = this._vnicRecs().find((r) => r.guid === guid);
-      if (!rec) throw errWith('forbidden', 'удалять можно только виртуальные адаптеры, созданные здесь');
-      await this._unplug(guid);
-      await removeTap(guid);
-      this._dropTap(guid);
+    return this.deleteAdapter(guid);
+  }
+
+  updateVnic(guid, patch) {
+    return this.updateAdapter(guid, patch);
+  }
+
+  // ---------------------------------------------------- любые адаптеры
+
+  /**
+   * Удалить адаптер: свой виртуальный или программный адаптер другой
+   * программы (OpenVPN, VirtualBox…). Физическую карту и адаптер Hyper-V —
+   * нет (см. _rights).
+   */
+  deleteAdapter(guid) {
+    return this._op('удаляется адаптер', async () => {
+      const g = String(guid || '').replace(/[{}]/g, '').toUpperCase();
+      const rec = this._vnicRecs().find((r) => r.guid === g);
+      let a;
+      try {
+        a = await this._adapter(g);
+      } catch (e) {
+        // Свой адаптер уже удалили мимо приложения — осталось забыть запись.
+        if (!rec) throw e;
+        await this._unplug(g);
+        this._dropTap(g);
+        return { ok: true };
+      }
+      const { can, why } = this._rightsNow(a);
+      if (!can.delete) throw errWith('forbidden', `«${a.name}» не удалить: ${why.delete || why.manage || 'служебный адаптер'}`);
+      await this._unplug(a.guid);
+      await removeAdapter(a.guid);
+      this._dropTap(a.guid);
+      log.info(`адаптер «${a.name}» удалён${rec ? '' : ' (создан не приложением)'}`);
       return { ok: true };
     });
   }
 
   /**
-   * Изменить виртуальный адаптер: имя, MAC, коммутатор.
+   * Изменить любой адаптер — свой или чужой: имя, MAC, включён ли,
+   * коммутатор. Что с каким адаптером можно — _rights.
+   *
    * @param {string} guid
-   * @param {{ name?: string, mac?: string|null, switchId?: string|null }} patch
-   *   mac: 'random', конкретный MAC или '' — заводской
+   * @param {{ name?: string, mac?: string|null, enabled?: boolean, switchId?: string|null }} patch
+   *   mac: 'random', конкретный MAC или '' — заводской;
+   *   switchId: TAP-адаптер становится портом коммутатора (чужой при этом
+   *   берётся под управление, а с null — отпускается), остальные входят в
+   *   мост внешнего коммутатора, как карта; null — отключить от коммутатора
    */
-  updateVnic(guid, patch) {
-    return this._op('меняется виртуальный адаптер', async () => {
-      const rec = this._vnicRecs().find((r) => r.guid === guid);
-      if (!rec) throw errWith('forbidden', 'менять так можно только виртуальные адаптеры, созданные здесь');
+  updateAdapter(guid, patch) {
+    return this._op('меняется адаптер', async () => {
+      let a = await this._adapter(guid);
+      let { can, why } = this._rightsNow(a);
+      const refuse = (k) => errWith('forbidden', `«${a.name}»: ${why[k] || why.manage || 'нельзя'}`);
+      const isOn = a.status !== 'Disabled';
+
+      // Включить — первым делом: MAC и порт нужны включённому адаптеру.
+      if (patch.enabled === true && !isOn) {
+        if (!can.enable) throw refuse('enable');
+        await setAdapterEnabled(a.guid, true);
+        a = await this._adapter(a.guid);
+        ({ can, why } = this._rightsNow(a));
+      }
       if (patch.name !== undefined) {
         const clean = cleanName(patch.name, 'адаптер');
-        const inv = await this.inventory(true);
-        if (inv.adapters.some((a) => a.name === clean && a.guid !== guid)) throw errWith('exists', `адаптер «${clean}» уже есть`);
-        if (!(await renameAdapter(guid, clean))) throw new Error('Windows не переименовала адаптер');
-      }
-      if (patch.mac !== undefined) {
-        const mac = patch.mac === 'random' ? randomMac() : (patch.mac ? normalizeMac(patch.mac) || patch.mac : null);
-        if (mac && macProblem(mac)) throw errWith('bad_request', macProblem(mac));
-        // Смена MAC перезапускает адаптер — посредник на это время снимаем.
-        await this._unplug(guid);
-        try {
-          await setTapMac(guid, mac);
-        } finally {
-          await this._replug(guid)?.ready;
+        if (clean !== a.name) {
+          if (!can.rename) throw refuse('rename');
+          if (this.inv.adapters.some((x) => x.name === clean && x.guid !== a.guid)) {
+            throw errWith('exists', `адаптер «${clean}» уже есть — имена в Windows не повторяются`);
+          }
+          await renameAdapter(a.guid, clean, { explain: true });
+          log.info(`адаптер «${a.name}» переименован в «${clean}»`);
+          a = { ...a, name: clean };
         }
       }
-      if (patch.switchId !== undefined && (patch.switchId || null) !== (rec.switchId || null)) {
+      if (patch.mac !== undefined) {
+        if (!can.mac) throw refuse('mac');
+        const mac = patch.mac === 'random' ? randomMac() : (patch.mac ? normalizeMac(patch.mac) || patch.mac : null);
+        if (mac && macProblem(mac, { tap: a.tap })) throw errWith('bad_request', macProblem(mac, { tap: a.tap }));
+        // Смена MAC перезапускает адаптер — посредник на это время снимаем.
+        const plugged = Boolean(this._holderOf(a.guid));
+        if (plugged) await this._unplug(a.guid);
+        try {
+          await setAdapterMac(a.guid, mac, { tap: a.tap });
+        } finally {
+          if (plugged) await this._replug(a.guid)?.ready;
+        }
+      }
+      if (patch.switchId !== undefined) {
         const to = patch.switchId || null;
         if (to && !this._switchRecs().some((r) => r.id === to)) throw errWith('not_found', 'коммутатор не найден');
-        await this._unplug(guid);
-        this._setTap(guid, { switchId: to });
-        await this._replug(guid)?.ready;
+        if (a.tap && !this.isCard(a)) {
+          await this._setPort(a, to);
+        } else {
+          const cur = this._switchRecs().find((r) => r.nics.some((n) => n.guid === a.guid)) || null;
+          if ((cur?.id || null) !== to) {
+            if (cur && to) throw errWith('bad_request', `«${a.name}» уже в коммутаторе «${cur.name}» — сначала выведите её оттуда`);
+            if (!cur && !can.bridge) throw refuse('move');
+            await this._switchNic(cur ? cur.id : to, a, !cur);
+          }
+        }
+      }
+      if (patch.enabled === false && isOn) {
+        if (!can.enable) throw refuse('enable');
+        await setAdapterEnabled(a.guid, false);
       }
       return { ok: true };
     });
+  }
+
+  /**
+   * TAP-адаптер — портом в коммутатор (to) или из него (null).
+   *
+   * Чужой TAP при этом берётся под управление: запись с adopted, как у
+   * виртуального адаптера. Открыть его может только одна программа, поэтому
+   * адаптер, которым пользуется OpenVPN, не откроется — тогда запись
+   * убирается, и человек узнаёт почему. Отключённый от коммутатора чужой
+   * адаптер отпускается: запись удаляется, адаптер снова свободен.
+   */
+  async _setPort(a, to) {
+    const rec = this._taps().find((r) => r.guid === a.guid);
+    if (rec && rec.role !== 'vnic') throw errWith('forbidden', `«${a.name}» — служебный адаптер приложения`);
+    if ((rec?.switchId || null) === to) return;
+    const sw = to ? this._switchRecs().find((r) => r.id === to) : null;
+
+    if (!rec) {
+      const { can, why } = this._rightsNow(a);
+      if (!can.move) throw errWith('forbidden', `«${a.name}»: ${why.move || why.manage || 'к коммутатору не подключить'}`);
+      this._setTap(a.guid, { role: 'vnic', adopted: true, switchId: to, category: 'Private', last: null });
+      const holder = this._replug(a.guid);
+      await holder?.ready;
+      if (!holder?.relay) {
+        await this._unplug(a.guid);
+        this._dropTap(a.guid);
+        throw errWith('busy', `«${a.name}» не открылся — видимо, им пользуется другая программа (OpenVPN?). `
+          + `Закройте её подключение и попробуйте снова (${holder?.failed || 'нет ответа'})`);
+      }
+      log.info(`TAP-адаптер «${a.name}» (создан не приложением) подключён к коммутатору «${sw.name}»`);
+      setTimeout(() => this._enforceCategories(), 8000).unref?.();
+      return;
+    }
+
+    await this._unplug(a.guid);
+    if (!to && rec.adopted) {
+      this._dropTap(a.guid);
+      log.info(`TAP-адаптер «${a.name}» отпущен: он снова свободен для других программ`);
+      return;
+    }
+    this._setTap(a.guid, { switchId: to });
+    await this._replug(a.guid)?.ready;
+    log.info(`адаптер «${a.name}» ${sw ? `подключён к коммутатору «${sw.name}»` : 'отключён от коммутатора'}`);
   }
 
   // ---------------------------------------------------- настройки адаптеров
@@ -690,7 +964,7 @@ export class NetManager extends EventEmitter {
   async _enforceCategories() {
     if (!this.supported || !this.elevated) return;
     const wants = [
-      ...this._vnicRecs().map((r) => ({ guid: r.guid, category: r.category || 'Private' })),
+      ...this._vnicRecs().filter((r) => r.category || !r.adopted).map((r) => ({ guid: r.guid, category: r.category || 'Private' })),
       ...this.net.categoryWants(),
     ];
     if (!wants.length) return;
@@ -761,12 +1035,8 @@ export class NetManager extends EventEmitter {
       return { supported: false, reason: 'настройка сети есть только на Windows' };
     }
     const inv = await this.inventory();
-    const taps = new Map(this._taps().map((r) => [r.guid, r]));
-    const described = this.net.describe();
-    const lendByTap = new Map(described.lends.filter((l) => l.tap).map((l) => [l.tap.guid, l]));
-    const borrowByTap = new Map(described.borrows.filter((b) => b.guid).map((b) => [b.guid, b]));
-    const devices = this.devices();
-    const working = this.workingIface();
+    const ctx = this._context();
+    const { taps, lendByTap, borrowByTap, devices, working } = ctx;
     const bridgeRec = this._bridgeSwitchRec();
     const members = inv.adapters.filter((a) => a.bridged).map((a) => a.name);
 
@@ -774,33 +1044,20 @@ export class NetManager extends EventEmitter {
       const rec = taps.get(a.guid);
       const lend = lendByTap.get(a.guid) || null;
       const borrow = borrowByTap.get(a.guid) || null;
-      const role = a.bridge ? 'bridge'
-        : rec?.role === 'vnic' ? 'vnic'
-          : rec?.role === 'uplink' ? 'uplink'
-            : lend || rec?.role === 'server' ? 'lend'
-              : borrow || rec?.role === 'client' ? 'borrow'
-                : a.tap ? 'tap'
-                  : a.hardware ? (a.wireless ? 'wifi' : 'physical')
-                    : 'virtual';
+      const role = this._role(a, ctx);
       const dev = devices.get(a.name) || null;
       const notes = [];
-      const can = { ip: false, category: false, mac: false, rename: false, delete: false, move: false };
-      const why = {};
-      if (a.bridged) why.ip = 'в мосту: адрес задаётся у моста';
-      else if (a.name === working) why.ip = 'через эту карту работает приложение — меняйте на месте';
-      else if (role === 'uplink' || role === 'lend') why.ip = 'служебный адаптер моста';
-      else if (a.bridge && a.tcpip === false) why.ip = 'IP на мосту выключен';
-      else can.ip = true;
-      can.category = Boolean(a.profile) || role === 'vnic' || role === 'borrow';
-      if (role === 'vnic') { can.mac = true; can.rename = true; can.delete = true; can.move = true; }
+      const { can, why } = this._rights(a, role, ctx);
       if (role === 'borrow' && borrow?.ipApplied && !borrow.ipApplied.ok) notes.push(borrow.ipApplied.error);
       return {
         ...a,
         role,
+        // Чужой TAP, подключённый к коммутатору: создан не приложением.
+        adopted: Boolean(rec?.adopted),
         working: a.name === working,
         switchId: rec?.switchId || (a.bridged && bridgeRec ? bridgeRec.id : null),
         category: a.profile?.category || null,
-        wantCategory: rec?.role === 'vnic' ? (rec.category || 'Private') : borrow?.category || null,
+        wantCategory: rec?.role === 'vnic' ? (rec.category || (rec.adopted ? null : 'Private')) : borrow?.category || null,
         lend: lend && {
           deviceId: lend.deviceId, nic: lend.nic, connected: lend.connected, shared: lend.shared,
           holderName: devices.get(lend.nic)?.claim?.holderName || null, failed: lend.failed,

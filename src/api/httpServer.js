@@ -54,6 +54,7 @@ const MUTATING = new Set([
   '/api/v1/net/switch/nic', '/api/v1/net/switch/host',
   '/api/v1/net/vnic/create', '/api/v1/net/vnic/delete', '/api/v1/net/vnic/update',
   '/api/v1/net/adapter/ip', '/api/v1/net/adapter/category', '/api/v1/net/bridge/ip',
+  '/api/v1/net/adapter/update', '/api/v1/net/adapter/delete',
   '/api/v1/net/held/ip',
 ]);
 
@@ -541,7 +542,10 @@ export class ApiServer {
         // ------------------------------------------------ сеть компьютера
         case '/api/v1/net/switch/create':
           return sendJson(res, 200, await this.app.netManager.createSwitch({
-            name: body.name, nics: Array.isArray(body.nics) ? body.nics : [], hostAccess: body.hostAccess !== false,
+            name: body.name,
+            nics: Array.isArray(body.nics) ? body.nics : [],
+            ports: Array.isArray(body.ports) ? body.ports : [],
+            hostAccess: body.hostAccess !== false,
           }));
         case '/api/v1/net/switch/delete':
           return sendJson(res, 200, await this.app.netManager.deleteSwitch(body.id));
@@ -562,6 +566,13 @@ export class ApiServer {
           for (const k of ['name', 'mac', 'switchId']) if (body[k] !== undefined) patch[k] = body[k];
           return sendJson(res, 200, await this.app.netManager.updateVnic(body.guid, patch));
         }
+        case '/api/v1/net/adapter/update': {
+          const patch = {};
+          for (const k of ['name', 'mac', 'switchId', 'enabled']) if (body[k] !== undefined) patch[k] = body[k];
+          return sendJson(res, 200, await this.app.netManager.updateAdapter(body.guid, patch));
+        }
+        case '/api/v1/net/adapter/delete':
+          return sendJson(res, 200, await this.app.netManager.deleteAdapter(body.guid));
         case '/api/v1/net/adapter/ip':
           return sendJson(res, 200, await this.app.netManager.setAdapterIp(body.guid, body.ip, { category: body.category }));
         case '/api/v1/net/adapter/category':

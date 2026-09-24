@@ -1,4 +1,5 @@
-// TAP-адаптеры Windows: какие есть, создание и удаление, MAC, имя.
+// TAP-адаптеры Windows: какие есть, создание и удаление, MAC, имя. Удаление,
+// MAC и имя годятся и для любого другого сетевого адаптера.
 //
 // Драйвер — tap-windows6 9.27.0 из installers/windows (подпись attestation
 // от Microsoft, поэтому ставится и при включённой Memory Integrity).
@@ -7,10 +8,12 @@
 // не трогая уже работающие. Права администратора нужны на создание,
 // удаление и смену MAC; открывать адаптер и гонять кадры можно и без них.
 //
-// ЧУЖИЕ АДАПТЕРЫ НЕ ТРОГАЕМ. Тот же драйвер ставит OpenVPN, и его адаптер
-// неотличим от нашего ни по драйверу, ни по имени. Поэтому приложение
-// пользуется только теми адаптерами, которые создало само: их GUID
-// записываются в настройки (поле tapAdapters).
+// ЧУЖИЕ АДАПТЕРЫ САМО НЕ ТРОГАЕТ. Тот же драйвер ставит OpenVPN, и его
+// адаптер неотличим от нашего ни по драйверу, ни по имени. Поэтому по
+// собственному почину приложение пользуется только теми адаптерами, которые
+// создало само: их GUID записываются в настройки (поле tapAdapters). Чужой
+// адаптер оно подключает к коммутатору, меняет или удаляет только по прямой
+// команде человека (core/netManager.js).
 
 import fs from 'node:fs';
 import crypto from 'node:crypto';
@@ -37,11 +40,11 @@ function cleanGuid(g) {
   return String(g || '').replace(/[{}]/g, '').toUpperCase();
 }
 
-/** Все TAP-адаптеры системы — и наши, и чужие. */
-export async function listTaps() {
+/** Все сетевые адаптеры системы, коротко: имя, GUID, состояние, MAC, устройство. */
+export async function listNetAdapters() {
   const items = await psJson(
-    'Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.ComponentID -eq ' + psQuote(HWID) + ' } | '
-    + 'Select-Object -Property Name,InterfaceGuid,Status,MacAddress,PnPDeviceID | ConvertTo-Json -Compress -Depth 3',
+    'Get-NetAdapter -ErrorAction SilentlyContinue | '
+    + 'Select-Object -Property Name,InterfaceGuid,Status,MacAddress,PnPDeviceID,ComponentID | ConvertTo-Json -Compress -Depth 3',
   );
   return items.map((a) => ({
     name: a.Name,
@@ -49,7 +52,13 @@ export async function listTaps() {
     status: a.Status || null,
     mac: a.MacAddress || null,
     pnpId: a.PnPDeviceID || null,
+    tap: String(a.ComponentID || '').toLowerCase() === HWID,
   }));
+}
+
+/** Все TAP-адаптеры системы — и наши, и чужие. */
+export async function listTaps() {
+  return (await listNetAdapters()).filter((a) => a.tap);
 }
 
 /**
@@ -106,10 +115,10 @@ export async function createTap() {
 }
 
 /** Ждать, пока список адаптеров станет таким, как нужно (до ms). */
-async function waitTaps(pick, ms = 30000) {
+async function waitTaps(pick, ms = 30000, list = listTaps) {
   const until = Date.now() + ms;
   while (Date.now() < until) {
-    const found = pick(await listTaps());
+    const found = pick(await list());
     if (found) return found;
     await new Promise((res) => setTimeout(res, 700));
   }
@@ -129,19 +138,24 @@ async function deviceScript(args) {
 }
 
 /**
- * Удалить TAP-адаптер. Только наш: вызывающий сам проверяет, что адаптер
- * создан приложением. Уже удалённый — не ошибка.
+ * Удалить сетевой адаптер — устройство целиком (DIF_REMOVE), как «Удалить
+ * устройство» в Диспетчере устройств. Годится для программных адаптеров:
+ * физическую карту Windows нашла бы снова при следующем опросе шины. Можно
+ * ли удалять этот адаптер, решает вызывающий. Уже удалённый — не ошибка.
  */
-export async function removeTap(guid) {
-  const t = (await listTaps()).find((x) => x.guid === cleanGuid(guid));
+export async function removeAdapter(guid) {
+  const t = (await listNetAdapters()).find((x) => x.guid === cleanGuid(guid));
   if (!t) return false;
   if (!t.pnpId) throw new Error(`у адаптера «${t.name}» не прочитан идентификатор устройства`);
   await deviceScript(['-Action', 'remove', '-InstanceId', t.pnpId]);
-  const gone = await waitTaps((list) => (list.some((x) => x.guid === t.guid) ? null : true), 15000);
+  const gone = await waitTaps((list) => (list.some((x) => x.guid === t.guid) ? null : true), 15000, listNetAdapters);
   if (!gone) throw new Error(`адаптер «${t.name}» удалён, но всё ещё виден в системе`);
-  log.info(`TAP-адаптер «${t.name}» удалён`);
+  log.info(`${t.tap ? 'TAP-адаптер' : 'адаптер'} «${t.name}» удалён`);
   return true;
 }
+
+/** Удалить TAP-адаптер, созданный приложением. */
+export const removeTap = removeAdapter;
 
 // ------------------------------------------------------------------ MAC
 
@@ -158,19 +172,25 @@ export function formatMac(mac) {
 }
 
 /**
- * Почему этот MAC не годится TAP-адаптеру (null — годится).
+ * Почему этот MAC не годится адаптеру (null — годится).
  *
- * Драйвер принимает только ЛОКАЛЬНО АДМИНИСТРИРУЕМЫЙ одноадресный MAC:
+ * Драйвер TAP принимает только ЛОКАЛЬНО АДМИНИСТРИРУЕМЫЙ одноадресный MAC:
  * второй бит первого байта — 1, младший — 0 (02-…, 06-…, 0A-…). Заводской
  * адрес вида 00-15-… он молча отвергает и остаётся со своим — проверено на
- * стенде. Поэтому MAC настоящей карты адаптеру не присвоить.
+ * стенде. Поэтому MAC настоящей карты адаптеру не присвоить. Драйверы
+ * настоящих карт обычно берут любой одноадресный; не взял — это видно по
+ * MAC после перезапуска.
+ *
+ * @param {string} mac
+ * @param {{ tap?: boolean }} [o] — tap: false — правило драйвера TAP не действует
  */
-export function macProblem(mac) {
+export function macProblem(mac, { tap = true } = {}) {
   const n = normalizeMac(mac);
   if (!n) return 'MAC — это 12 шестнадцатеричных цифр, например 02-AA-BB-CC-DD-01';
+  if (/^0+$/.test(n)) return 'MAC из одних нулей адаптеру не годится';
   const first = parseInt(n.slice(0, 2), 16);
   if (first & 1) return 'MAC с нечётным первым байтом — групповой, адаптеру такой не годится';
-  if (!(first & 2)) return 'драйвер TAP принимает только локальный MAC: первый байт 02, 06, 0A, 0E… (например 02-…)';
+  if (tap && !(first & 2)) return 'драйвер TAP принимает только локальный MAC: первый байт 02, 06, 0A, 0E… (например 02-…)';
   return null;
 }
 
@@ -184,11 +204,18 @@ export function randomMac() {
  * перезапускается, и открытый посредник падает: вызывающий останавливает
  * его заранее и поднимает после.
  *
+ * Так же, как вкладка «Дополнительно» в свойствах адаптера: значение
+ * NetworkAddress в ключе драйвера. Его читает и TAP, и драйверы большинства
+ * карт; поддерживает ли драйвер адрес, видно в описи (macSettable).
+ *
+ * @param {string} guid
+ * @param {string|null} mac
+ * @param {{ tap?: boolean }} [o] — tap: false — адаптер не TAP (см. macProblem)
  * @returns {Promise<string>} MAC после перезапуска
  */
-export async function setTapMac(guid, mac) {
+export async function setAdapterMac(guid, mac, { tap = true } = {}) {
   const g = cleanGuid(guid);
-  if (mac && macProblem(mac)) throw new Error(macProblem(mac));
+  if (mac && macProblem(mac, { tap })) throw new Error(macProblem(mac, { tap }));
   const n = mac ? normalizeMac(mac) : null;
   const sel = `$a = Get-NetAdapter -ErrorAction Stop | Where-Object { $_.InterfaceGuid -eq ${psQuote(`{${g}}`)} }; `
     + "if (-not $a) { throw 'адаптер не найден' }; ";
@@ -205,7 +232,7 @@ export async function setTapMac(guid, mac) {
   // Адаптер поднимается не мгновенно, и новый MAC виден после подъёма.
   let now = null;
   for (let i = 0; i < 20; i++) {
-    now = (await listTaps()).find((t) => t.guid === g)?.mac || null;
+    now = (await listNetAdapters()).find((t) => t.guid === g)?.mac || null;
     if (now && (!n || normalizeMac(now) === n)) break;
     await new Promise((res) => setTimeout(res, 500));
   }
@@ -214,20 +241,53 @@ export async function setTapMac(guid, mac) {
   return now;
 }
 
+/** MAC TAP-адаптера: только локальный. */
+export function setTapMac(guid, mac) {
+  return setAdapterMac(guid, mac, { tap: true });
+}
+
 /**
  * Дать адаптеру понятное имя — его человек видит в «Сетевых подключениях».
- * Не удалось — не беда: работать адаптер будет и под прежним.
+ * Не удалось — не беда: работать адаптер будет и под прежним. Когда имя
+ * просил человек, нужна причина отказа — { explain: true } бросает её.
  */
-export async function renameAdapter(guid, newName) {
+export async function renameAdapter(guid, newName, { explain = false } = {}) {
+  // Адаптер передаётся по конвейеру, а не именем: -Name понимает шаблоны, и
+  // имя со скобками [ ] нашло бы не тот адаптер или никакой.
   const script = '$a = Get-NetAdapter -ErrorAction Stop | Where-Object { $_.InterfaceGuid -eq '
     + psQuote(`{${cleanGuid(guid)}}`) + ' }; '
-    + 'if ($a -and $a.Name -ne ' + psQuote(newName) + ') { Rename-NetAdapter -Name $a.Name -NewName '
+    + 'if ($a -and $a.Name -ne ' + psQuote(newName) + ') { $a | Rename-NetAdapter -NewName '
     + psQuote(newName) + ' -ErrorAction Stop }';
   const r = await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { timeoutMs: 20000 });
   if (!r.ok) {
-    log.debug(`адаптер ${guid} не переименован: ${r.stderr.trim() || r.code}`);
+    const why = r.stderr.trim().split(/\r?\n/)[0] || `код ${r.code}`;
+    log.debug(`адаптер ${guid} не переименован: ${why}`);
+    if (explain) throw new Error(`Windows не переименовала адаптер: ${why}`);
     return false;
   }
+  return true;
+}
+
+/**
+ * Включить или отключить адаптер — как «Отключить» в «Сетевых подключениях».
+ * Отключённый адаптер пропадает из сети, но остаётся в системе со всеми
+ * настройками.
+ */
+export async function setAdapterEnabled(guid, enabled) {
+  const verb = enabled ? 'Enable-NetAdapter' : 'Disable-NetAdapter';
+  const script = '$a = Get-NetAdapter -ErrorAction Stop | Where-Object { $_.InterfaceGuid -eq '
+    + psQuote(`{${cleanGuid(guid)}}`) + ' }; '
+    + `if (-not $a) { throw 'адаптер не найден' }; $a | ${verb} -Confirm:$false -ErrorAction Stop`;
+  const r = await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { timeoutMs: 60000 });
+  if (!r.ok) throw new Error(`адаптер не ${enabled ? 'включён' : 'отключён'}: ${r.stderr.trim().split(/\r?\n/)[0] || `код ${r.code}`}`);
+  // Состояние меняется не мгновенно.
+  const g = cleanGuid(guid);
+  const ok = await waitTaps((list) => {
+    const a = list.find((x) => x.guid === g);
+    return a && (a.status === 'Disabled') !== Boolean(enabled) ? a : null;
+  }, 15000, listNetAdapters);
+  if (!ok) throw new Error(`адаптер так и не ${enabled ? 'включился' : 'отключился'}`);
+  log.info(`адаптер «${ok.name}» ${enabled ? 'включён' : 'отключён'}`);
   return true;
 }
 
