@@ -484,14 +484,16 @@ PowerShell, в общий снимок она не входит. Когда чт
 | Вызов | Тело | Что делает |
 |---|---|---|
 | `GET /api/v1/net/map` | — | адаптеры с ролями и правами на правку, мост, коммутаторы, сетевые экраны |
-| `POST /api/v1/net/switch/create` | `{ name, nics: [guid], hostAccess }` | коммутатор; с картой — внешний |
+| `POST /api/v1/net/switch/create` | `{ name, nics: [guid], ports: [guid], hostAccess }` | коммутатор; с картой — внешний; `ports` — уже существующие TAP-адаптеры, свои или чужие; в ответе `warnings` — какие не подключились |
 | `POST /api/v1/net/switch/delete` | `{ id }` | удалить; виртуальные адаптеры остаются неподключёнными |
 | `POST /api/v1/net/switch/rename` | `{ id, name }` | переименовать |
 | `POST /api/v1/net/switch/nic` | `{ id, guid, add }` | карту — в коммутатор (мост Windows) или из него |
 | `POST /api/v1/net/switch/host` | `{ id, enabled }` | IP на мосту внешнего коммутатора |
 | `POST /api/v1/net/vnic/create` | `{ name, switchId, mac, ip, category }` | виртуальный адаптер; `mac` — `random`, адрес или пусто |
-| `POST /api/v1/net/vnic/update` | `{ guid, name?, mac?, switchId? }` | имя, MAC, коммутатор |
-| `POST /api/v1/net/vnic/delete` | `{ guid }` | удалить (только созданный приложением) |
+| `POST /api/v1/net/adapter/update` | `{ guid, name?, mac?, enabled?, switchId? }` | любой адаптер, в том числе созданный не приложением: имя, MAC (`random`, адрес, `''` — заводской), включён ли, коммутатор. TAP становится портом (чужой берётся под управление, с `switchId: null` — отпускается), прочие входят в мост внешнего коммутатора. Что с каким адаптером можно — `can` и `why` в карте |
+| `POST /api/v1/net/adapter/delete` | `{ guid }` | удалить свой виртуальный или программный адаптер другой программы; физическую карту и адаптер Hyper-V — нет |
+| `POST /api/v1/net/vnic/update` | `{ guid, name?, mac?, switchId? }` | то же, что `adapter/update` (прежнее имя) |
+| `POST /api/v1/net/vnic/delete` | `{ guid }` | то же, что `adapter/delete` (прежнее имя) |
 | `POST /api/v1/net/adapter/ip` | `{ guid, ip, category? }` | настройки IP любого адаптера, кроме рабочей карты, карты в мосту и служебных |
 | `POST /api/v1/net/adapter/category` | `{ guid, category }` | тип сети: `Private` или `Public` |
 | `POST /api/v1/net/bridge/ip` | `{ enabled }` | IP на адаптере моста (в том числе у отданной карты) |
