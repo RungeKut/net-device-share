@@ -33,6 +33,11 @@ const SCRIPT = [
   'Get-NetConnectionProfile -ErrorAction SilentlyContinue | ForEach-Object { $prof[[int]$_.InterfaceIndex] = $_ }',
   '$gw = @{}',
   "Get-NetRoute -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | ForEach-Object { $gw[[int]$_.InterfaceIndex] = $true }",
+  // MAC меняется, если у драйвера есть свойство NetworkAddress (на вкладке
+  // «Дополнительно» оно «Network Address» или «MAC Address»). Значение не
+  // пустое — MAC уже задан вместо заводского.
+  '$na = @{}',
+  'Get-NetAdapterAdvancedProperty -RegistryKeyword NetworkAddress -ErrorAction SilentlyContinue | ForEach-Object { $na[$_.Name] = [string](@($_.RegistryValue) -join \'\') }',
   '$list = @(Get-NetAdapter -ErrorAction SilentlyContinue | ForEach-Object { $i = [int]$_.ifIndex; $p = $prof[$i]; $n = $ipif[$i]; [pscustomobject]@{ '
     + 'Name = $_.Name; Description = $_.InterfaceDescription; Guid = [string]$_.InterfaceGuid; Index = $i; '
     + 'Status = [string]$_.Status; Mac = $_.MacAddress; Speed = $_.LinkSpeed; Hardware = [bool]$_.HardwareInterface; '
@@ -40,6 +45,7 @@ const SCRIPT = [
     + "Tcpip = $bind[$_.Name + '|ms_tcpip']; Bridged = $bind[$_.Name + '|ms_implat']; "
     + 'Metric = $(if ($n) { $n.InterfaceMetric } else { $null }); Dad = $(if ($n) { $n.DadTransmits } else { $null }); '
     + 'DefaultRoute = [bool]$gw[$i]; Addr = @($addr[$i]); '
+    + 'MacProp = $na.ContainsKey($_.Name); MacSet = $na[$_.Name]; '
     + 'Profile = $(if ($p) { [pscustomobject]@{ name = $p.Name; category = [string]$p.NetworkCategory } } else { $null }); '
     + `Reg = ${registryExpr('$_.InterfaceGuid')} } })`,
   'ConvertTo-Json -InputObject $list -Compress -Depth 5',
@@ -49,8 +55,9 @@ const SCRIPT = [
  * Все адаптеры системы.
  *
  * @returns {Promise<object[]>} записи вида { guid, name, description, index,
- *   status, mac, speed, hardware, wireless, bridge, tap, virtual, tcpip,
- *   bridged, metric, dad, defaultRoute, addresses, profile, ip }
+ *   status, mac, speed, pnpId, hardware, wireless, bridge, tap, virtual,
+ *   hyperv, software, macSettable, macCustom, tcpip, bridged, metric, dad,
+ *   defaultRoute, addresses, profile, ip }
  */
 export async function listAdapters() {
   const items = await psJson(SCRIPT, { timeoutMs: 30000 });
@@ -68,6 +75,14 @@ export async function listAdapters() {
     bridge: isBridgeAdapter(a.Description),
     tap: /^tap0901$/i.test(a.ComponentID || ''),
     virtual: Boolean(a.Virtual),
+    // Адаптер Hyper-V (vEthernet): им распоряжается Hyper-V, а не «Сетевые
+    // подключения» — удаляется и меняет MAC он вместе с коммутатором Hyper-V.
+    hyperv: /^ROOT\\VMS_MP\\/i.test(a.PnP || '') || /Hyper-V Virtual Ethernet/i.test(a.Description || ''),
+    // Программное устройство (ROOT\…): его можно удалить, и само оно не
+    // вернётся. Физическую карту Windows нашла бы снова.
+    software: /^ROOT\\/i.test(a.PnP || ''),
+    macSettable: Boolean(a.MacProp),
+    macCustom: Boolean(a.MacSet && String(a.MacSet).trim()),
     // null — привязки нет вовсе (у адаптера моста привязки ms_implat нет).
     tcpip: a.Tcpip === undefined ? null : a.Tcpip,
     bridged: Boolean(a.Bridged),
