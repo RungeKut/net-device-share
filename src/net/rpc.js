@@ -58,6 +58,7 @@ export function rpc({ host, port, path, method = 'GET', body = null, key = '', n
           } catch {
             parsed = { raw: text };
           }
+          if (parsed !== null && typeof parsed !== 'object') parsed = { value: parsed };
           if (res.statusCode >= 200 && res.statusCode < 300) {
             resolve(parsed);
           } else {

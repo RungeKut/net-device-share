@@ -1005,6 +1005,10 @@ $('#groupDialog').addEventListener('close', async () => {
 });
 
 // --- вход ---
+$('#loginDialog form').addEventListener('submit', (e) => {
+  e.preventDefault();
+  $('#loginDialog').close('login');
+});
 $('#loginDialog').addEventListener('close', async () => {
   if ($('#loginDialog').returnValue !== 'login') return;
   try {

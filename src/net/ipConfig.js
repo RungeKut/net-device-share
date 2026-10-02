@@ -50,6 +50,10 @@ function servers(text) {
   return String(text || '').split(/[\s,]+/).filter(Boolean);
 }
 
+function ipToLong(ip) {
+  return ip.split('.').reduce((acc, p) => acc * 256 + Number(p), 0);
+}
+
 export function maskToPrefix(mask) {
   const parts = String(mask).split('.').map(Number);
   if (parts.length !== 4 || parts.some((p) => !Number.isInteger(p) || p < 0 || p > 255)) return null;
@@ -69,6 +73,7 @@ export function maskToPrefix(mask) {
  */
 export function fromRegistry(r) {
   if (!r) return null;
+  if (typeof r !== 'object' || Array.isArray(r)) return null;
   const dhcp = Number(r.EnableDHCP) === 1;
   const ips = list(r.IPAddress);
   const masks = list(r.SubnetMask);
@@ -250,6 +255,14 @@ export function validateIpConfig(cfg) {
   const gateways = list(cfg.gateways, 'шлюз');
   const dns = list(cfg.dns, 'DNS');
   if (!dhcp && !addresses.length) throw new Error('без DHCP нужен хотя бы один адрес');
+  for (const gw of gateways) {
+    const inSubnet = addresses.some((a) => {
+      const ip = ipToLong(a.address);
+      const mask = ~((1 << (32 - a.prefixLength)) - 1);
+      return (ip & mask) === (ipToLong(gw) & mask);
+    });
+    if (!inSubnet) throw new Error(`шлюз ${gw} не в подсети ни одного из адресов`);
+  }
   if (addresses.length > 16) throw new Error('больше 16 адресов на одном адаптере — это уже не настройка, а ошибка');
   if (gateways.length > 4 || dns.length > 4) throw new Error('шлюзов и DNS — не больше четырёх');
   return { dhcp, addresses: dhcp ? [] : addresses, gateways: dhcp ? [] : gateways, dns };
