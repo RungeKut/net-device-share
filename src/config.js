@@ -203,7 +203,16 @@ export class Config {
       // Пишем через временный файл: при сбое старая конфигурация уцелеет.
       const tmp = `${this.file}.tmp`;
       fs.writeFileSync(tmp, JSON.stringify(data, null, 2), 'utf8');
-      fs.renameSync(tmp, this.file);
+      try {
+        fs.renameSync(tmp, this.file);
+      } catch (e) {
+        if (process.platform === 'win32' && e.code === 'EPERM') {
+          fs.copyFileSync(tmp, this.file);
+          fs.unlinkSync(tmp);
+        } else {
+          throw e;
+        }
+      }
     } catch (e) {
       log.error('не удалось сохранить конфигурацию:', e.message);
     }

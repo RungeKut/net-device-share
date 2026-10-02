@@ -57,6 +57,7 @@ async function script(action, adapters = []) {
     throw new Error(`сценарий моста ${why}${last ? ` (последний шаг: ${last})` : ''}`);
   }
   const res = JSON.parse(line.slice('NDS-RESULT '.length));
+  if (typeof res !== 'object' || res === null) throw new Error('мост вернул не объект');
   res.members = [].concat(res.members || []);
   log.debug(`мост ${action} ${adapters.join(' + ')}: ${res.ok ? 'готово' : res.message}; в мосту: ${res.members.join(', ') || 'никого'}`);
   return res;

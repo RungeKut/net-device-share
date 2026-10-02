@@ -46,6 +46,7 @@ export async function listNetAdapters() {
     'Get-NetAdapter -ErrorAction SilentlyContinue | '
     + 'Select-Object -Property Name,InterfaceGuid,Status,MacAddress,PnPDeviceID,ComponentID | ConvertTo-Json -Compress -Depth 3',
   );
+  if (!Array.isArray(items)) throw new Error('PowerShell вернул не массив адаптеров');
   return items.map((a) => ({
     name: a.Name,
     guid: cleanGuid(a.InterfaceGuid),
@@ -217,6 +218,7 @@ export async function setAdapterMac(guid, mac, { tap = true } = {}) {
   const g = cleanGuid(guid);
   if (mac && macProblem(mac, { tap })) throw new Error(macProblem(mac, { tap }));
   const n = mac ? normalizeMac(mac) : null;
+  if (n && !/^[0-9A-Fa-f]{12}$/.test(n)) throw new Error(`MAC «${mac}» — не валидный адрес`);
   const sel = `$a = Get-NetAdapter -ErrorAction Stop | Where-Object { $_.InterfaceGuid -eq ${psQuote(`{${g}}`)} }; `
     + "if (-not $a) { throw 'адаптер не найден' }; ";
   // Ключ драйвера: там лежит NetworkAddress. Сброс — удалением значения:

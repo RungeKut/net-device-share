@@ -141,6 +141,7 @@ export class Discovery extends EventEmitter {
       else log.trace(`пакет отброшен (${error}) от ${from}`);
       return;
     }
+    if (typeof message !== 'object' || message === null) return;
     if (message.nodeId === this.opts.nodeId) return; // собственный анонс
 
     switch (message.type) {

@@ -44,6 +44,21 @@ const PULL_DEBOUNCE_MS = 700;
  *
  * @returns {{host: string, port: number}|null}
  */
+function isValidIpv6(ip) {
+  const parts = ip.split(':');
+  if (parts.length < 3 || parts.length > 8) return false;
+  let emptySeen = false;
+  for (const p of parts) {
+    if (p === '') {
+      if (emptySeen) return false;
+      emptySeen = true;
+      continue;
+    }
+    if (!/^[0-9A-Fa-f]{1,4}$/.test(p)) return false;
+  }
+  return true;
+}
+
 export function parseSeed(raw, defaultPort) {
   if (typeof raw !== 'string') return null;
   const text = raw.trim();
@@ -55,6 +70,7 @@ export function parseSeed(raw, defaultPort) {
 
   const host = m[1];
   if (host.length > 253) return null;
+  if (text.startsWith('[') && !isValidIpv6(host)) return null;
   const port = m[2] === undefined ? defaultPort : Number(m[2]);
   if (!Number.isInteger(port) || port < 1 || port > 65535) return null;
   return { host, port };

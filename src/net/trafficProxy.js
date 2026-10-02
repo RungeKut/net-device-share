@@ -128,7 +128,7 @@ export class TrafficProxy extends EventEmitter {
 
   _onClient(client) {
     const from = normalizeIp(client.remoteAddress || '');
-    const near = !this.cidr || ipInCidr(from, this.cidr) || from.startsWith('127.');
+    const near = !this.cidr || ipInCidr(from, this.cidr) || isLoopback(from);
     if (!near && !this.isKnownPeer?.(from)) {
       log.warn(`соединение с ${from} вне рабочей сети отклонено`);
       client.destroy();

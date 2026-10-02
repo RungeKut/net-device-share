@@ -622,7 +622,8 @@ export class ApiServer {
   _serveStatic(res, route) {
     const rel = route === '/' ? 'index.html' : route.replace(/^\/+/, '');
     const target = path.resolve(UI_DIR, rel);
-    if (!target.startsWith(path.resolve(UI_DIR))) {
+    const uiDir = path.resolve(UI_DIR);
+    if (target !== uiDir && !target.startsWith(uiDir + path.sep)) {
       return sendJson(res, 403, { error: 'forbidden' });
     }
     fs.readFile(target, (err, data) => {
@@ -637,7 +638,7 @@ export class ApiServer {
 }
 
 function isLoopback(ip) {
-  return ip === '127.0.0.1' || ip === '::1' || String(ip).startsWith('127.');
+  return ip === '127.0.0.1' || ip === '::1';
 }
 
 function parseCookies(header) {

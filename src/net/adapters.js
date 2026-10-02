@@ -61,6 +61,7 @@ const SCRIPT = [
  */
 export async function listAdapters() {
   const items = await psJson(SCRIPT, { timeoutMs: 30000 });
+  if (!Array.isArray(items)) throw new Error('PowerShell вернул не массив адаптеров');
   return items.map((a) => ({
     guid: cleanGuid(a.Guid),
     name: a.Name,

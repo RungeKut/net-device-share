@@ -84,7 +84,7 @@ export class VSwitch extends EventEmitter {
     for (let i = 0; i + 2 <= frames.length;) {
       const len = frames.readUInt16BE(i);
       const end = i + 2 + len;
-      if (len < 14 || end > frames.length) break; // обрывок — дальше читать нечего
+      if (len < 14 || len > 1518 || end > frames.length) break; // обрывок — дальше читать нечего
       const chunk = frames.subarray(i, end);
       const f = i + 2;
       port.rx += len;
