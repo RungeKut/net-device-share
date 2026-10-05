@@ -157,10 +157,10 @@ export class LinkServer extends EventEmitter {
    * @returns {{ token: string, close: () => void, connected: () => boolean,
    *   setRelay: (relay: object) => void }}
    */
-  open({ relay, allowAddress = null, label = 'канал' }) {
+  open({ relay, allowAddress = null, label = 'канал', deviceId = null }) {
     const token = newToken();
     const key = tokenKey(Buffer.from(token, 'hex'));
-    const session = { key, relay, allowAddress: allowAddress ? normalizeIp(allowAddress) : null, label, socket: null };
+    const session = { key, relay, allowAddress: allowAddress ? normalizeIp(allowAddress) : null, label, socket: null, deviceId };
     this.sessions.set(key, session);
     return {
       token,
@@ -202,19 +202,22 @@ export class LinkServer extends EventEmitter {
     // наверняка уже мертво, просто это ещё не обнаружено.
     if (session.socket) {
       log.info(`${session.label}: переподключение с ${from}, прежнее соединение закрыто`);
-      session.socket.destroy();
+      const oldSocket = session.socket;
+      session.socket = null;
+      oldSocket.destroy();
     }
     session.socket = socket;
     socket.write(Buffer.concat([MAGIC, Buffer.from([1])]));
+    socket.once('close', () => {
+      if (session.socket === socket) {
+        session.socket = null;
+        log.info(`${session.label}: соединение с ${from} закрыто`);
+        this.emit('disconnected', { label: session.label, address: from, deviceId: session.deviceId });
+      }
+    });
     splice(session.relay, socket, rest, session.label);
     log.info(`${session.label}: подключён ${from}`);
-    this.emit('connected', { label: session.label, address: from });
-
-    socket.once('close', () => {
-      if (session.socket === socket) session.socket = null;
-      log.info(`${session.label}: соединение с ${from} закрыто`);
-      this.emit('disconnected', { label: session.label, address: from });
-    });
+    this.emit('connected', { label: session.label, address: from, deviceId: session.deviceId });
   }
 
   async stop() {

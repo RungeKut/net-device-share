@@ -131,8 +131,14 @@ export class NetShare extends EventEmitter {
     this.server = new LinkServer({ port: this.config.get('netLinkPort') });
     try {
       await this.server.start();
-      this.server.on('connected', () => this.emit('changed'));
-      this.server.on('disconnected', () => this.emit('changed'));
+      this.server.on('connected', ({ deviceId }) => {
+        this._cancelTeardownTimer(deviceId);
+        this.emit('changed');
+      });
+      this.server.on('disconnected', ({ deviceId }) => {
+        this._scheduleTeardownOnDisconnect(deviceId);
+        this.emit('changed');
+      });
     } catch (e) {
       this.serverError = `порт канала ${this.config.get('netLinkPort')} занят: ${e.message}`;
       log.warn(`${this.serverError} — сетевые карты будут только бронироваться`);
@@ -383,9 +389,32 @@ export class NetShare extends EventEmitter {
       // адрес здесь не сужаем.
       allowAddress: holderAddress && !/^127\.|^::1$/.test(holderAddress) ? holderAddress : null,
       label: `карта «${lend.nic}»`,
+      deviceId: lend.deviceId,
     });
     lend.token = lend.session.token;
     lend.holderId = holderId;
+  }
+
+  _scheduleTeardownOnDisconnect(deviceId) {
+    if (!deviceId) return;
+    const lend = this.lends.get(deviceId);
+    if (!lend || lend.teardownTimer) return;
+    lend.teardownTimer = setTimeout(() => {
+      lend.teardownTimer = null;
+      if (lend.session?.connected()) return;
+      log.warn(`держатель карты «${lend.nic}» отключился — разбираем сетевой путь`);
+      this.unlend({ deviceId }).catch((e) => log.error(`карта «${lend.nic}» не возвращена: ${e.message}`));
+    }, 60000);
+    lend.teardownTimer.unref?.();
+  }
+
+  _cancelTeardownTimer(deviceId) {
+    if (!deviceId) return;
+    const lend = this.lends.get(deviceId);
+    if (lend?.teardownTimer) {
+      clearTimeout(lend.teardownTimer);
+      lend.teardownTimer = null;
+    }
   }
 
   /**
@@ -402,6 +431,7 @@ export class NetShare extends EventEmitter {
     }
     const lend = this.lends.get(dev.deviceId);
     if (!lend) return { ok: true };
+    this._cancelTeardownTimer(dev.deviceId);
     lend.session?.close();
     lend.session = null;
     const done = this._teardownLend(lend).catch((e) => log.error(`карта «${lend.nic}» не возвращена: ${e.message}`));
@@ -794,6 +824,7 @@ export class NetShare extends EventEmitter {
     clearInterval(this.tickTimer);
     for (const b of [...this.borrows.values()]) await this._stopBorrow(b).catch(() => {});
     for (const l of [...this.lends.values()]) {
+      this._cancelTeardownTimer(l.deviceId);
       await this._teardownLend(l).catch((e) => log.warn(`при выходе: ${e.message}`));
     }
     for (const deviceId of Object.keys(this.config.get('netRestore') || {})) {
