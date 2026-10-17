@@ -9,6 +9,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import http from 'node:http';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { buildRelease, packBundle } from '../../launcher/lib/release.js';
@@ -53,8 +54,15 @@ function release(version, behavior) {
   return packBundle(r);
 }
 
+// Лаунчер проверяет, не отвечает ли на порту интерфейса уже работающее приложение. На
+// этой машине оно может быть настоящим, поэтому проверки запускают лаунчер с портом,
+// который заведомо никто не слушает.
+const COMMANDS = ['--install-release', '--verify', '--stop', '--status', '--adopt'];
+const UNUSED_PORT = '59871';
+
 function run(ctx, args = [], extra = {}) {
-  return spawnSync(process.execPath, [SUP, ...args], {
+  const full = COMMANDS.includes(args[0]) ? args : [...args, '--api-port', UNUSED_PORT];
+  return spawnSync(process.execPath, [SUP, ...full], {
     env: {
       ...process.env,
       NDS_BASE: ctx.base,
@@ -205,7 +213,7 @@ test('остановка по флагу: приложение получает 
     setTimeout(() => process.exit(9), 30000);`), 'v1');
   // запускаем лаунчер асинхронно, ставим флаг, ждём выхода
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [SUP], {
+    const child = spawn(process.execPath, [SUP, '--api-port', UNUSED_PORT], {
       env: { ...process.env, NDS_BASE: c.base, NDS_HOME: c.home, NDS_UPDATE_TEST_KEY: pubFile },
       stdio: 'ignore',
     });
@@ -262,4 +270,80 @@ test('запуск из исходников: нет app/ и нет катало
   const r = run({ ...c, home }, []);
   assert.equal(r.status, 0, r.stdout + r.stderr);
   assert.equal(fs.readFileSync(path.join(home, 'ran.txt'), 'utf8'), 'no', 'без пометки «под лаунчером»: самообновления нет');
+});
+
+// ------------------------------------------------- «приложение уже запущено»
+
+/** Подставное «приложение»: отвечает на /api/v1/session так же, как настоящее. */
+function fakeApp(body = '{"access":"full","passwordRequired":false,"local":true}') {
+  return new Promise((resolve) => {
+    const server = http.createServer((req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(req.url === '/api/v1/session' ? body : '{}');
+    });
+    server.listen(0, '127.0.0.1', () => resolve({ server, port: server.address().port }));
+  });
+}
+
+const runAsync = (cmd, args, env) => new Promise((resolve) => {
+  const child = spawn(cmd, args, { env: { ...process.env, ...env }, stdio: ['ignore', 'pipe', 'pipe'] });
+  let stdout = '';
+  child.stdout.on('data', (d) => { stdout += d; });
+  child.stderr.on('data', (d) => { stdout += d; });
+  child.on('exit', (status) => resolve({ status, stdout }));
+});
+
+test('второй запуск: приложение уже отвечает — второй экземпляр не стартует, лаунчер не зацикливается', async () => {
+  const c = env();
+  install(c, release('1.0.0', OK_EXIT), 'v1');
+  const { server, port } = await fakeApp();
+  try {
+    const r = await runAsync(process.execPath, [SUP, '--api-port', String(port), '--no-open'], {
+      NDS_BASE: c.base, NDS_HOME: c.home, NDS_UPDATE_TEST_KEY: pubFile,
+    });
+    assert.equal(r.status, 77, r.stdout);
+    assert.match(r.stdout, /уже запущено/);
+    assert.deepEqual(runs(c), [], 'приложение не запускалось');
+  } finally {
+    server.close();
+  }
+});
+
+test('порт занят чужой программой: это не «уже запущено», приложение стартует как обычно', async () => {
+  const c = env();
+  install(c, release('1.0.0', OK_EXIT), 'v1');
+  const { server, port } = await fakeApp('{"что-то":"чужое"}');
+  try {
+    const r = await runAsync(process.execPath, [SUP, '--api-port', String(port), '--no-open'], {
+      NDS_BASE: c.base, NDS_HOME: c.home, NDS_UPDATE_TEST_KEY: pubFile,
+    });
+    assert.equal(r.status, 0, r.stdout);
+    assert.deepEqual(runs(c), ['1.0.0 start']);
+  } finally {
+    server.close();
+  }
+});
+
+test('ярлык (open.vbs): работает — открыть адрес; не работает — запустить без окна', { skip: process.platform !== 'win32' }, async () => {
+  const c = env();
+  const VBS = path.join(path.dirname(SUP), 'open.vbs');
+  const vbs = (port) => {
+    fs.writeFileSync(path.join(c.home, 'config.json'), JSON.stringify({ apiPort: port }));
+    return runAsync('cscript.exe', ['//nologo', VBS, '/dry'], { NDS_HOME: c.home });
+  };
+
+  const { server, port } = await fakeApp();
+  let r = await vbs(port);
+  assert.match(r.stdout, new RegExp(`OPEN http://127.0.0.1:${port}/`), r.stdout);
+  assert.doesNotMatch(r.stdout, /START/, 'второй экземпляр не запускается');
+  server.close();
+
+  r = await vbs(port);                       // теперь никто не слушает
+  assert.match(r.stdout, /START .*supervisor\.mjs"? --no-open|START .* --no-open/, r.stdout);
+  assert.match(r.stdout, new RegExp(`WAIT-AND-OPEN http://127.0.0.1:${port}/`));
+
+  const other = await fakeApp('{"что-то":"чужое"}');
+  r = await vbs(other.port);
+  assert.match(r.stdout, /MESSAGE .*занят другой программой/, r.stdout);
+  other.server.close();
 });
