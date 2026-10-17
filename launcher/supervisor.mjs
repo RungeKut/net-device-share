@@ -411,6 +411,8 @@ async function main() {
 }
 
 function runLegacy(entry) {
+  // Каталог данных может ещё не существовать (первый запуск): он же — рабочий каталог процесса.
+  fs.mkdirSync(HOME, { recursive: true });
   return new Promise((resolve) => {
     const c = spawn(process.execPath, [entry, ...argv], {
       cwd: HOME,

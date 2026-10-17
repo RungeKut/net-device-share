@@ -54,7 +54,6 @@ const NODE = {
 // в src/ и docs/ попадают в сборку сами, без правки этого списка.
 const DIRS = ['src', 'docs', 'installers'];
 const FILES = [
-  'start.bat',
   'package.json',
   'README.md',
   'LICENSE',
@@ -205,7 +204,7 @@ if (withUpdates) {
   // Корень: то, что меняет только установщик. Код версии — в app/, из подписанного архива.
   await fsp.cp(path.join(ROOT, 'installers'), path.join(OUT, 'installers'), { recursive: true });
   await fsp.cp(path.join(ROOT, 'launcher'), path.join(OUT, 'launcher'), { recursive: true });
-  for (const [from, to] of [['start.bat', 'start.bat'], ['scripts/autostart.bat', 'autostart.bat'], ['README.md', 'README.md'], ['LICENSE', 'LICENSE']]) {
+  for (const [from, to] of [['scripts/start.bat', 'start.bat'], ['scripts/autostart.bat', 'autostart.bat'], ['README.md', 'README.md'], ['LICENSE', 'LICENSE']]) {
     await fsp.copyFile(path.join(ROOT, from), path.join(OUT, to));
   }
   const built = buildAndSign({
@@ -228,6 +227,8 @@ if (withUpdates) {
     await fsp.mkdir(path.dirname(dest), { recursive: true });
     await fsp.copyFile(src, dest);
   }
+  // Пусковой файл в исходниках лежит в scripts/, а в комплекте — в корне.
+  await fsp.copyFile(path.join(ROOT, 'scripts', 'start.bat'), path.join(OUT, 'start.bat'));
 }
 
 await fsp.copyFile(nodeExe, path.join(OUT, 'node.exe'));
