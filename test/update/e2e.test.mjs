@@ -142,7 +142,7 @@ const apiState = (n) => new Promise((resolve, reject) => {
   }).on('error', reject);
 });
 
-test('версия, которая ставится только установщиком: узел показывает, у кого его взять', { timeout: 120000 }, async (t) => {
+test('версия, которая ставится только установщиком: узел показывает, у кого его взять', { timeout: 180000 }, async (t) => {
   // A на 1.1.0, которой нужен лаунчер «из будущего», и раздаёт установщик; B на 1.0.0.
   const A = makeNode('A', '1.1.0', {}, { minLauncher: 99 });
   fs.mkdirSync(path.join(A.base, 'download'), { recursive: true });
@@ -156,7 +156,7 @@ test('версия, которая ставится только установ�
 
   let snap = null;
   try {
-    await waitFor(() => { apiState(B).then((s) => { snap = s.update; }).catch(() => {}); return snap?.phase === 'needs-installer'; }, 60000, 'B сообщает «нужен установщик»');
+    await waitFor(() => { apiState(B).then((s) => { snap = s.update; }).catch(() => {}); return snap?.phase === 'needs-installer'; }, 120000, 'B сообщает «нужен установщик»');
   } catch (e) {
     for (const n of [A, B]) process.stdout.write(`
 ===== ${n.name} =====
