@@ -67,8 +67,8 @@ for (const file of walk(ROOT, '.bat')) {
   // молча теряет хвост. Пусковой файл без запуска приложения бесполезен,
   // так что это надёжный и дешёвый признак целостности.
   check(`${name}: содержит запуск приложения или сборки`,
-    /main\.js|supervisor\.mjs|build-installer\.mjs/.test(buf.toString('latin1')),
-    'в файле нет вызова main.js, supervisor.mjs или build-installer.mjs — похоже, он обрезан при перекодировке');
+    /main\.js|supervisor\.mjs|build-installer\.mjs|publish-release\.mjs/.test(buf.toString('latin1')),
+    'в файле нет вызова main.js, supervisor.mjs, build-installer.mjs или publish-release.mjs — похоже, он обрезан при перекодировке');
 }
 
 // --- скрипты Windows Script Host: UTF-16 LE с BOM ---
