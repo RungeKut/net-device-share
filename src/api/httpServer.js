@@ -59,6 +59,7 @@ const MUTATING = new Set([
   '/api/v1/net/held/ip',
   '/api/v1/driver/prepare', '/api/v1/driver/install', '/api/v1/driver/cancel',
   '/api/v1/update/check', '/api/v1/update/approve', '/api/v1/update/restart', '/api/v1/update/retry',
+  '/api/v1/update/rollback',
 ]);
 
 /** Заголовок, по которому видно, что запрос отправил наш интерфейс. */
@@ -462,6 +463,11 @@ export class ApiServer {
           return sendJson(res, 200, d);
         }
 
+        case 'GET /api/v1/peer/update-status': {
+          const u = this.app.updater;
+          return sendJson(res, 200, u ? u.statusForPeers() : { running: this.app.version, bad: [] });
+        }
+
         case 'POST /api/v1/peer/release/reserve': {
           const seeder = this.app.updater?.seeder;
           if (!seeder) return sendJson(res, 404, { error: 'no_release' });
@@ -716,6 +722,8 @@ export class ApiServer {
           return sendJson(res, 200, this.app.updater.approve(body.version));
         case '/api/v1/update/restart':
           return sendJson(res, 200, this.app.updater.restartNow());
+        case '/api/v1/update/rollback':
+          return sendJson(res, 200, this.app.updater.rollbackNow());
         case '/api/v1/update/retry':
           return sendJson(res, 200, this.app.updater.retry());
         case '/api/v1/driver/prepare':

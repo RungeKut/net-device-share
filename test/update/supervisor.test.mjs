@@ -347,3 +347,111 @@ test('ярлык (open.vbs): работает — открыть адрес; н�
   assert.match(r.stdout, /MESSAGE .*занят другой программой/, r.stdout);
   other.server.close();
 });
+
+// ---------------------------------------- откат ПОДТВЕРЖДЁННОЙ версии (падает позже пробы)
+
+const FAST = { NDS_BACKOFF_MS: '20,20,20' };
+const stateOf = (c) => JSON.parse(fs.readFileSync(path.join(c.home, 'update', 'state.json'), 'utf8'));
+/** Версия подтверждается сразу, а потом падает — как ошибка, которую проба не поймала. */
+const HEALTHY_THEN_CRASH = `log('start'); process.send?.({ type: 'healthy' }); setTimeout(() => process.exit(3), 100);`;
+
+test('подтверждённая версия падает несколько раз подряд — лаунчер откатывается на предыдущую', () => {
+  const c = env();
+  install(c, release('1.0.0', OK_EXIT), 'v1');
+  install(c, release('2.0.0', HEALTHY_THEN_CRASH), 'v2');
+  const r = run(c, [], FAST);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.deepEqual(runs(c), ['2.0.0 start', '2.0.0 start', '2.0.0 start', '1.0.0 start'], 'три падения, затем предыдущая');
+  const s = stateOf(c);
+  assert.equal(s.current, '1.0.0');
+  assert.equal(s.previous, null);
+  assert.equal(s.highestInstalled, '2.0.0', 'по сети ту же версию заново не поставят');
+  const bad = Object.entries(s.bad).find(([k]) => k.startsWith('2.0.0|'));
+  assert.ok(bad, 'версия помечена плохой');
+  assert.equal(bad[1].committed, true);
+  assert.match(r.stdout, /ОТКАТ: подтверждённая версия 2\.0\.0/);
+});
+
+test('падения из-за окружения (порт занят) не относятся к версии — откат не делаем', () => {
+  const c = env();
+  install(c, release('1.0.0', OK_EXIT), 'v1');
+  install(c, release('2.0.0', `
+    const counter = path.join(HOME, 'n');
+    const n = fs.existsSync(counter) ? Number(fs.readFileSync(counter, 'utf8')) + 1 : 1;
+    fs.writeFileSync(counter, String(n));
+    log('start');
+    process.send?.({ type: 'healthy' });
+    if (n >= 5) process.exit(0);
+    setTimeout(() => { console.error('Запуск не удался: listen EADDRINUSE: address already in use 0.0.0.0:47812'); process.exit(1); }, 100);`), 'v2');
+  const r = run(c, [], FAST);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.equal(runs(c).filter((x) => x === '2.0.0 start').length, 5);
+  assert.ok(!runs(c).includes('1.0.0 start'), 'на старую не откатывались');
+  assert.equal(stateOf(c).current, '2.0.0');
+  assert.match(r.stdout, /проблему окружения/);
+});
+
+test('версия давно подтверждена — по тройке падений не откатываем (скорее виновато окружение)', () => {
+  const c = env();
+  install(c, release('1.0.0', OK_EXIT), 'v1');
+  // 1-й запуск подтверждает версию и выходит; запуски 2-5 падают; 6-й выходит чисто
+  install(c, release('2.0.0', `
+    const counter = path.join(HOME, 'n');
+    const n = fs.existsSync(counter) ? Number(fs.readFileSync(counter, 'utf8')) + 1 : 1;
+    fs.writeFileSync(counter, String(n));
+    log('start');
+    process.send?.({ type: 'healthy' });
+    if (n === 1 || n >= 6) process.exit(0);
+    setTimeout(() => process.exit(3), 100);`), 'v2');
+  let r = run(c, [], FAST);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.equal(stateOf(c).current, '2.0.0');
+
+  // «состарим» подтверждение на двое суток и запустим снова: пойдут падения
+  const sf = path.join(c.home, 'update', 'state.json');
+  const st = stateOf(c);
+  st.committedAt = Date.now() - 48 * 3600 * 1000;
+  fs.writeFileSync(sf, JSON.stringify(st));
+  fs.rmSync(path.join(c.home, 'runs.log'), { force: true });
+  r = run(c, [], FAST);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.equal(runs(c).filter((x) => x === '2.0.0 start').length, 5, 'четыре падения и чистый выход');
+  assert.ok(!runs(c).includes('1.0.0 start'), 'на старую не откатывались');
+  assert.equal(stateOf(c).current, '2.0.0');
+});
+
+test('просьба откатиться (кнопка в интерфейсе) выполняется при следующем запуске', () => {
+  const c = env();
+  install(c, release('1.0.0', OK_EXIT), 'v1');
+  install(c, release('2.0.0', HEALTHY), 'v2');
+  let r = run(c);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.equal(stateOf(c).current, '2.0.0');
+
+  const sf = path.join(c.home, 'update', 'state.json');
+  const st = stateOf(c);
+  st.rollbackRequest = { reason: 'по просьбе пользователя', at: Date.now() };
+  fs.writeFileSync(sf, JSON.stringify(st));
+  fs.rmSync(path.join(c.home, 'runs.log'), { force: true });
+  r = run(c);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.deepEqual(runs(c), ['1.0.0 start']);
+  const after = stateOf(c);
+  assert.equal(after.current, '1.0.0');
+  assert.equal(after.rollbackRequest, null);
+  assert.ok(Object.keys(after.bad).some((k) => k.startsWith('2.0.0|')));
+});
+
+test('откатываться некуда (предыдущей нет) — просьба снимается, приложение работает как работало', () => {
+  const c = env();
+  install(c, release('1.0.0', OK_EXIT), 'v1');
+  const sf = path.join(c.home, 'update', 'state.json');
+  const st = stateOf(c);
+  st.rollbackRequest = { reason: 'x', at: Date.now() };
+  fs.writeFileSync(sf, JSON.stringify(st));
+  const r = run(c);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.match(r.stdout, /некуда/);
+  assert.equal(stateOf(c).rollbackRequest, null);
+  assert.deepEqual(runs(c), ['1.0.0 start']);
+});

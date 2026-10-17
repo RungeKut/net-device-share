@@ -53,7 +53,15 @@ export class Updater extends EventEmitter {
     this.base = baseDir();
     this.home = process.env.NDS_HOME || configDir();
     this.keys = lib ? lib.keys.trustedKeys() : [];
-    this.seeder = lib ? new Seeder({ base: this.base, keys: this.keys, slots: num(app.config.get('updateSlots'), 2) || 1 }) : null;
+    this.seeder = lib ? new Seeder({
+      base: this.base,
+      keys: this.keys,
+      slots: num(app.config.get('updateSlots'), 2) || 1,
+      isBad: (v) => this._reporters(v) > 0,
+    }) : null;
+    /** @type {Map<string, Array<{nodeId: string, name: string, reason: string, at: string|null}>>} версия → кто сообщил, что она испорчена */
+    this.reported = new Map();
+    this.polling = false;
 
     this.phase = 'idle';
     this.message = '';
@@ -120,6 +128,11 @@ export class Updater extends EventEmitter {
     }
     this.timers.push(setTimeout(() => this.tick(), FIRST_TICK_MS));
     this.timers.push(setInterval(() => this.tick(), TICK_MS));
+    // Пока версия ждёт очереди на перезапуск, соседей спрашиваем чаще: окно между
+    // «первый узел откатился» и «следующий перезапустился» должно быть коротким.
+    this.timers.push(setInterval(() => {
+      if (this.staged && !this.polling) this._pollPeers().catch(() => {});
+    }, Number(process.env.NDS_UPDATE_REPORT_POLL_MS) || 10000));
     for (const t of this.timers) t.unref?.();
   }
 
@@ -192,6 +205,86 @@ export class Updater extends EventEmitter {
   }
 
   /** Самая новая версия, которую показывают соседи и которой у нас ещё нет. */
+  // ------------------------------------------------ сообщения соседей об испорченных версиях
+
+  _reporters(version) {
+    return this.reported.get(version)?.length || 0;
+  }
+
+  /**
+   * Что мы сообщаем соседям: версии, которые у нас откатились. Ответ на
+   * GET /peer/update-status. Только сведения о версиях и причина текстом: по
+   * ним сосед решает, ставить ли версию, но распоряжаться нашей установкой не может.
+   */
+  statusForPeers() {
+    const st = this._state();
+    const byVersion = new Map();
+    for (const [key, v] of Object.entries(st.bad || {})) {
+      const version = key.split('|')[0];
+      if (!lib.semver.isVersion(version)) continue;
+      const prev = byVersion.get(version);
+      if (!prev || String(v.at || '') > String(prev.at || '')) {
+        byVersion.set(version, { version, reason: String(v.reason || '').slice(0, 200), at: v.at || null, committed: Boolean(v.committed) });
+      }
+    }
+    return { running: this.running, bad: [...byVersion.values()] };
+  }
+
+  /**
+   * Спросить у соседей, какие версии они откатили, и отреагировать.
+   *
+   * Эти сведения не подписаны (ими владеет круг доверия, а не ключ релиза),
+   * поэтому власти над нашей установкой у них нет — только влияние на то,
+   * ставить ли НОВУЮ версию: один сосед — «спросить человека», двое — не ставить.
+   * Уже работающую версию соседи откатить нам не могут: только предупредить.
+   */
+  async _pollPeers() {
+    if (!lib || this.polling) return;
+    this.polling = true;
+    try {
+      const selfId = this.app.config.get('nodeId');
+      const peers = this.app.peers.list().filter((p) => p.online && p.address && p.apiPort);
+      const results = await Promise.allSettled(peers.map(async (p) => ({
+        p,
+        r: await rpc({
+          host: p.address, port: p.apiPort, path: '/api/v1/peer/update-status',
+          key: this.app.realms.keyFor(p.realm), nodeId: selfId, timeoutMs: 4000,
+        }),
+      })));
+      const next = new Map();
+      for (const x of results) {
+        if (x.status !== 'fulfilled') continue;        // старый узел без этой ручки — не беда
+        const { p, r } = x.value;
+        for (const b of Array.isArray(r?.bad) ? r.bad.slice(0, 50) : []) {
+          if (!lib.semver.isVersion(b?.version)) continue;
+          if (!next.has(b.version)) next.set(b.version, []);
+          next.get(b.version).push({
+            nodeId: p.nodeId, name: p.name, reason: String(b.reason || '').slice(0, 200), at: b.at || null,
+          });
+        }
+      }
+      const changed = JSON.stringify([...next]) !== JSON.stringify([...this.reported]);
+      this.reported = next;
+      if (changed) this._reactToReports();
+    } finally {
+      this.polling = false;
+    }
+  }
+
+  _reactToReports() {
+    this.seeder?.invalidate();
+    const v = this.staged?.version;
+    if (v && this._reporters(v) >= 2) {
+      log.warn(`версия ${v} подготовлена, но о ней сообщили как об испорченной ${this._reporters(v)} узла — не ставим`);
+      this.staged = null;
+      this.approved = null;
+      this.waiting = [];
+      this.eligibleAt = null;
+      this._set('idle', '');
+    }
+    this.emit('changed');
+  }
+
   _pickCandidate(st) {
     const floor = [this.running, st.highestInstalled].filter(Boolean)
       .sort(lib.semver.compareVersions).at(-1);
@@ -200,6 +293,7 @@ export class Updater extends EventEmitter {
       if (!p.online || !p.version || !lib.semver.isVersion(p.version)) continue;
       if (lib.semver.compareVersions(p.version, floor) <= 0) continue;
       if (this._isBad(st, p.version, null)) continue;
+      if (this._reporters(p.version) >= 2) continue;    // несколько соседей откатили её
       if (!best || lib.semver.compareVersions(p.version, best) > 0) best = p.version;
     }
     return best;
@@ -245,6 +339,8 @@ export class Updater extends EventEmitter {
     if (this.retryAt && Date.now() < this.retryAt) return;
 
     try {
+      await this._pollPeers();
+
       // Уже скачано — остаётся дождаться момента. Но только если соседи не показывают
       // версию ещё новее: иначе узел застрял бы на подготовленной, которую уже никто
       // не проверяет (например, она откатилась у первого узла), и не взял бы следующую.
@@ -510,6 +606,15 @@ export class Updater extends EventEmitter {
       return;
     }
 
+    // Один сосед сообщил, что откатил эту версию: возможно, у него это из-за его окружения,
+    // а возможно, версия действительно испорчена. Сами решить не можем — ждём вашего слова
+    // (в любом режиме). Двое — версия до этого места не доходит (см. _reactToReports).
+    const reps = this.reported.get(v);
+    if (reps?.length === 1 && this.approved !== v) {
+      this._set('awaiting-approval', `сосед «${reps[0].name}» откатил версию ${v}: ${reps[0].reason || 'причина не указана'}. Ставить её здесь?`);
+      return;
+    }
+
     const policy = safeToRestart(this.app, { transfersActive: this.seeder?.activeCount || 0 });
     this.waiting = [...policy.reasons];
 
@@ -607,6 +712,24 @@ export class Updater extends EventEmitter {
     return this.snapshot();
   }
 
+  /**
+   * «Откатить на предыдущую версию»: просим лаунчер при ближайшем запуске вернуть
+   * предыдущую, а эту пометить плохой. Нужна для случая, когда соседи сообщают, что
+   * версия испорчена, а наш узел её ещё не заметил — или вы сами видите, что что-то не так.
+   */
+  rollbackNow(reason = 'по просьбе пользователя') {
+    const st = this._state();
+    if (!st.previous) throw new Error('предыдущей версии нет — откатываться некуда');
+    lib.layout.updateState(this.home, (s) => {
+      s.rollbackRequest = { reason, at: Date.now() };
+      return s;
+    });
+    this._set('restarting', `откат с версии ${this.running} на ${st.previous}`);
+    log.warn(`откат с ${this.running} на ${st.previous}: ${reason}`);
+    setTimeout(() => process.emit('nds:restart'), 500).unref?.();
+    return this.snapshot();
+  }
+
   checkNow() {
     this.tick({ force: true });
     return this.snapshot();
@@ -640,6 +763,19 @@ export class Updater extends EventEmitter {
       awaitingApproval: this.phase === 'awaiting-approval',
       sharing: held ? { version: held.version, active: this.seeder.activeCount } : null,
       previous: st.previous || null,
+      canRollback: Boolean(st.previous) && this.phase !== 'restarting',
+      reported: [...this.reported].map(([version, list]) => ({
+        version,
+        nodes: list.map((x) => x.name),
+        reasons: [...new Set(list.map((x) => x.reason).filter(Boolean))],
+      })),
+      reportedRunning: this._reporters(this.running)
+        ? {
+          version: this.running,
+          nodes: this.reported.get(this.running).map((x) => x.name),
+          reasons: [...new Set(this.reported.get(this.running).map((x) => x.reason).filter(Boolean))],
+        }
+        : null,
       failed: [...new Map(Object.entries(st.bad || {})
         .map(([k, v]) => [k.split('|')[0], { version: k.split('|')[0], reason: v.reason, at: v.at }])).values()],
     };

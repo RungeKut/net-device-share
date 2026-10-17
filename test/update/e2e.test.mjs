@@ -177,3 +177,62 @@ ${n.log.slice(-2500)}
   });
   assert.match(page, /net-device-share-setup-1.1.0.exe/);
 });
+
+// ---------------------------------------------------------------------------------
+// Лавина: версия проходит пробный запуск, а ломается ПОСЛЕ подтверждения.
+
+/** Релиз, в котором приложение через 6 с после запуска выходит с ошибкой (после подтверждения на 4-й секунде). */
+function crashingBundle(version) {
+  const work2 = fs.mkdtempSync(path.join(work, 'crash-root-'));
+  for (const d of ['src', 'docs']) fs.cpSync(path.join(ROOT, d), path.join(work2, d), { recursive: true });
+  for (const f of ['package.json', 'README.md', 'LICENSE', 'scripts/tap-relay.ps1', 'scripts/net-bridge.ps1', 'scripts/tap-device.ps1', 'scripts/firewall-windows.ps1']) {
+    fs.mkdirSync(path.dirname(path.join(work2, f)), { recursive: true });
+    fs.copyFileSync(path.join(ROOT, f), path.join(work2, f));
+  }
+  const main = path.join(work2, 'src', 'main.js');
+  const text = fs.readFileSync(main, 'utf8');
+  assert.ok(text.includes('await app.start();'));
+  fs.writeFileSync(main, text.replace('await app.start();', "await app.start();\n  setTimeout(() => process.exit(3), 6000);"));
+  return packBundle(buildAndSign({ root: work2, version, channel: 'test', keyId: 'test', privateKey }));
+}
+
+test('версия сломалась после подтверждения: узел откатывается сам, а сосед не ставит её без вашего слова', { timeout: 240000 }, async (t) => {
+  // A: была 1.0.0, получил 1.1.0 (пробный запуск пройдёт, через 6 с приложение падает).
+  const A = makeNode('A', '1.0.0');
+  const second = path.join(A.dir, 'v2.ndsupd');
+  fs.writeFileSync(second, crashingBundle('1.1.0'));
+  const r = spawnSync(process.execPath, [path.join(A.base, 'launcher', 'supervisor.mjs'), '--install-release', second], { env: A.env, encoding: 'utf8' });
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  A.env.NDS_BACKOFF_MS = '300,300,300';
+  // B: старая версия; «канарейка» длинная, чтобы он не успел ни поставить, ни тем более перезапуститься.
+  const B = makeNode('B', '1.0.0', { updateCanaryMinutes: 30 });
+  B.env.NDS_UPDATE_REPORT_POLL_MS = '2000';
+  t.after(() => {
+    for (const n of [A, B]) { try { n.child?.kill(); } catch { /* */ } }
+  });
+  startNode(A);
+  startNode(B);
+
+  let snap = null;
+  try {
+    // 1) A подтвердил 1.1.0, упал три раза и сам откатился на 1.0.0
+    await waitFor(() => {
+      try { const s = state(A); return s.current === '1.0.0' && Object.keys(s.bad).some((k) => k.startsWith('1.1.0|')); } catch { return false; }
+    }, 150000, 'A откатился на 1.0.0 и пометил 1.1.0 плохой');
+    // 2) B, уже скачавший 1.1.0, узнаёт об откате и просит вашего слова
+    await waitFor(() => { apiState(B).then((s) => { snap = s.update; }).catch(() => {}); return snap?.phase === 'awaiting-approval'; }, 90000, 'B просит разрешения из-за отчёта соседа');
+  } catch (e) {
+    for (const n of [A, B]) process.stdout.write(`\n===== ${n.name} =====\n${n.log.slice(-3500)}\n`);
+    throw e;
+  }
+
+  const sa = state(A);
+  const bad = Object.entries(sa.bad).find(([k]) => k.startsWith('1.1.0|'));
+  assert.equal(bad[1].committed, true, 'это откат ПОДТВЕРЖДЁННОЙ версии, а не пробы');
+  assert.match(A.log, /ОТКАТ: подтверждённая версия 1\.1\.0/);
+
+  assert.match(snap.message, /сосед «A» откатил версию 1\.1\.0/);
+  assert.equal(state(B).current, '1.0.0', 'B версию не ставил');
+  assert.ok(!B.log.includes('пробный запуск версии 1.1.0'), 'и не перезапускался в неё');
+  assert.deepEqual(snap.reported.map((x) => x.version), ['1.1.0']);
+});
