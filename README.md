@@ -85,6 +85,8 @@
 
 ---
 
+**Метрики для Prometheus и дашборд Grafana** — выключены по умолчанию, включаются на любом узле; узел отдаёт всю сеть со статистикой по каждому узлу. См. [docs/METRICS.md](docs/METRICS.md), готовый дашборд — [docs/grafana/net-device-share.json](docs/grafana/net-device-share.json).
+
 ## Быстрый старт
 
 **Windows, из исходников (сборка и установка одним файлом):** двойной клик по

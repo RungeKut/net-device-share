@@ -21,6 +21,10 @@ export const DEFAULTS = {
   // считает байты и пересылает на usbipd. Выключение возвращает прямое
   // соединение на usbipPort — без цифр, но и без посредника в тракте данных.
   meterTraffic: true,
+  // Метрики Prometheus (GET /metrics на порту интерфейса). По умолчанию выключены.
+  // Токен хранится хешем; пустой токен — доступ только из рабочей сети.
+  metricsEnabled: false,
+  metricsToken: null,
   // Самообновление по сети: 'auto' | 'ask' | 'off'. null — по умолчанию:
   // у установленного приложения auto, у переносимого комплекта ask.
   updateMode: null,
@@ -285,6 +289,43 @@ export class Config {
     // Сравнение за постоянное время: иначе подбор пароля ускоряется
     // измерением времени ответа.
     return crypto.timingSafeEqual(actual, expected);
+  }
+
+  // ------------------------------------------------------------ токен метрик
+
+  /**
+   * Токен доступа к /metrics. Хранится как хеш: открытым нигде не лежит и из
+   * настроек не читается — узнать его можно только в момент создания.
+   * Токен случайный и длинный, поэтому хватает SHA-256 с солью (scrypt нужен для
+   * паролей, которые придумывает человек).
+   */
+  setMetricsToken(token) {
+    if (!token) {
+      this.set({ metricsToken: null });
+      return;
+    }
+    const salt = crypto.randomBytes(16).toString('hex');
+    const hash = crypto.createHash('sha256').update(salt + String(token)).digest('hex');
+    this.set({ metricsToken: { salt, hash } });
+  }
+
+  hasMetricsToken() {
+    return Boolean(this.runtimeMetricsToken || (this.data.metricsToken && this.data.metricsToken.hash));
+  }
+
+  checkMetricsToken(presented) {
+    if (!presented) return false;
+    const same = (a, b) => a.length === b.length && crypto.timingSafeEqual(a, b);
+    // Токен из --metrics-token действует только на этот запуск и в файл не пишется.
+    if (this.runtimeMetricsToken) {
+      const a = crypto.createHash('sha256').update(String(presented)).digest();
+      const b = crypto.createHash('sha256').update(String(this.runtimeMetricsToken)).digest();
+      if (same(a, b)) return true;
+    }
+    const stored = this.data.metricsToken;
+    if (!stored || !stored.salt || !stored.hash) return false;
+    const actual = crypto.createHash('sha256').update(stored.salt + String(presented)).digest();
+    return same(actual, Buffer.from(stored.hash, 'hex'));
   }
 
   hasWebPassword() {

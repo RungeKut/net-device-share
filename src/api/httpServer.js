@@ -29,6 +29,7 @@ import { logger, recentLogs, onLogRecord } from '../log.js';
 import { AUTH_HEADER, NODE_HEADER } from '../net/rpc.js';
 import { ipInCidr, normalizeIp, listNetworks } from '../net/interfaces.js';
 import { baseDir } from '../core/paths.js';
+import { renderMetrics } from '../core/metrics.js';
 
 const log = logger('http');
 const UI_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'ui');
@@ -208,7 +209,58 @@ export class ApiServer {
     if (route === '/download' || route.startsWith('/download/')) {
       return this._serveDownload(req, res, route);
     }
+    if (route === '/metrics') {
+      return this._serveMetrics(req, res, remote);
+    }
     return this._serveStatic(res, route);
+  }
+
+  /**
+   * Метрики Prometheus. Выключены, пока их не включили в настройках: тогда ответ
+   * 404, как будто пути нет вовсе. Включены — доступ такой:
+   *   — задан токен: нужен заголовок Authorization: Bearer <токен> откуда угодно;
+   *   — токена нет: только из рабочей сети и с этого компьютера.
+   * Метрики показывают всю сеть (узлы, устройства, кто их занял), поэтому открывать
+   * их наружу без токена нельзя.
+   */
+  _serveMetrics(req, res, remote) {
+    const cfg = this.app.config;
+    if (!cfg.get('metricsEnabled')) return sendJson(res, 404, { error: 'not_found' });
+    if (req.method !== 'GET' && req.method !== 'HEAD') {
+      res.setHeader('allow', 'GET, HEAD');
+      return sendJson(res, 405, { error: 'method_not_allowed' });
+    }
+
+    if (cfg.hasMetricsToken()) {
+      const m = /^Bearer\s+(.+)$/i.exec(String(req.headers.authorization || ''));
+      if (!cfg.checkMetricsToken(m ? m[1].trim() : '')) {
+        res.setHeader('www-authenticate', 'Bearer realm="net-device-share-metrics"');
+        return sendJson(res, 401, { error: 'unauthorized', message: 'нужен токен метрик: заголовок Authorization: Bearer <токен>' });
+      }
+    } else {
+      const cidr = this.app.network?.cidr;
+      const local = isLoopback(remote) || !cidr || ipInCidr(remote, cidr);
+      if (!local) {
+        return sendJson(res, 403, {
+          error: 'forbidden',
+          message: 'метрики вне рабочей сети отдаются только с токеном — задайте его в настройках узла',
+        });
+      }
+    }
+
+    let body;
+    try {
+      body = renderMetrics(this.app);
+    } catch (e) {
+      log.warn(`метрики: ${e.message}`);
+      return sendJson(res, 500, { error: 'failed', message: e.message });
+    }
+    res.writeHead(200, {
+      'content-type': 'text/plain; version=0.0.4; charset=utf-8',
+      'content-length': Buffer.byteLength(body),
+      'cache-control': 'no-store',
+    });
+    res.end(req.method === 'HEAD' ? undefined : body);
   }
 
   /**
