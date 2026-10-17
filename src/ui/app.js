@@ -1465,6 +1465,7 @@ const UPDATE_PHASES = {
   'awaiting-approval': ['Доступно обновление', ''],
   restarting: ['Перезапуск для обновления', ''],
   trial: ['Проверка новой версии', ''],
+  'needs-installer': ['Нужен установщик', ''],
   error: ['Обновление не удалось', 'err'],
 };
 
@@ -1475,7 +1476,7 @@ function renderUpdate() {
   const info = u && UPDATE_PHASES[u.phase];
   if (!u || !info) { bar.hidden = true; return; }
 
-  const ver = u.candidate?.version || u.staged?.version || '';
+  const ver = u.installer?.version || u.candidate?.version || u.staged?.version || '';
   const btns = [];
   if (canEdit()) {
     if (u.awaitingApproval) {
@@ -1485,6 +1486,12 @@ function renderUpdate() {
       btns.push('<button class="btn small danger" data-update="restart">Перезапустить сейчас</button>');
     }
     if (u.phase === 'error') btns.push('<button class="btn small" data-update="retry">Повторить</button>');
+  }
+  // Ссылка открыта и без права правки: скачать файл может любой, ставить — тот, кто за машиной.
+  if (u.phase === 'needs-installer') {
+    btns.push(u.installer?.url
+      ? `<a class="btn small primary" href="${esc(u.installer.url)}" target="_blank" rel="noopener">Скачать установщик у «${esc(u.installer.from)}»</a>`
+      : '<span class="banner-hint">Ни у одного из соседей нет установщика для раздачи — возьмите его у администратора.</span>');
   }
   const failed = (u.failed || []).length
     ? `<p class="banner-hint">Не прошли проверку на этом компьютере: ${u.failed.map((f) => `${esc(f.version)} (${esc(f.reason)})`).join('; ')}.</p>` : '';
