@@ -25,11 +25,14 @@ import { rpc } from '../net/rpc.js';
 import { Realms } from '../net/realms.js';
 import { TrafficProxy } from '../net/trafficProxy.js';
 import { NetShare } from './netShare.js';
+import { DriverShare } from './driverShare.js';
+import { readVersion } from './paths.js';
+import { Updater } from '../update/updater.js';
 import { NetManager } from './netManager.js';
 
 const log = logger('app');
 
-export const VERSION = '2.0.0';
+export const VERSION = readVersion();
 
 const ANNOUNCE_TRANSPORTS = new Set(['both', 'multicast', 'broadcast']);
 
@@ -128,6 +131,9 @@ export class App extends EventEmitter {
       enabledTypes: () => this.config.get('enabledTypes') || ['usb'],
       net: this.net,
     });
+
+    this.drivers = new DriverShare();
+    await this.drivers.init();
 
     this.installer = new Installer({
       reprobe: () => this.reprobeBackend(),
@@ -249,6 +255,12 @@ export class App extends EventEmitter {
 
     this.directory.on('changed', () => this.onStateChanged());
     this.directory.start();
+
+    // Самообновление: смотрит версии соседей и сама решает, когда безопасно
+    // перезапуститься (src/update, docs/UPDATE.md).
+    this.updater = new Updater(this);
+    this.updater.on('changed', () => this.api?.pushState());
+    this.updater.start();
 
     log.info(`узел "${this.config.get('name')}" готов; сеть ${this.network.cidr}, адрес ${this.network.address}`);
     return this;
@@ -514,6 +526,65 @@ export class App extends EventEmitter {
     return r;
   }
 
+  /**
+   * Копирование драйвера: первый шаг. Берём пакет у владельца устройства,
+   * проверяем и возвращаем описание для показа пользователю. Ничего не
+   * устанавливаем: ставить код в ядро без подтверждения нельзя.
+   */
+  async prepareDriver(attachmentId, deviceId) {
+    const { rec, part } = this._driverTarget(attachmentId, deviceId);
+    const peer = this.peers.get(rec.nodeId);
+    if (!peer) throw new Error('владелец устройства сейчас не в сети — драйвер взять не у кого');
+    let received;
+    try {
+      received = await rpc({
+        host: peer.address,
+        port: peer.apiPort,
+        path: '/api/v1/peer/driver-package',
+        method: 'POST',
+        body: { target: part.deviceId },
+        key: this.realms.keyFor(peer.realm),
+        nodeId: this.config.get('nodeId'),
+        timeoutMs: 180000,
+      });
+    } catch (e) {
+      // Причина от владельца уже развёрнута по-человечески — отдаём как есть.
+      throw Object.assign(new Error(e.body?.message || e.message), { code: e.body?.error || 'driver_unavailable' });
+    }
+    const prepared = await this.drivers.prepare(received);
+    return { ...prepared, deviceTitle: part.description || part.deviceId, ownerName: rec.nodeName };
+  }
+
+  /** Второй шаг: пользователь подтвердил — ставим. */
+  installDriver(token) {
+    return this.drivers.install(token);
+  }
+
+  cancelDriver(token) {
+    this.drivers.cancel(token);
+    return { ok: true };
+  }
+
+  _driverTarget(attachmentId, deviceId) {
+    const rec = this.attach.attachments.get(attachmentId);
+    if (!rec) throw new Error('занятие не найдено');
+    const part = rec.parts.find((p) => p.deviceId === deviceId);
+    if (!part) throw new Error('в этом занятии нет такого устройства');
+    const reason = this._driverBlock(rec, part);
+    if (reason) throw Object.assign(new Error(reason), { code: 'driver_unsupported' });
+    return { rec, part };
+  }
+
+  /** Почему копировать драйвер нельзя заранее (null — можно пробовать). */
+  _driverBlock(rec, part) {
+    return this.drivers.blockReason({
+      rec,
+      part,
+      selfId: this.config.get('nodeId'),
+      ownerPlatform: rec.nodeId ? this.peers.get(rec.nodeId)?.platform || null : null,
+    });
+  }
+
   /** Попросить у держателя освободить занятую цель. */
   async requestTarget(nodeId, target, message) {
     const selfId = this.config.get('nodeId');
@@ -675,7 +746,7 @@ export class App extends EventEmitter {
       'apiPort', 'discoveryPort', 'usbipPort', 'usbipdPath', 'usbipPath', 'logLevel', 'enabledTypes',
       'meterTraffic', 'trafficPort', 'netLinkPort', 'autoInstall',
       'seeds', 'gossipIntervalMs', 'remotePollIntervalMs', 'announceIntervalMs',
-      'announceIdleIntervalMs', 'announceBackoff', 'announceTransport'];
+      'announceIdleIntervalMs', 'announceBackoff', 'announceTransport', 'updateMode'];
     const clean = {};
     for (const k of allowed) {
       if (patch[k] !== undefined) clean[k] = patch[k];
@@ -696,6 +767,9 @@ export class App extends EventEmitter {
       throw new Error(`неизвестный канал анонсов «${clean.announceTransport}»`);
     }
     if (clean.announceBackoff !== undefined) clean.announceBackoff = Boolean(clean.announceBackoff);
+    if (clean.updateMode !== undefined && !['auto', 'ask', 'off'].includes(clean.updateMode)) {
+      throw new Error('режим обновления: auto, ask или off');
+    }
     clampMs(clean, 'announceIntervalMs', 1000, 60000);
     clampMs(clean, 'announceIdleIntervalMs', 1000, 600000);
     clampMs(clean, 'gossipIntervalMs', 5000, 3600000);
@@ -900,6 +974,7 @@ export class App extends EventEmitter {
       autoShareNew: c.autoShareNew,
       autoInstall: c.autoInstall,
       meterTraffic: c.meterTraffic,
+      updateMode: this.updater ? this.updater._mode() : (c.updateMode || 'ask'),
       trafficPort: c.trafficPort,
       netLinkPort: c.netLinkPort,
       enabledTypes: c.enabledTypes,
@@ -934,7 +1009,12 @@ export class App extends EventEmitter {
    */
   snapshot(access = 'full') {
     const selfId = this.config.get('nodeId');
-    const attachments = this.attach.list();
+    const attachments = this.attach.list().map((a) => ({
+      ...a,
+      parts: a.parts.map((p) => (a.state === 'attached' && p.hasTransport
+        ? { ...p, driverBlock: this._driverBlock(a, p) }
+        : p)),
+    }));
     const heldByTarget = new Map(attachments.map((a) => [a.id, a]));
 
     const localDevices = this.share.listAll();
@@ -1068,6 +1148,7 @@ export class App extends EventEmitter {
       })),
       federation: this._federation(access),
       attachments,
+      update: this.updater?.snapshot() ?? null,
       ts: Date.now(),
     };
   }
@@ -1183,6 +1264,8 @@ export class App extends EventEmitter {
     }
 
     this.attach?.stop();
+    this.drivers?.stop();
+    this.updater?.stop();
     this.share?.stop();
     // Отданную карту — системе. Иначе компьютер остался бы без неё до
     // следующего запуска.

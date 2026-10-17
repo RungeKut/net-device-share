@@ -32,6 +32,7 @@
 </header>
 
 <div id="banner" class="banner" hidden></div>
+<div id="updateBar" class="banner" hidden></div>
 <div id="readonlyBar" class="banner info" hidden></div>
 
 <nav class="tabs" role="tablist">
@@ -157,6 +158,18 @@
   </form>
 </dialog>
 
+<!-- Копирование драйвера с компьютера владельца -->
+<dialog id="driverDialog">
+  <div class="dlg">
+    <h2 id="driverTitle">Копирование драйвера</h2>
+    <div id="driverBody"></div>
+    <div class="dlg-actions">
+      <button class="btn" id="driverClose" type="button">Закрыть</button>
+      <button class="btn primary" id="driverInstall" type="button" hidden>Установить</button>
+    </div>
+  </div>
+</dialog>
+
 <!-- Создание и правка группы -->
 <dialog id="groupDialog">
   <form method="dialog" class="dlg">
@@ -233,6 +246,18 @@
         если их нет в системе. Интернет не нужен: перед установкой сверяются контрольная
         сумма и подпись. Уже установленное не трогается. Требует прав администратора —
         запущенное без них приложение покажет запрос UAC.</small>
+    </label>
+
+    <label class="field">
+      <span>Обновление приложения по сети</span>
+      <select id="setUpdateMode">
+        <option value="auto">Автоматически: ставить, когда безопасно</option>
+        <option value="ask">Спрашивать: скачивать, но ставить только с моего разрешения</option>
+        <option value="off">Выключено</option>
+      </select>
+      <small id="updateStatusLine">Когда кто-то в сети получает новую версию, остальные скачивают её друг у друга
+        по очереди и перезапускаются, пока никто не работает с их устройствами. Версия проверяется
+        по цифровой подписи; если новая версия не запустится, приложение вернётся к прежней.</small>
     </label>
 
     <label class="field">

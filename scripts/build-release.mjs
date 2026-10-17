@@ -17,6 +17,12 @@
 //
 //   node scripts/build-release.mjs            собрать каталог и zip
 //   node scripts/build-release.mjs --no-zip   только каталог (быстрее)
+//   node scripts/build-release.mjs --legacy-layout   старая раскладка без лаунчера и без обновления
+//
+// Раскладка с обновлением (по умолчанию, если есть ключ подписи — см.
+// scripts/release-keygen.mjs): код версии лежит в app/<версия>/, подписанный
+// архив — в releases/<версия>/, запуск идёт через launcher/. Такой комплект
+// умеет получать новые версии от соседей по сети и откатываться.
 
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
@@ -24,7 +30,11 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import https from 'node:https';
 import { execFileSync } from 'node:child_process';
+import os from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { buildAndSign } from './build-update.mjs';
+import { installRelease } from '../launcher/lib/layout.js';
+import { TRUSTED_KEYS } from '../launcher/lib/keys.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const DIST = path.join(ROOT, 'dist');
@@ -60,6 +70,9 @@ const FILES = [
 ];
 
 const noZip = process.argv.includes('--no-zip');
+const keyId = process.env.NDS_SIGNING_KEY_ID || 'k1';
+const keyFile = process.env.NDS_SIGNING_KEY || path.join(os.homedir(), '.net-device-share-signing', `${keyId}.pem`);
+const withUpdates = !process.argv.includes('--legacy-layout') && fs.existsSync(keyFile);
 const pkg = JSON.parse(await fsp.readFile(path.join(ROOT, 'package.json'), 'utf8'));
 const name = `${pkg.name}-${pkg.version}-win-x64`;
 const OUT = path.join(DIST, name);
@@ -188,15 +201,33 @@ process.stdout.write('\n  подготовка каталога\n');
 await fsp.rm(OUT, { recursive: true, force: true });
 await fsp.mkdir(OUT, { recursive: true });
 
-for (const dir of DIRS) {
-  await fsp.cp(path.join(ROOT, dir), path.join(OUT, dir), { recursive: true });
-}
-for (const file of FILES) {
-  const src = path.join(ROOT, file);
-  if (!fs.existsSync(src)) throw new Error(`нет файла ${file} — список в build-release.mjs устарел`);
-  const dest = path.join(OUT, file);
-  await fsp.mkdir(path.dirname(dest), { recursive: true });
-  await fsp.copyFile(src, dest);
+if (withUpdates) {
+  // Корень: то, что меняет только установщик. Код версии — в app/, из подписанного архива.
+  await fsp.cp(path.join(ROOT, 'installers'), path.join(OUT, 'installers'), { recursive: true });
+  await fsp.cp(path.join(ROOT, 'launcher'), path.join(OUT, 'launcher'), { recursive: true });
+  for (const [from, to] of [['start.bat', 'start.bat'], ['scripts/autostart.bat', 'autostart.bat'], ['README.md', 'README.md'], ['LICENSE', 'LICENSE']]) {
+    await fsp.copyFile(path.join(ROOT, from), path.join(OUT, to));
+  }
+  const built = buildAndSign({
+    keyId,
+    privateKey: fs.readFileSync(keyFile, 'utf8'),
+    passphrase: process.env.NDS_SIGNING_PASS || undefined,
+  });
+  // Тем же кодом, что проверит узел, — и сразу в раскладку: app/<версия>/ и releases/<версия>/.
+  installRelease(OUT, built, TRUSTED_KEYS);
+  process.stdout.write(`  версия ${built.manifest.version} подписана ключом ${keyId}, разложена в app/ и releases/\n`);
+} else {
+  process.stdout.write('  ВНИМАНИЕ: нет ключа подписи (или --legacy-layout) — комплект собран без лаунчера: обновляться по сети не сможет\n');
+  for (const dir of DIRS) {
+    await fsp.cp(path.join(ROOT, dir), path.join(OUT, dir), { recursive: true });
+  }
+  for (const file of FILES) {
+    const src = path.join(ROOT, file);
+    if (!fs.existsSync(src)) throw new Error(`нет файла ${file} — список в build-release.mjs устарел`);
+    const dest = path.join(OUT, file);
+    await fsp.mkdir(path.dirname(dest), { recursive: true });
+    await fsp.copyFile(src, dest);
+  }
 }
 
 await fsp.copyFile(nodeExe, path.join(OUT, 'node.exe'));
@@ -221,7 +252,7 @@ for (const c of manifest.components || []) {
 process.stdout.write(`  установщиков вложено: ${(manifest.components || []).length}, суммы сверены\n`);
 
 const started = await fsp.readFile(path.join(OUT, 'start.bat'));
-if (!/main\.js/.test(started.toString('latin1'))) throw new Error('start.bat в комплекте обрезан');
+if (!/main\.js|supervisor\.mjs/.test(started.toString('latin1'))) throw new Error('start.bat в комплекте обрезан');
 if (started.includes(0x0a) && !started.includes(0x0d)) throw new Error('start.bat в комплекте с LF');
 
 let count = 0;

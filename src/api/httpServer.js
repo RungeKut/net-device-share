@@ -28,6 +28,7 @@ import { fileURLToPath } from 'node:url';
 import { logger, recentLogs, onLogRecord } from '../log.js';
 import { AUTH_HEADER, NODE_HEADER } from '../net/rpc.js';
 import { ipInCidr, normalizeIp, listNetworks } from '../net/interfaces.js';
+import { baseDir } from '../core/paths.js';
 
 const log = logger('http');
 const UI_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'ui');
@@ -56,6 +57,8 @@ const MUTATING = new Set([
   '/api/v1/net/adapter/ip', '/api/v1/net/adapter/category', '/api/v1/net/bridge/ip',
   '/api/v1/net/adapter/update', '/api/v1/net/adapter/delete',
   '/api/v1/net/held/ip',
+  '/api/v1/driver/prepare', '/api/v1/driver/install', '/api/v1/driver/cancel',
+  '/api/v1/update/check', '/api/v1/update/approve', '/api/v1/update/restart', '/api/v1/update/retry',
 ]);
 
 /** Заголовок, по которому видно, что запрос отправил наш интерфейс. */
@@ -68,6 +71,8 @@ export class ApiServer {
     this.server = null;
     /** @type {Map<import('node:http').ServerResponse, string>} поток → уровень доступа */
     this.sseClients = new Map();
+    this.downloads = 0;               // отдаваемые сейчас файлы из /download
+    this.downloadSums = new Map();    // имя+размер+время → SHA-256
     this.pushTimer = null;
     this.netTimer = null;
   }
@@ -199,7 +204,76 @@ export class ApiServer {
     if (route.startsWith('/api/')) {
       return this._handleUiApi(req, res, route, url);
     }
+    if (route === '/download' || route.startsWith('/download/')) {
+      return this._serveDownload(req, res, route);
+    }
     return this._serveStatic(res, route);
+  }
+
+  /**
+   * Установщик с соседнего узла: на машину без интернета его берут отсюда.
+   * Лежит в <база>/download/ (туда его кладёт сам установщик). Страница
+   * открыта всем в сети — как и интерфейс только для чтения — но число
+   * одновременных отдач ограничено, а рядом с каждым файлом показана
+   * контрольная сумма: сверить её с той, что известна из надёжного
+   * источника, должен тот, кто скачивает. Подпись этого файла здесь не
+   * проверяется и не может проверяться: установщик — корень доверия.
+   */
+  async _serveDownload(req, res, route) {
+    const dir = path.join(baseDir(), 'download');
+    let names = [];
+    try {
+      names = fs.readdirSync(dir, { withFileTypes: true })
+        .filter((e) => e.isFile() && !e.name.startsWith('.'))
+        .map((e) => e.name);
+    } catch { /* каталога нет */ }
+
+    if (route === '/download' || route === '/download/') {
+      if (!names.length) {
+        res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
+        return res.end('На этом узле нет установщика для раздачи.');
+      }
+      const rows = [];
+      for (const n of names) {
+        const st = fs.statSync(path.join(dir, n));
+        const key = `${n}|${st.size}|${st.mtimeMs}`;
+        let sum = this.downloadSums.get(key);
+        if (!sum) {
+          sum = await new Promise((resolve) => {
+            const h = crypto.createHash('sha256');
+            fs.createReadStream(path.join(dir, n)).on('data', (d) => h.update(d))
+              .on('end', () => resolve(h.digest('hex'))).on('error', () => resolve('—'));
+          });
+          this.downloadSums.set(key, sum);
+        }
+        const esc = (v) => String(v).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+        rows.push(`<tr><td><a href="/download/${encodeURIComponent(n)}">${esc(n)}</a></td><td>${(st.size / 1048576).toFixed(1)} МБ</td><td><code>${sum}</code></td></tr>`);
+      }
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-cache' });
+      return res.end(`<!doctype html><meta charset="utf-8"><title>Net Device Share — установщик</title>
+<body style="font:15px system-ui,sans-serif;max-width:760px;margin:40px auto;padding:0 16px">
+<h1>Net Device Share — установщик</h1>
+<p>Файл отдан этим узлом сети. Перед запуском сверьте контрольную сумму SHA-256 с той, что вам сообщил администратор.</p>
+<table cellpadding="6"><tr><th align="left">Файл</th><th align="left">Размер</th><th align="left">SHA-256</th></tr>${rows.join('')}</table></body>`);
+    }
+
+    // Имя берётся из списка каталога, а не из запроса: ни «..», ни подкаталогов.
+    let want;
+    try { want = decodeURIComponent(route.slice('/download/'.length)); } catch { want = ''; }
+    if (!names.includes(want)) return sendJson(res, 404, { error: 'not_found' });
+    if (this.downloads >= 2) {
+      res.setHeader('retry-after', '15');
+      return sendJson(res, 503, { error: 'busy', message: 'узел сейчас отдаёт файл другим — повторите через несколько секунд' });
+    }
+    const file = path.join(dir, want);
+    this.downloads++;
+    res.on('close', () => { this.downloads--; });
+    res.writeHead(200, {
+      'content-type': 'application/octet-stream',
+      'content-length': fs.statSync(file).size,
+      'content-disposition': `attachment; filename*=UTF-8''${encodeURIComponent(want)}`,
+    });
+    fs.createReadStream(file).on('error', () => res.destroy()).pipe(res);
   }
 
   async _handlePeer(req, res, route, remote) {
@@ -376,6 +450,60 @@ export class ApiServer {
           await share.refresh();
           this.app.onStateChanged();
           return sendJson(res, 200, r);
+        }
+
+        // ---- раздача обновления (src/update/seeder.js) ----
+        // Всё, что здесь отдаётся, соседу придётся проверять по подписи
+        // релиза: доверия эти пути не создают.
+        case 'GET /api/v1/peer/release': {
+          const seeder = this.app.updater?.seeder;
+          const d = seeder?.describe();
+          if (!d) return sendJson(res, 404, { error: 'no_release', message: 'у этого узла нет версии для раздачи' });
+          return sendJson(res, 200, d);
+        }
+
+        case 'POST /api/v1/peer/release/reserve': {
+          const seeder = this.app.updater?.seeder;
+          if (!seeder) return sendJson(res, 404, { error: 'no_release' });
+          if (!callerId || !body?.version || !body?.sha256) return sendJson(res, 400, { error: 'bad_request', message: 'нужны version, sha256 и идентификатор узла' });
+          const r = seeder.reserve({ callerId, ip: remote, version: String(body.version), sha256: String(body.sha256) });
+          if (r.busy) {
+            res.setHeader('retry-after', String(r.retryAfterSec));
+            return sendJson(res, 503, { error: 'busy', message: 'все слоты заняты', retryAfterSec: r.retryAfterSec });
+          }
+          if (r.error === 'other_build') return sendJson(res, 409, { error: 'other_build', message: 'у этого узла другая сборка' });
+          if (r.error) return sendJson(res, 404, { error: r.error });
+          return sendJson(res, 200, r);
+        }
+
+        case 'GET /api/v1/peer/release/payload': {
+          const seeder = this.app.updater?.seeder;
+          if (!seeder) return sendJson(res, 404, { error: 'no_release' });
+          const token = new URL(req.url, 'http://x').searchParams.get('token') || '';
+          const t = seeder.begin({ token, callerId, ip: remote });
+          if (t.error === 'forbidden') return sendJson(res, 403, { error: 'forbidden', message: 'слот не выдан этому узлу' });
+          if (t.error) return sendJson(res, 404, { error: t.error });
+          res.writeHead(200, {
+            'content-type': 'application/octet-stream',
+            'content-length': t.payload.length,
+            'x-nds-sha256': t.sha256,
+          });
+          res.on('close', t.done);
+          res.end(t.payload);
+          return;
+        }
+
+        case 'POST /api/v1/peer/driver-package': {
+          // Драйвер отдаём только тому, кто сейчас держит устройство:
+          // это код для ядра, раздавать его всем подряд незачем.
+          if (!body?.target || !callerId) return sendJson(res, 400, { error: 'bad_request', message: 'нужны target и идентификатор узла' });
+          const claim = share.claims.get(body.target);
+          if (!claim || claim.holderId !== callerId) {
+            return sendJson(res, 403, { error: 'forbidden', message: 'устройство занято не вами — драйвер отдаётся только занявшему' });
+          }
+          const dev = share.get(body.target);
+          if (!dev) return sendJson(res, 404, { error: 'not_found', message: 'устройство не найдено у владельца' });
+          return sendJson(res, 200, await this.app.drivers.exportFor(dev));
         }
 
         case 'POST /api/v1/peer/revoked': {
@@ -582,6 +710,20 @@ export class ApiServer {
         case '/api/v1/net/held/ip':
           return sendJson(res, 200, await this.app.setHeldIp(body.attachmentId, body.deviceId, body.ip, { category: body.category }));
 
+        case '/api/v1/update/check':
+          return sendJson(res, 200, this.app.updater.checkNow());
+        case '/api/v1/update/approve':
+          return sendJson(res, 200, this.app.updater.approve(body.version));
+        case '/api/v1/update/restart':
+          return sendJson(res, 200, this.app.updater.restartNow());
+        case '/api/v1/update/retry':
+          return sendJson(res, 200, this.app.updater.retry());
+        case '/api/v1/driver/prepare':
+          return sendJson(res, 200, await this.app.prepareDriver(body.id, body.deviceId));
+        case '/api/v1/driver/install':
+          return sendJson(res, 200, await this.app.installDriver(body.token));
+        case '/api/v1/driver/cancel':
+          return sendJson(res, 200, this.app.cancelDriver(body.token));
         case '/api/v1/install': {
           const r = await this.app.installer.start();
           this.pushState();

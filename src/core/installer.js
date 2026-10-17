@@ -21,16 +21,14 @@ import { EventEmitter } from 'node:events';
 import { fileURLToPath } from 'node:url';
 import { logger } from '../log.js';
 import { run } from '../devices/backend.js';
+import { installersDir } from './paths.js';
 
 const log = logger('installer');
 
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
-
-// Переопределение каталога нужно двум сценариям: сборке дистрибутива, где
-// установщики лежат отдельно от кода, и автотестам механики установки.
-const INSTALLERS_DIR = process.env.NDS_INSTALLERS_DIR
-  ? path.resolve(process.env.NDS_INSTALLERS_DIR)
-  : path.join(ROOT, 'installers');
+// Каталог установщиков лежит в базе установки, а не рядом с кодом версии:
+// версии меняются при обновлении, драйверы — только установщиком. Подмена
+// каталога нужна сборке дистрибутива и автотестам (см. paths.js).
+const INSTALLERS_DIR = installersDir();
 
 export class Installer extends EventEmitter {
   /**
