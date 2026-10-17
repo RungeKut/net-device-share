@@ -15,6 +15,18 @@ import crypto from 'node:crypto';
 
 export const PROTO = 'nds/1';
 
+/**
+ * Совместима ли метка протокола с нашей. Принимаем «nds/1» и «nds/1.N»:
+ * дополнительные поля в пакетах всегда только добавляются, а строгое «==»
+ * разорвало бы связь между версиями — и старые узлы перестали бы даже видеть,
+ * что вышла новая, то есть самообновление не сработало бы именно тогда, когда
+ * оно нужнее всего. Несовместимое изменение — это «nds/2», и вводить его
+ * можно только в два шага: сначала версия, понимающая оба протокола.
+ */
+export function protoCompatible(proto) {
+  return proto === PROTO || (typeof proto === 'string' && proto.startsWith(PROTO + '.'));
+}
+
 export const MSG = {
   ANNOUNCE: 'announce',   // периодический анонс присутствия
   BYE: 'bye',             // корректный уход из сети
@@ -108,7 +120,7 @@ export function decodeDatagram(buf, key) {
   } catch {
     return { error: 'malformed' };
   }
-  if (message.proto !== PROTO) return { error: 'proto-mismatch' };
+  if (!protoCompatible(message.proto)) return { error: 'proto-mismatch' };
   return { message };
 }
 
@@ -143,7 +155,7 @@ export function unpackDatagram(buf, resolveKey) {
   } catch {
     return { error: 'malformed' };
   }
-  if (message.proto !== PROTO) return { error: 'proto-mismatch' };
+  if (!protoCompatible(message.proto)) return { error: 'proto-mismatch' };
 
   const realm = message.realm || 'open';
   const key = resolveKey(realm);

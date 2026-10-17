@@ -19,6 +19,7 @@ let bannerDismissed = false;
 let shownRequestIds = new Set();
 let currentRequest = null;
 let askContext = null;
+let driverToken = null;
 let titleFlashTimer = null;
 
 // ------------------------------------------------------------- утилиты вывода
@@ -178,6 +179,7 @@ function render() {
   renderGroups();
   renderAttached();
   renderPeers();
+  renderUpdate();
   net?.onState();
   // Пока настройки открыты, состояние обмена в них живое: адрес набирают
   // и тут же смотрят, ответил ли узел, а не переоткрывают окно.
@@ -732,6 +734,7 @@ function renderAttached() {
           p.ip ? adapterIpText(p.ip, p.ipApplied) : `<span class="pill warn">${esc(p.ipNote)}</span>`}</span></div>`).join('')}
         ${a.parts.some((p) => p.hasTransport) && !a.parts.some((p) => p.traffic)
           ? '<p class="hint">Скорость не показывается: у владельца выключен учёт трафика.</p>' : ''}
+        ${driverNotes(a)}
       </div>
       <div class="card-actions">
         ${canEdit() && a.state === 'attached' ? a.parts.filter((p) => p.type === 'net').map((p) => `<button class="btn small"
@@ -739,9 +742,33 @@ function renderAttached() {
             ? 'Поменять настройки вашего адаптера этой карты'
             : 'Карта в брони: попросить владельца поменять её настройки — при освобождении вернутся прежние'}"
           >Настройки IP${a.parts.filter((x) => x.type === 'net').length > 1 ? ` · ${esc(p.title || p.key)}` : ''}</button>`).join('') : ''}
+        ${canEdit() && a.state === 'attached' ? driverButtons(a) : ''}
         ${canEdit() ? `<button class="btn small danger" data-detach="${esc(a.id)}">Освободить</button>` : ''}
       </div>
     </article>`).join('');
+}
+
+/**
+ * «Копировать драйвер». Если сделать это заведомо нельзя, кнопку не
+ * показываем, а пишем, почему: молча пропавшая кнопка выглядела бы
+ * как недоработка, а причина обычно в самой ситуации (другая система,
+ * нет прав администратора, своё устройство).
+ */
+function driverButtons(a) {
+  const parts = a.parts.filter((p) => p.hasTransport && p.type === 'usb');
+  return parts.filter((p) => !p.driverBlock).map((p) => `<button class="btn small"
+    data-driver="${esc(a.id)}|${esc(p.deviceId)}"
+    title="Взять у владельца драйвер этого устройства и установить его на этом компьютере"
+    >Копировать драйвер${parts.length > 1 ? ` · ${esc(p.description || p.key)}` : ''}</button>`).join('');
+}
+
+/** Объяснения, почему драйвер скопировать нельзя, — в карточке занятия. */
+function driverNotes(a) {
+  if (a.state !== 'attached') return '';
+  const parts = a.parts.filter((p) => p.hasTransport && p.type === 'usb' && p.driverBlock);
+  // Одна и та же причина у всех устройств занятия называется один раз.
+  const reasons = [...new Set(parts.map((p) => p.driverBlock))];
+  return reasons.map((r) => `<p class="hint"><b>Копировать драйвер нельзя.</b> ${esc(r)}</p>`).join('');
 }
 
 /** Во что превратилось устройство занятия на этом компьютере. */
@@ -876,6 +903,14 @@ document.addEventListener('click', (ev) => {
       flag === '1' ? 'Группа опубликована' : 'Группа снята с публикации');
   } else if (t.dataset.editGroup) {
     openGroupDialog(state.localGroups.find((g) => g.id === t.dataset.editGroup));
+  } else if (t.dataset.update) {
+    const act = t.dataset.update;
+    if (act === 'restart' && !confirm('Перезапустить приложение сейчас? Подключения к устройствам, которые вы занимаете или отдаёте, оборвутся.')) return;
+    action(t, () => post(`/api/v1/update/${act}`, act === 'approve' ? { version: t.dataset.version } : {}),
+      act === 'restart' ? 'Перезапуск…' : null);
+  } else if (t.dataset.driver) {
+    const [id, deviceId] = t.dataset.driver.split('|');
+    openDriverDialog(id, deviceId);
   } else if (t.dataset.heldIp) {
     const [attachmentId, deviceId] = t.dataset.heldIp.split('|');
     net?.openHeldIp(attachmentId, deviceId);
@@ -1041,6 +1076,8 @@ $('#btnSettings').addEventListener('click', () => {
   $('#setUsbipdPath').value = c.usbipdPath || '';
   $('#setUsbipPath').value = c.usbipPath || '';
   $('#setMeterTraffic').checked = Boolean(c.meterTraffic);
+  $('#setUpdateMode').value = c.updateMode || 'ask';
+  renderUpdateStatusLine();
   $('#setAutoInstall').checked = c.autoInstall !== false;
 
   $('#setSeeds').value = (c.seeds || []).join('\n');
@@ -1118,6 +1155,7 @@ $('#settings').addEventListener('close', async () => {
     usbipPath: $('#setUsbipPath').value.trim(),
     enabledTypes: [...document.querySelectorAll('#setTypes input:checked')].map((i) => i.value),
     meterTraffic: $('#setMeterTraffic').checked,
+    updateMode: $('#setUpdateMode').value,
     autoInstall: $('#setAutoInstall').checked,
     seeds: $('#setSeeds').value.split('\n').map((s) => s.trim()).filter(Boolean),
     gossipIntervalMs: Number($('#setGossip').value) * 1000,
@@ -1326,3 +1364,148 @@ ensureNotificationPermission();
 // Длительности считаются от текущего момента — без этого «занято 3 мин назад»
 // замирало бы между обновлениями состояния.
 setInterval(() => { if (state) render(); }, 10000);
+
+// ------------------------------------------------------ копирование драйвера
+
+const SIGNATURE_TEXT = {
+  valid: ['ok', 'подпись верна'],
+  invalid: ['err', 'подпись не прошла проверку'],
+  none: ['err', 'не подписан'],
+};
+
+function setDriverDialog({ title, body, install = null }) {
+  $('#driverTitle').textContent = title;
+  $('#driverBody').innerHTML = body;
+  const btn = $('#driverInstall');
+  btn.hidden = !install;
+  if (install) {
+    btn.textContent = install;
+    btn.disabled = false;
+  }
+}
+
+const driverError = (msg) => `<p class="dlg-note" style="white-space:pre-wrap">${esc(msg)}</p>`;
+
+async function openDriverDialog(id, deviceId) {
+  driverToken = null;
+  setDriverDialog({
+    title: 'Копирование драйвера',
+    body: '<p class="dlg-note">Запрашиваю драйвер у владельца устройства и проверяю подпись. Это может занять до минуты…</p>',
+  });
+  $('#driverDialog').showModal();
+  try {
+    const r = await post('/api/v1/driver/prepare', { id, deviceId });
+    driverToken = r.token;
+    const unsigned = r.packages.some((p) => p.signature !== 'valid');
+    const items = r.packages.map((p) => {
+      const [cls, text] = SIGNATURE_TEXT[p.signature] || ['warn', p.signature];
+      return `<div class="card-meta">
+        <span><b>${esc(p.name)}</b>${p.provider ? `, ${esc(p.provider)}` : ''}${p.version ? `, версия ${esc(p.version)}` : ''}</span>
+        <span>файлов: ${esc(p.fileCount)}, ${esc(formatVolume(p.size))}</span>
+        <span class="pill ${cls}">${esc(text)}</span>
+        ${p.signer ? `<span>издатель: ${esc(p.signer)}</span>` : ''}
+      </div>${p.signatureNote ? `<p class="hint">${esc(p.signatureNote)}</p>` : ''}`;
+    }).join('');
+    const warning = unsigned
+      ? `<p class="hint"><b>Внимание: подпись драйвера не подтверждена.</b>
+        64-битная Windows, скорее всего, откажется его ставить — тогда ниже будет сообщение системы. Если же поставит,
+        вы запустите код с правами ядра от неизвестного издателя. Продолжайте, только если доверяете владельцу
+        устройства «${esc(r.ownerName)}».</p>`
+      : '';
+    setDriverDialog({
+      title: 'Копирование драйвера',
+      body: `<p class="dlg-note">Устройство: <b>${esc(r.deviceTitle)}</b>. Драйвер взят у «${esc(r.ownerName)}».
+        Он будет добавлен в хранилище драйверов этого компьютера и подключится к устройству.</p>${items}${warning}`,
+      install: unsigned ? 'Всё равно установить' : 'Установить',
+    });
+  } catch (e) {
+    setDriverDialog({ title: 'Скопировать драйвер не получилось', body: driverError(e.message) });
+  }
+}
+
+$('#driverInstall').addEventListener('click', async () => {
+  if (!driverToken) return;
+  const btn = $('#driverInstall');
+  btn.disabled = true;
+  btn.textContent = 'Устанавливаю…';
+  const token = driverToken;
+  driverToken = null;
+  try {
+    const r = await post('/api/v1/driver/install', { token });
+    const rows = r.results.map((x) => `<div class="card-meta">
+      <span class="pill ${x.ok ? 'ok' : 'err'}">${x.ok ? 'установлен' : 'не установлен'}</span>
+      <b>${esc(x.infName)}</b></div>
+      <pre class="hint" style="white-space:pre-wrap">${esc(x.output)}</pre>`).join('');
+    setDriverDialog({
+      title: r.ok ? 'Драйвер установлен' : 'Драйвер установить не удалось',
+      body: rows + (r.ok
+        ? '<p class="dlg-note">Если устройство уже подключено, Windows подхватит драйвер сама; если нет — освободите устройство и займите его снова.</p>'
+        : ''),
+    });
+  } catch (e) {
+    setDriverDialog({ title: 'Драйвер установить не удалось', body: driverError(e.message) });
+  }
+});
+
+$('#driverClose').addEventListener('click', () => $('#driverDialog').close());
+$('#driverDialog').addEventListener('close', () => {
+  // Не установили — пакет во временной папке больше не нужен.
+  if (driverToken) post('/api/v1/driver/cancel', { token: driverToken }).catch(() => {});
+  driverToken = null;
+});
+
+
+// ------------------------------------------------------------- обновление
+
+const UPDATE_PHASES = {
+  checking: ['Проверка обновления', ''],
+  downloading: ['Скачивание обновления', ''],
+  queued: ['Обновление в очереди', ''],
+  waiting: ['Обновление готово к установке', ''],
+  'awaiting-approval': ['Доступно обновление', ''],
+  restarting: ['Перезапуск для обновления', ''],
+  trial: ['Проверка новой версии', ''],
+  error: ['Обновление не удалось', 'err'],
+};
+
+/** Полоса над вкладками: что с обновлением и что с ним можно сделать. */
+function renderUpdate() {
+  const bar = $('#updateBar');
+  const u = state.update;
+  const info = u && UPDATE_PHASES[u.phase];
+  if (!u || !info) { bar.hidden = true; return; }
+
+  const ver = u.candidate?.version || u.staged?.version || '';
+  const btns = [];
+  if (canEdit()) {
+    if (u.awaitingApproval) {
+      btns.push(`<button class="btn small primary" data-update="approve" data-version="${esc(u.staged?.version || '')}">Разрешить установку</button>`);
+    }
+    if (u.canRestartNow && (u.phase === 'waiting' || u.awaitingApproval)) {
+      btns.push('<button class="btn small danger" data-update="restart">Перезапустить сейчас</button>');
+    }
+    if (u.phase === 'error') btns.push('<button class="btn small" data-update="retry">Повторить</button>');
+  }
+  const failed = (u.failed || []).length
+    ? `<p class="banner-hint">Не прошли проверку на этом компьютере: ${u.failed.map((f) => `${esc(f.version)} (${esc(f.reason)})`).join('; ')}.</p>` : '';
+
+  bar.className = `banner ${info[1]}`;
+  bar.innerHTML = `<b>${esc(info[0])}${ver ? ` — версия ${esc(ver)}` : ''}</b>
+    ${u.message ? `<p class="banner-hint">${esc(u.message)}</p>` : ''}
+    ${u.phase === 'waiting' && u.waiting?.length ? `<ul>${u.waiting.map((w) => `<li>${esc(w)}</li>`).join('')}</ul>` : ''}
+    ${btns.length ? `<div class="banner-actions">${btns.join('')}</div>` : ''}${failed}`;
+  bar.hidden = false;
+}
+
+/** Строка состояния под выбором режима в настройках. */
+function renderUpdateStatusLine() {
+  const u = state?.update;
+  const line = $('#updateStatusLine');
+  if (!u) return;
+  const parts = [`Запущена версия ${u.running}.`];
+  if (!u.supported) parts.push(`Обновление здесь недоступно: ${u.unsupportedReason}.`);
+  else if (u.sharing) parts.push(`Эта версия готова к раздаче соседям.`);
+  if (u.previous) parts.push(`Предыдущая версия ${u.previous} сохранена для отката.`);
+  line.textContent = parts.join(' ');
+  $('#setUpdateMode').disabled = !u.supported;
+}

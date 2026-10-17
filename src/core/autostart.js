@@ -48,10 +48,13 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { logger } from '../log.js';
 import { run } from '../devices/backend.js';
+import { baseDir } from './paths.js';
 
 const log = logger('autostart');
 
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+// База установки, а не каталог кода: после обновления код переезжает в
+// app/<версия>/, а задание автозапуска должно остаться тем же (paths.js).
+const ROOT = baseDir();
 const TASK_NAME = 'NetDeviceShare';
 const UNIT_NAME = 'net-device-share.service';
 
@@ -87,7 +90,9 @@ export class Autostart {
   // ------------------------------------------------------------- Windows
 
   get _launcher() {
-    return path.join(ROOT, 'scripts', 'autostart.bat');
+    // В комплекте и в установке файл лежит в корне базы, в исходниках — в scripts/.
+    const inRoot = path.join(ROOT, 'autostart.bat');
+    return fs.existsSync(inRoot) ? inRoot : path.join(ROOT, 'scripts', 'autostart.bat');
   }
 
   async _statusWindows() {
@@ -271,6 +276,12 @@ export class Autostart {
     };
   }
 
+  /** Что запускает юнит: лаунчер, если он есть (откат и переключение версий), иначе код напрямую. */
+  get _entry() {
+    const sup = path.join(ROOT, 'launcher', 'supervisor.mjs');
+    return fs.existsSync(sup) ? sup : path.join(ROOT, 'src', 'main.js');
+  }
+
   async _enableLinux() {
     const unit = `[Unit]
 Description=Net Device Share
@@ -279,7 +290,7 @@ After=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=${ROOT}
-ExecStart=${process.execPath} ${path.join(ROOT, 'src', 'main.js')} --no-open
+ExecStart=${process.execPath} ${this._entry} --no-open
 Restart=on-failure
 RestartSec=10
 

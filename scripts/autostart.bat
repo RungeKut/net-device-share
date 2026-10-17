@@ -18,13 +18,17 @@ rem ===================================================================
 setlocal
 title Net Device Share
 
-cd /d "%~dp0.."
+rem База установки: рядом с этим файлом (комплект и установленная версия)
+rem либо на уровень выше (запуск из каталога scripts исходников).
+set "BASE=%~dp0"
+if not exist "%BASE%launcher\supervisor.mjs" if not exist "%BASE%src\main.js" set "BASE=%~dp0..\"
+cd /d "%BASE%"
 
 rem В переносимом комплекте node.exe лежит рядом с приложением, и он имеет
 rem приоритет: комплект должен работать одинаково независимо от того, что
 rem установлено на машине.
 set "NODE_EXE=node"
-if exist "%~dp0..\node.exe" set "NODE_EXE=%~dp0..\node.exe"
+if exist "%BASE%node.exe" set "NODE_EXE=%BASE%node.exe"
 
 if "%NODE_EXE%"=="node" (
   where node >nul 2>&1
@@ -34,5 +38,7 @@ if "%NODE_EXE%"=="node" (
   )
 )
 
-"%NODE_EXE%" "%~dp0..\src\main.js" --no-open %*
+set "ENTRY=%BASE%src\main.js"
+if exist "%BASE%launcher\supervisor.mjs" set "ENTRY=%BASE%launcher\supervisor.mjs"
+"%NODE_EXE%" "%ENTRY%" --no-open %*
 exit /b %ERRORLEVEL%

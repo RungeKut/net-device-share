@@ -7,6 +7,7 @@ import { logger, setLevel } from './log.js';
 import { App, VERSION } from './core/app.js';
 import { createBackend } from './devices/backend.js';
 import { listNetworks, resolveNetwork } from './net/interfaces.js';
+import { Autostart } from './core/autostart.js';
 
 const log = logger('main');
 
@@ -27,6 +28,7 @@ Net Device Share ${VERSION} — общий доступ к USB-устройст�
   --log-level <уровень>   error | warn | info | debug | trace
   --no-open               не открывать браузер при запуске
   --doctor                проверить окружение и выйти
+  --autostart <действие>  enable | disable | status — автозапуск при входе в систему
   --networks              показать доступные сети и выйти
   --help                  эта справка
 
@@ -134,6 +136,22 @@ async function main() {
     return;
   }
 
+  // Для установщика: включить или выключить автозапуск без запуска самого приложения.
+  // Настройки при этом не читаются и не создаются: установщик работает от
+  // администратора, и лишний config.json в его профиле не нужен.
+  if (args.autostart) {
+    const auto = new Autostart(null);
+    const act = String(args.autostart);
+    try {
+      const r = act === 'enable' ? await auto.enable() : act === 'disable' ? await auto.disable() : await auto.status();
+      process.stdout.write(JSON.stringify(r, null, 2) + '\n');
+    } catch (e) {
+      process.stderr.write(`автозапуск: ${e.message}\n`);
+      process.exitCode = 1;
+    }
+    return;
+  }
+
   const config = new Config(typeof args.config === 'string' ? args.config : undefined);
   applyCliOverrides(config, args);
   setLevel(config.get('logLevel'));
@@ -158,7 +176,7 @@ async function main() {
   if (!args['no-open']) openBrowser(url);
 
   let shuttingDown = false;
-  const stop = async (signal) => {
+  const stop = async (signal, exitCode = 0) => {
     if (shuttingDown) return;
     shuttingDown = true;
     log.info(`получен ${signal}`);
@@ -174,15 +192,26 @@ async function main() {
       log.error('ошибка при завершении:', e.message);
     }
     clearTimeout(timer);
-    process.exit(0);
+    process.exit(exitCode);
   };
 
   process.on('SIGINT', () => stop('SIGINT'));
   process.on('SIGTERM', () => stop('SIGTERM'));
+
+  // Самообновление: перезапуск в новую версию (код 75 — просьба лаунчеру
+  // запустить заново) и остановка по просьбе лаунчера — на Windows мягкого
+  // сигнала завершения нет, поэтому через канал IPC.
+  process.on('nds:restart', () => stop('обновление', 75));
+  process.on('message', (m) => {
+    if (m?.type === 'shutdown') stop('просьба лаунчера');
+  });
+
   process.on('uncaughtException', (e) => {
+    app.updater?.noteFault();
     log.error('необработанное исключение:', e.stack || e.message);
   });
   process.on('unhandledRejection', (e) => {
+    app.updater?.noteFault();
     log.error('необработанное отклонение промиса:', e?.stack || String(e));
   });
 }

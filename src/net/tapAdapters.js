@@ -21,11 +21,12 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { run, psJson, psQuote } from '../devices/backend.js';
 import { logger } from '../log.js';
+import { codeDir, installersDir } from '../core/paths.js';
 
 const log = logger('tap');
 
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
-export const TAP_DIR = path.join(ROOT, 'installers', 'windows', 'tap-windows6-9.27.0');
+const ROOT = codeDir;
+export const TAP_DIR = path.join(installersDir(), 'windows', 'tap-windows6-9.27.0');
 const DEVCON = path.join(TAP_DIR, 'devcon.exe');
 const INF = path.join(TAP_DIR, 'OemVista.inf');
 const HWID = 'tap0901';
@@ -83,7 +84,7 @@ export async function listTaps() {
  */
 export async function createTap() {
   if (!driverFilesPresent()) {
-    throw new Error(`нет файлов драйвера TAP в ${path.relative(ROOT, TAP_DIR)}`);
+    throw new Error(`нет файлов драйвера TAP в ${TAP_DIR}`);
   }
   const before = new Set((await listTaps()).map((t) => t.guid));
 

@@ -143,12 +143,18 @@ echo   Имя узла, сеть и адрес интерфейса показаны ниже.
 echo   Остановка - Ctrl+C или закрытие этого окна.
 echo.
 
+rem Если рядом лежит лаунчер - запуск идёт через него: он выберет версию,
+rem проверит её целостность и откатит неудачное обновление. Без лаунчера
+rem (запуск из исходников) приложение стартует напрямую, как раньше.
+set "ENTRY=%~dp0src\main.js"
+if exist "%~dp0launcher\supervisor.mjs" set "ENTRY=%~dp0launcher\supervisor.mjs"
+
 rem --- дальше и до восстановления кодовой страницы только ASCII ---
 set "OLD_CP=866"
 for /f "tokens=2 delims=:" %%c in ('chcp') do call :trim_cp %%c
 chcp 65001 >nul
 
-"%NODE_EXE%" "%~dp0src\main.js" %APP_ARGS%
+"%NODE_EXE%" "%ENTRY%" %APP_ARGS%
 set "EXIT_CODE=%ERRORLEVEL%"
 
 chcp %OLD_CP% >nul
