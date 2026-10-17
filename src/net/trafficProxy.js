@@ -136,6 +136,11 @@ export class TrafficProxy extends EventEmitter {
     }
     if (!near) log.debug(`соединение из другой сети с ${from} — узел известен по каталогу`);
 
+    // USB/IP — синхронные «запрос-ответ» крошечными пакетами (URB в десятки
+    // байт). Алгоритм Нейгла вместе с отложенным ACK на другой стороне даёт
+    // паузу 40–200 мс на каждый обмен: прошивка JTAG падает до сотен байт/с.
+    client.setNoDelay(true);
+
     this.sockets.add(client);
     client.on('close', () => this.sockets.delete(client));
     client.on('error', (e) => log.debug(`клиентский сокет: ${e.message}`));
@@ -146,6 +151,7 @@ export class TrafficProxy extends EventEmitter {
     let deviceId = null;
 
     const upstream = net.connect(this.targetPort, '127.0.0.1');
+    upstream.setNoDelay(true);
     this.sockets.add(upstream);
     upstream.on('close', () => this.sockets.delete(upstream));
     upstream.on('error', (e) => {
