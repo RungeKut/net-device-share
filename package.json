@@ -18,7 +18,7 @@
     "build:update": "node scripts/build-update.mjs",
     "build:installer": "node scripts/build-installer.mjs",
     "keygen": "node scripts/release-keygen.mjs",
-    "test": "node --test test/update/*.test.mjs",
+    "test": "node --test test/*.test.mjs test/update/*.test.mjs",
     "check": "node scripts/check-files.mjs",
     "fetch-installers": "node scripts/fetch-installers.mjs"
   },
