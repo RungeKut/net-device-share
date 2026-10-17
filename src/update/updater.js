@@ -58,6 +58,7 @@ export class Updater extends EventEmitter {
     this.waiting = [];
     this.candidate = null;       // { version, sha256, from }
     this.staged = null;          // { version, sha256, at }
+    this.needsInstaller = null;  // { version, reason, url, from, recheckAt }
     this.approved = null;        // версия, которую пользователь разрешил ставить (режим «спрашивать»)
     this.eligibleAt = null;
     this.retryAt = null;
@@ -233,6 +234,7 @@ export class Updater extends EventEmitter {
       return;
     }
     if (this.trial) return;
+    if (this.needsInstaller && !force && Date.now() < this.needsInstaller.recheckAt) return;
 
     const st = this._state();
     this.checkedAt = Date.now();
@@ -249,6 +251,7 @@ export class Updater extends EventEmitter {
 
       const version = this._pickCandidate(st);
       if (!version) {
+        this.needsInstaller = null;
         this.candidate = null;
         this.eligibleAt = null;
         if (this.phase !== 'error') this._set('idle', '');
@@ -327,6 +330,14 @@ export class Updater extends EventEmitter {
       }
       this.candidate = { version: manifest.version, sha256: manifest.payload.sha256, from: src.name };
 
+      // Версия подлинная и новее, но по сети не ставится (нужен более новый
+      // лаунчер или Node): это не ошибка, а просьба взять установщик.
+      const compat = lib.release.compatProblem(manifest);
+      if (compat) {
+        await this._noteNeedsInstaller(manifest, compat);
+        return false;
+      }
+
       let token = null;
       try {
         const r = await call('/api/v1/peer/release/reserve', {
@@ -377,12 +388,51 @@ export class Updater extends EventEmitter {
     if (this._isBad(st, manifest.version, manifest.payload.sha256)) return 'ранее не прошла пробный запуск на этом узле';
     const rej = this._isRejected(manifest.version, manifest.payload.sha256);
     if (rej) return rej.reason;
-    const compat = lib.release.compatProblem(manifest);
-    if (compat) return compat;
     if (manifest.revokes?.includes?.(this.running)) {
       log.warn(`версия ${this.running} отозвана релизом ${manifest.version}`);
     }
     return null;
+  }
+
+  /**
+   * Версия требует установщика. Ищем, у кого его можно скачать: у узла,
+   * который уже работает на этой версии и раздаёт установщик (/download).
+   */
+  async _noteNeedsInstaller(manifest, reason) {
+    const version = manifest.version;
+    const holders = this.app.peers.list()
+      .filter((p) => p.online && p.version === version)
+      .sort((a, b) => (a.origin === 'local' ? 0 : 1) - (b.origin === 'local' ? 0 : 1));
+
+    let found = null;
+    for (const p of holders) {
+      if (await this._httpOk(p.address, p.apiPort, '/download')) {
+        found = { url: `http://${p.address}:${p.apiPort}/download`, from: p.name };
+        break;
+      }
+    }
+    this.needsInstaller = {
+      version,
+      reason,
+      url: found?.url || null,
+      from: found?.from || null,
+      // Перепроверяем не чаще раза в 10 минут: ответ не меняется, пока кто-то не поставит установщик.
+      recheckAt: Date.now() + 10 * 60 * 1000,
+    };
+    log.info(`версия ${version} требует установщика: ${reason}${found ? `; он есть у «${found.from}»` : '; раздающего установщик узла не нашлось'}`);
+    this._set('needs-installer', `версия ${version} не ставится по сети: ${reason}`);
+  }
+
+  /** Короткий запрос без подписи: страница /download открыта всем в сети. */
+  _httpOk(host, port, urlPath) {
+    return new Promise((resolve) => {
+      const req = http.get({ host, port, path: urlPath, timeout: 4000 }, (res) => {
+        res.resume();
+        resolve(res.statusCode === 200);
+      });
+      req.on('timeout', () => req.destroy());
+      req.on('error', () => resolve(false));
+    });
   }
 
   _reject(version, sha, reason) {
@@ -549,6 +599,9 @@ export class Updater extends EventEmitter {
       trial: this.trial,
       candidate: this.candidate,
       staged: this.staged ? { version: this.staged.version } : null,
+      installer: this.needsInstaller
+        ? { version: this.needsInstaller.version, reason: this.needsInstaller.reason, url: this.needsInstaller.url, from: this.needsInstaller.from }
+        : null,
       waiting: this.waiting,
       eligibleAt: this.eligibleAt,
       retryAt: this.retryAt,
