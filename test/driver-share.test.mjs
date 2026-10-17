@@ -41,3 +41,23 @@ test('INF: поставщик из [Strings], версия и класс', () =>
   const t = '[Version]\r\nClass=MEDIA\r\nProvider=%Mfg%\r\nDriverVer=05/01/2024,4.5.6.7\r\n[Strings]\r\nMfg="Focusrite Audio Engineering"\r\n';
   assert.deepEqual(parseInf(t), { provider: 'Focusrite Audio Engineering', class: 'MEDIA', version: '4.5.6.7 (05/01/2024)' });
 });
+
+// -------------------------------- код устройства берётся из meta, как его отдаёт hub
+
+import { DriverShare } from '../src/core/driverShare.js';
+
+test('код устройства (VID:PID) читается из meta записи — как её собирает hub', { skip: process.platform !== 'win32' }, async () => {
+  const d = new DriverShare();
+  // Запись в том виде, в каком её отдаёт share.get(): vendorId/productId — внутри meta.
+  const dev = { deviceId: 'usb:1-1', type: 'usb', meta: { vendorId: '1a86', productId: '7523' } };
+  await assert.rejects(() => d.exportFor(dev), (e) => !/не определён код устройства/.test(e.message),
+    'код найден; дальше может быть только другая причина (например, нет прав администратора)');
+  d.stop();
+});
+
+test('без кода устройства — понятная причина', { skip: process.platform !== 'win32' }, async () => {
+  const d = new DriverShare();
+  await assert.rejects(() => d.exportFor({ deviceId: 'usb:1-1', type: 'usb', meta: { vendorId: null, productId: null } }),
+    /не определён код устройства/);
+  d.stop();
+});
