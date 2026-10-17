@@ -39,13 +39,20 @@ export class ShareManager extends EventEmitter {
    *   данных USB/IP. Отличается от usbipPort, когда включён счётчик трафика.
    * @param {(deviceId: string) => object|null} [o.trafficOf] — счётчики устройства
    */
-  constructor({ hub, config, dataPort, trafficOf, trafficBegin }) {
+  constructor({ hub, config, dataPort, trafficOf, trafficBegin, dropData, dataConnections }) {
     super();
     this.hub = hub;
     this.config = config;
     this.dataPort = dataPort || (() => config.get('usbipPort'));
     this.trafficOf = trafficOf || (() => null);
     this.trafficBegin = trafficBegin || (() => {});
+    // Оборвать соединения данных устройства (счётчик трафика стоит в разрыве
+    // и умеет это). Вызывается при освобождении: см. release().
+    this.dropData = dropData || (() => 0);
+    // Сколько соединений данных у устройства сейчас (0, если счётчик не работает).
+    this.dataConnections = dataConnections || (() => 0);
+    /** @type {Map<string, NodeJS.Timeout>} deviceId → таймер «соединение закрылось, а аренда осталась» */
+    this.dataTimers = new Map();
     /** @type {Map<string, object>} deviceId → устройство */
     this.devices = new Map();
     /** @type {Map<string, object>} deviceId → аренда */
@@ -80,6 +87,8 @@ export class ShareManager extends EventEmitter {
   stop() {
     clearInterval(this.pollTimer);
     clearInterval(this.sweepTimer);
+    for (const t of this.dataTimers.values()) clearTimeout(t);
+    this.dataTimers.clear();
   }
 
   // ------------------------------------------------------------- устройства
@@ -421,6 +430,7 @@ export class ShareManager extends EventEmitter {
         holderId,
         holderName,
         since: now,
+        renewedAt: now,
         expiresAt: now + lease,
         mode: isOwner ? CLAIM_MODE.LOCAL : CLAIM_MODE.REMOTE,
         groupId: group ? group.id : null,
@@ -454,6 +464,8 @@ export class ShareManager extends EventEmitter {
       if (!claim) continue;
       if (claim.holderId !== holderId) throw errWith('forbidden', 'занято другим узлом');
       claim.expiresAt = Date.now() + lease;
+      claim.renewedAt = Date.now();
+      claim.silentWarned = false;
       renewed++;
     }
     if (!renewed) throw errWith('no_claim', 'не занято');
@@ -468,6 +480,41 @@ export class ShareManager extends EventEmitter {
       // на heartbeat и так приходит каждые десять секунд.
       traffic: devices.map((d) => ({ deviceId: d.deviceId, ...(this.trafficOf(d.deviceId) || {}) })),
     };
+  }
+
+  /**
+   * Соединение данных удалённого держателя закрылось, а аренда осталась.
+   *
+   * Для USB/IP соединение живёт ровно столько, сколько устройство подключено
+   * у клиента: закрылось — устройства у него в системе больше нет, что бы ни
+   * думало его приложение. Даём время на переподключение (по длине аренды),
+   * потом освобождаем — как для сетевой карты, у которой разбирается путь,
+   * когда держатель отключился. Если клиент жив, его очередная проверка связи
+   * получит «право отозвано», и он сам отцепится и сообщит об этом.
+   */
+  onDataClosed(deviceId) {
+    const claim = this.claims.get(deviceId);
+    if (!claim || claim.mode !== CLAIM_MODE.REMOTE) return;
+    this.onDataOpened(deviceId);
+    const timer = setTimeout(() => {
+      this.dataTimers.delete(deviceId);
+      if (this.claims.get(deviceId) !== claim) return;      // уже освобождено или занято заново
+      if (this.dataConnections(deviceId) > 0) return;       // переподключился
+      log.warn(`держатель "${claim.holderName}" отключил ${deviceId}, а аренда осталась — освобождаем`);
+      this.release(claim.groupId ? `group:${claim.groupId}` : deviceId, claim.holderId, { force: true })
+        .catch((e) => log.error('автоосвобождение не удалось:', e.message));
+    }, this.config.get('claimLeaseMs'));
+    timer.unref?.();
+    this.dataTimers.set(deviceId, timer);
+  }
+
+  /** Соединение вернулось (или аренду сняли): таймер больше не нужен. */
+  onDataOpened(deviceId) {
+    const t = this.dataTimers.get(deviceId);
+    if (t) {
+      clearTimeout(t);
+      this.dataTimers.delete(deviceId);
+    }
   }
 
   async release(target, holderId, { force = false } = {}) {
@@ -488,10 +535,25 @@ export class ShareManager extends EventEmitter {
         throw errWith('forbidden', `устройство занято узлом "${claim.holderName}"`);
       }
       this.claims.delete(dev.deviceId);
+      this.onDataOpened(dev.deviceId);
       released++;
 
+      // Клиент мог пропасть, не закрыв соединение (питание, кабель): с точки
+      // зрения TCP оно живо, и usbipd считает устройство подключённым. Рвём
+      // его сами - тогда usbipd получает чистое отключение, и устройство
+      // освобождается до возврата системе, а не по таймауту через минуты.
+      const dropped = this.dropData(dev.deviceId);
+      if (dropped) log.info(`${dev.deviceId}: оборвано соединений данных: ${dropped}`);
+
       try {
-        await this.hub.unbind(dev);
+        try {
+          await this.hub.unbind(dev);
+        } catch (first) {
+          // Вторая попытка: драйвер мог ещё не успеть увидеть разрыв.
+          log.debug(`возврат ${dev.deviceId}: первая попытка не удалась (${first.message}), повторяю`);
+          await new Promise((r) => setTimeout(r, 2000));
+          await this.hub.unbind(dev);
+        }
         dev.bindState = BIND_STATE.UNBOUND;
         dev.stateStamp = Date.now();
         dev.lastError = null;
@@ -627,6 +689,16 @@ export class ShareManager extends EventEmitter {
     let changed = false;
 
     for (const [deviceId, claim] of this.claims) {
+      // Держатель молчит: проверка связи идёт каждые 10 с, а тишина дольше половины
+      // аренды - это уже не потерянный пакет. Говорим об этом заранее, а не
+      // только когда аренда истекла; интерфейс владельца показывает то же.
+      const silentFor = now - (claim.renewedAt || claim.since);
+      if (claim.mode === CLAIM_MODE.REMOTE && !claim.silentWarned && claim.expiresAt > now
+        && silentFor > this.config.get('claimLeaseMs') / 2) {
+        claim.silentWarned = true;
+        log.warn(`держатель "${claim.holderName}" не отвечает ${Math.round(silentFor / 1000)} с - ${deviceId} освободится через ${Math.max(0, Math.round((claim.expiresAt - now) / 1000))} с, если связь не вернётся`);
+        changed = true;
+      }
       if (claim.expiresAt > now) continue;
       log.warn(`аренда ${deviceId} узлом "${claim.holderName}" истекла — освобождаем`);
       this.release(claim.groupId ? `group:${claim.groupId}` : deviceId, claim.holderId, { force: true })
@@ -673,7 +745,7 @@ export class ShareManager extends EventEmitter {
       hasTransport: dev.hasTransport,
       shared: Boolean(dev.shared),
       bindState: dev.bindState,
-      claim: claim ? { ...claim } : null,
+      claim: claim ? { ...claim, holderSilentMs: claim.mode === CLAIM_MODE.REMOTE ? Date.now() - (claim.renewedAt || claim.since) : 0, leaseMs: this.config.get('claimLeaseMs') } : null,
       reservedFor: reserved && reserved.until > Date.now() ? { ...reserved } : null,
       groupId: group ? group.id : null,
       groupName: group ? group.name : null,

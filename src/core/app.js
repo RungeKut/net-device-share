@@ -165,6 +165,9 @@ export class App extends EventEmitter {
       // её кадры не идут.
       trafficOf: (deviceId) => this.net?.statsFor(deviceId) || this.traffic?.statsFor(deviceId) || null,
       trafficBegin: (deviceId) => this.traffic?.begin(deviceId),
+      // Освободили устройство, а клиент молчит - рвём его соединение с usbipd.
+      dropData: (deviceId) => this.traffic?.dropDevice(deviceId) || 0,
+      dataConnections: (deviceId) => this.traffic?.pairs.get(deviceId)?.size || 0,
     });
     this.attach = new AttachManager({
       backend: this.backend,
@@ -686,6 +689,10 @@ export class App extends EventEmitter {
     try {
       await proxy.start();
       proxy.on('changed', () => this.api?.pushState());
+      // Закрытие соединения не нами (клиент отцепил или пропал) запускает
+      // отсчёт: если не вернётся, аренда освободится (shareManager.onDataClosed).
+      proxy.on('device-opened', ({ deviceId }) => this.share?.onDataOpened(deviceId));
+      proxy.on('device-closed', ({ deviceId, dropped }) => { if (!dropped) this.share?.onDataClosed(deviceId); });
       // Отказ уже работающего счётчика не должен ронять приложение: просто
       // перестаём считать. Клиенты, уже получившие порт, доработают сеанс.
       proxy.on('failed', (err) => {

@@ -614,7 +614,7 @@ function renderMine() {
     const status = d.preparing && !d.claim
       ? '<span class="pill warn">готовится к выдаче…</span>'
       : d.claim
-      ? `<span class="pill busy">занято: ${esc(d.claim.holderName)} · ${esc(since(d.claim.since))}</span>`
+      ? `<span class="pill busy">занято: ${esc(d.claim.holderName)} · ${esc(since(d.claim.since))}</span>${silentHolderPill(d.claim)}`
       : d.shared ? '<span class="pill free">опубликовано, свободно</span>'
         : '<span class="pill plain">не опубликовано</span>';
 
@@ -1515,4 +1515,15 @@ function renderUpdateStatusLine() {
   if (u.previous) parts.push(`Предыдущая версия ${u.previous} сохранена для отката.`);
   line.textContent = parts.join(' ');
   $('#setUpdateMode').disabled = !u.supported;
+}
+
+/**
+ * Держатель устройства перестал отвечать (выключили, пропала сеть). Владелец
+ * видит, что устройство вот-вот освободится само, а не «занято навсегда».
+ */
+function silentHolderPill(claim) {
+  if (!claim || !claim.holderSilentMs || !claim.leaseMs) return '';
+  if (claim.holderSilentMs < claim.leaseMs / 2) return '';
+  const left = Math.max(0, Math.round((claim.expiresAt - Date.now()) / 1000));
+  return ` <span class="pill warn" title="Держатель не присылает проверку связи. Если связь не вернётся, аренда кончится и устройство освободится само.">держатель не отвечает ${Math.round(claim.holderSilentMs / 1000)} с · освободится через ${left} с</span>`;
 }

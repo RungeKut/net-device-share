@@ -55,6 +55,8 @@ export class TrafficProxy extends EventEmitter {
     /** @type {Map<string, object>} deviceId → счётчики */
     this.counters = new Map();
     this.sockets = new Set();
+    /** @type {Map<string, Set<object>>} deviceId → открытые соединения */
+    this.pairs = new Map();
     this.tickTimer = null;
   }
 
@@ -141,6 +143,12 @@ export class TrafficProxy extends EventEmitter {
     // паузу 40–200 мс на каждый обмен: прошивка JTAG падает до сотен байт/с.
     client.setNoDelay(true);
 
+    // Проверка связи на уровне TCP. Клиент, у которого пропало питание или
+    // сеть, не присылает ни FIN, ни RST: без keepalive такое соединение
+    // «висит» часами, а usbipd всё это время считает устройство подключённым.
+    // С ним мёртвый клиент обнаруживается за десятки секунд.
+    client.setKeepAlive(true, 10000);
+
     this.sockets.add(client);
     client.on('close', () => this.sockets.delete(client));
     client.on('error', (e) => log.debug(`клиентский сокет: ${e.message}`));
@@ -149,6 +157,7 @@ export class TrafficProxy extends EventEmitter {
     const head = [];
     let headLen = 0;
     let deviceId = null;
+    let pair = null;   // запись о соединении, когда стало известно устройство
 
     const upstream = net.connect(this.targetPort, '127.0.0.1');
     upstream.setNoDelay(true);
@@ -188,6 +197,10 @@ export class TrafficProxy extends EventEmitter {
             c.ringIn[c.slot] += headLen;
             c.lastActivity = Date.now();
             log.debug(`соединение ${from} → ${deviceId}`);
+            pair = { deviceId, from, client, upstream, dropped: false };
+            if (!this.pairs.has(deviceId)) this.pairs.set(deviceId, new Set());
+            this.pairs.get(deviceId).add(pair);
+            this.emit('device-opened', { deviceId, from });
             this.emit('changed');
           } else {
             // Неизвестный протокол — просто пересылаем, не считая:
@@ -212,11 +225,49 @@ export class TrafficProxy extends EventEmitter {
 
     // Закрытие любой стороны закрывает обе: висящая половина соединения
     // выглядела бы для драйвера как работающее устройство.
-    const close = () => { client.destroy(); upstream.destroy(); };
+    let announced = false;
+    const close = () => {
+      client.destroy();
+      upstream.destroy();
+      if (pair && !announced) {
+        announced = true;
+        const set = this.pairs.get(pair.deviceId);
+        set?.delete(pair);
+        if (set && !set.size) this.pairs.delete(pair.deviceId);
+        // Соединение устройства закрылось: сообщаем, кто его закрыл — мы сами
+        // (освобождение аренды) или другая сторона (клиент пропал или отцепил).
+        log.info(`соединение ${pair.deviceId} с ${pair.from} закрыто${pair.dropped ? ' владельцем' : ''}`);
+        this.emit('device-closed', { deviceId: pair.deviceId, from: pair.from, dropped: pair.dropped });
+      }
+    };
     client.on('end', close);
     upstream.on('end', close);
     client.on('close', close);
     upstream.on('close', close);
+  }
+
+  /**
+   * Оборвать все соединения устройства.
+   *
+   * Нужно, когда аренда кончилась, а клиент молчит: его соединение с usbipd
+   * могло остаться «живым» с точки зрения TCP, и usbipd считал бы устройство
+   * подключённым к тому, кого уже нет. Разрыв со стороны владельца даёт
+   * usbipd чистый сигнал отключения — устройство освобождается до того, как
+   * мы вернём его системе, и следующему держателю не придётся ждать, пока
+   * соединение умрёт по таймауту.
+   * @returns {number} сколько соединений оборвано
+   */
+  dropDevice(deviceId) {
+    const set = this.pairs.get(deviceId);
+    if (!set || !set.size) return 0;
+    let n = 0;
+    for (const p of [...set]) {
+      p.dropped = true;
+      try { p.client.destroy(); } catch { /* уже закрыт */ }
+      try { p.upstream.destroy(); } catch { /* уже закрыт */ }
+      n++;
+    }
+    return n;
   }
 
   /**
