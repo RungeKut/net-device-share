@@ -37,6 +37,7 @@ export class PeerRegistry extends EventEmitter {
     this.peers = new Map();
     this.sweepTimer = null;
     this.pollTimer = null;
+    this.trafficTimer = null;
     this.inflight = new Set();
     this.pinging = new Set();
   }
@@ -45,12 +46,31 @@ export class PeerRegistry extends EventEmitter {
     this.sweepTimer = setInterval(() => this._sweep(), 2000);
     this.sweepTimer.unref?.();
     this._scheduleRemotePoll();
+    // Скорость обмена у соседей. Точные байты в хеш состояния не входят (они меняются
+    // каждую секунду, и соседи перечитывали бы состояние без остановки), а значит,
+    // пока у узла ничего не меняется, наша копия его устройств не обновлялась бы и
+    // показывала скорость на момент последнего изменения — например, 320 байт в минуту
+    // у флешки, с которой уже копируют гигабайты. Поэтому узлы, у которых есть занятые
+    // устройства, перечитываем сами, часто: нагрузка — один небольшой запрос на занятый узел.
+    const every = Number(process.env.NDS_TRAFFIC_REFRESH_MS) || this.opts.trafficRefreshMs || 5000;
+    this.trafficTimer = setInterval(() => this._refreshBusy(), every);
+    this.trafficTimer.unref?.();
     return this;
   }
 
   stop() {
     clearInterval(this.sweepTimer);
+    clearInterval(this.trafficTimer);
     clearTimeout(this.pollTimer);
+  }
+
+  /** Перечитать состояние узлов, у которых что-то занято: только у них меняется скорость. */
+  _refreshBusy() {
+    for (const peer of this.peers.values()) {
+      if (!peer.online) continue;
+      const busy = (peer.devices || []).some((d) => d.claim) || (peer.busyCount || 0) > 0;
+      if (busy) this.refreshPeerState(peer, null).catch(() => {});
+    }
   }
 
   /** Применить новый период опроса, не дожидаясь конца текущего ожидания. */
