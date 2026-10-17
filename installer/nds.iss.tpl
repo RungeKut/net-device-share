@@ -38,7 +38,8 @@ OutputBaseFilename=net-device-share-setup-@@VERSION@@
 Compression=lzma2/ultra
 SolidCompression=yes
 WizardStyle=modern
-UninstallDisplayIcon={app}\node.exe
+SetupIconFile=@@SOURCE@@\launcher\nds.ico
+UninstallDisplayIcon={app}\launcher\nds.ico
 UninstallDisplayName={#AppName}
 SetupLogging=yes
 CloseApplications=no
@@ -63,8 +64,12 @@ Source: "@@SOURCE@@\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs
 Source: "{srcexe}"; DestDir: "{app}\download"; DestName: "net-device-share-setup-@@VERSION@@.exe"; Flags: external ignoreversion
 
 [Icons]
-Name: "{autoprograms}\{#AppName}"; Filename: "{app}\start.bat"; WorkingDir: "{app}"; IconFilename: "{app}\node.exe"
-Name: "{autodesktop}\{#AppName}"; Filename: "{app}\start.bat"; WorkingDir: "{app}"; IconFilename: "{app}\node.exe"; Tasks: desktopicon
+; Ярлыки открывают интерфейс; если приложение не запущено - запускают его без окна
+; консоли. Второй экземпляр не стартует (launcher\open.vbs).
+Name: "{autoprograms}\{#AppName}"; Filename: "{sys}\wscript.exe"; Parameters: """{app}\launcher\open.vbs"""; WorkingDir: "{app}"; IconFilename: "{app}\launcher\nds.ico"
+Name: "{autodesktop}\{#AppName}"; Filename: "{sys}\wscript.exe"; Parameters: """{app}\launcher\open.vbs"""; WorkingDir: "{app}"; IconFilename: "{app}\launcher\nds.ico"; Tasks: desktopicon
+; Для отладки: то же приложение, но с окном консоли и видимым журналом.
+Name: "{autoprograms}\{#AppName} (с окном консоли)"; Filename: "{app}\start.bat"; WorkingDir: "{app}"; IconFilename: "{app}\launcher\nds.ico"
 
 [Run]
 ; Данные доступны только SYSTEM и администраторам: там ключи сети и пароль интерфейса.
@@ -74,7 +79,7 @@ Filename: "{app}\node.exe"; Parameters: """{app}\launcher\supervisor.mjs"" --ado
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""Net Device Share (UDP)"" dir=in action=allow program=""{app}\node.exe"" protocol=UDP localport=47811 profile=domain,private"; Flags: runhidden; Tasks: firewall; StatusMsg: "Правила брандмауэра..."
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""Net Device Share (TCP)"" dir=in action=allow program=""{app}\node.exe"" protocol=TCP localport=47812-47814 profile=domain,private"; Flags: runhidden; Tasks: firewall
 Filename: "{app}\node.exe"; Parameters: """{app}\app\@@VERSION@@\src\main.js"" --autostart enable"; Flags: runhidden; Tasks: autostart; StatusMsg: "Автозапуск..."
-Filename: "{app}\start.bat"; Description: "Запустить {#AppName}"; Flags: postinstall nowait skipifsilent shellexec
+Filename: "{sys}\wscript.exe"; Parameters: """{app}\launcher\open.vbs"""; Description: "Запустить {#AppName}"; Flags: postinstall nowait skipifsilent
 
 [UninstallRun]
 Filename: "{app}\node.exe"; Parameters: """{app}\launcher\supervisor.mjs"" --stop"; Flags: runhidden; RunOnceId: "NdsStop"

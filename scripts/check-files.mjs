@@ -71,6 +71,14 @@ for (const file of walk(ROOT, '.bat')) {
     'в файле нет вызова main.js, supervisor.mjs или build-installer.mjs — похоже, он обрезан при перекодировке');
 }
 
+// --- скрипты Windows Script Host: UTF-16 LE с BOM ---
+// WSH не читает UTF-8: кириллица в сообщениях превращается в мусор.
+for (const file of walk(ROOT, '.vbs')) {
+  const buf = fs.readFileSync(file);
+  check(`${rel(file)}: UTF-16 LE с BOM`, buf[0] === 0xff && buf[1] === 0xfe,
+    'без BOM UTF-16 Windows Script Host читает файл как ANSI');
+}
+
 // --- скрипты PowerShell: UTF-8 с BOM ---
 for (const file of walk(ROOT, '.ps1')) {
   const buf = fs.readFileSync(file);

@@ -19,6 +19,7 @@
 // Состояние — <каталог настроек>/update/state.json; код — <база>/app/<версия>/.
 
 import { spawn } from 'node:child_process';
+import http from 'node:http';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -32,6 +33,8 @@ import {
 } from './lib/layout.js';
 
 export const RESTART_EXIT_CODE = 75;
+/** Приложение уже работает: второй экземпляр не запускаем, открываем интерфейс первого. */
+export const ALREADY_RUNNING_EXIT_CODE = 77;
 const HEALTH_TIMEOUT_MS = Number(process.env.NDS_HEALTH_TIMEOUT_MS) || 120000;
 const MAX_TRIAL_ATTEMPTS = 2;
 const BACKOFF_MS = [5000, 30000, 120000];
@@ -73,7 +76,9 @@ function migrateLegacyConfig() {
     fs.copyFileSync(legacy, target);
     say(`настройки перенесены из ${legacy}`);
   } catch (e) {
-    say(`настройки перенести не удалось: ${e.message}`);
+    // Без прав администратора каталог данных недоступен на запись: это не ошибка,
+    // перенос сделает запуск с правами (так бывает у проверок вроде --status).
+    if (!['EPERM', 'EACCES'].includes(e.code)) say(`настройки перенести не удалось: ${e.message}`);
   }
 }
 const KEYS = trustedKeys();
@@ -346,7 +351,53 @@ function launch(choice, appArgs) {
   });
 }
 
+/** Порт интерфейса: из параметра запуска, затем из настроек, иначе стандартный. */
+function wantedApiPort() {
+  const i = argv.indexOf('--api-port');
+  if (i >= 0 && /^\d+$/.test(argv[i + 1] || '')) return Number(argv[i + 1]);
+  try {
+    const cfg = JSON.parse(fs.readFileSync(path.join(HOME, 'config.json'), 'utf8'));
+    if (Number.isInteger(cfg.apiPort)) return cfg.apiPort;
+  } catch { /* настроек ещё нет */ }
+  return 47812;
+}
+
+/**
+ * Отвечает ли на этом порту наше приложение. Без этой проверки второй запуск
+ * (ярлык, повторный двойной клик) падал бы на занятом порту, а лаунчер
+ * перезапускал бы его каждые 5 секунд без конца.
+ */
+function probeRunning(port) {
+  return new Promise((resolve) => {
+    const req = http.get({ host: '127.0.0.1', port, path: '/api/v1/session', timeout: 1500 }, (res) => {
+      let body = '';
+      res.on('data', (d) => { body += d; });
+      res.on('end', () => resolve(res.statusCode === 200 && body.includes('passwordRequired')));
+    });
+    req.on('timeout', () => req.destroy());
+    req.on('error', () => resolve(false));
+  });
+}
+
+function openUrl(url) {
+  const [cmd, args] = process.platform === 'win32' ? ['explorer.exe', [url]]
+    : process.platform === 'darwin' ? ['open', [url]] : ['xdg-open', [url]];
+  try {
+    const c = spawn(cmd, args, { stdio: 'ignore', detached: true });
+    c.on('error', () => {});
+    c.unref();
+  } catch { /* браузер не открылся — адрес уже напечатан */ }
+}
+
 async function main() {
+  const port = wantedApiPort();
+  if (await probeRunning(port)) {
+    const url = `http://127.0.0.1:${port}/`;
+    say(`приложение уже запущено — второй экземпляр не нужен. Интерфейс: ${url}`);
+    if (!argv.includes('--no-open')) openUrl(url);
+    return ALREADY_RUNNING_EXIT_CODE;
+  }
+
   // Ctrl+C в консоли получают оба процесса. Приложение завершится само,
   // а мы дождёмся его выхода и выйдем следом — но не перезапустим.
   process.on('SIGINT', () => { stopping = true; });
