@@ -1,6 +1,6 @@
 {
   "name": "net-device-share",
-  "version": "2.1.2",
+  "version": "2.1.3",
   "description": "Совместный доступ к USB, COM, LPT и сетевым интерфейсам по сети: каталог, группы, учёт занятости и запросы",
   "type": "module",
   "main": "src/main.js",
