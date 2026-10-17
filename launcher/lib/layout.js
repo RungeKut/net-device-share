@@ -68,6 +68,8 @@ export function defaultState() {
     attempts: 0,             // неудачные пробные запуски pending
     highestInstalled: null,  // выше этой версии по сети можно, ниже — нельзя
     bad: {},                 // "<версия>|<sha8>" → { reason, at }: на такие не обновляться
+    committedAt: null,       // когда текущая версия подтверждена: свежая версия подозрительнее старой
+    rollbackRequest: null,   // просьба приложения откатиться (кнопка «Откатить»): { reason, at }
     configSnapshot: false,   // сняли ли копию config.json перед пробой
     trialSince: null,
   };

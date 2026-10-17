@@ -934,9 +934,10 @@ document.addEventListener('click', (ev) => {
     openGroupDialog(state.localGroups.find((g) => g.id === t.dataset.editGroup));
   } else if (t.dataset.update) {
     const act = t.dataset.update;
+    if (act === 'rollback' && !confirm('Откатиться на предыдущую версию? Приложение перезапустится, подключения к устройствам оборвутся, а нынешняя версия будет помечена плохой на этом компьютере.')) return;
     if (act === 'restart' && !confirm('Перезапустить приложение сейчас? Подключения к устройствам, которые вы занимаете или отдаёте, оборвутся.')) return;
     action(t, () => post(`/api/v1/update/${act}`, act === 'approve' ? { version: t.dataset.version } : {}),
-      act === 'restart' ? 'Перезапуск…' : null);
+      act === 'restart' ? 'Перезапуск…' : act === 'rollback' ? 'Откат…' : null);
   } else if (t.dataset.driver) {
     const [id, deviceId] = splitLast(t.dataset.driver);
     openDriverDialog(id, deviceId);
@@ -1502,7 +1503,8 @@ const UPDATE_PHASES = {
 function renderUpdate() {
   const bar = $('#updateBar');
   const u = state.update;
-  const info = u && UPDATE_PHASES[u.phase];
+  const warnRunning = u && u.reportedRunning;
+  const info = (u && UPDATE_PHASES[u.phase]) || (warnRunning ? ['Версия сообщена как испорченная', 'err'] : null);
   if (!u || !info) { bar.hidden = true; return; }
 
   const ver = u.installer?.version || u.candidate?.version || u.staged?.version || '';
@@ -1515,6 +1517,10 @@ function renderUpdate() {
       btns.push('<button class="btn small danger" data-update="restart">Перезапустить сейчас</button>');
     }
     if (u.phase === 'error') btns.push('<button class="btn small" data-update="retry">Повторить</button>');
+    // Соседи сообщают, что работающая у нас версия испорчена: откатить можно вручную.
+    if (warnRunning && u.canRollback) {
+      btns.push(`<button class="btn small danger" data-update="rollback">Откатить на ${esc(u.previous)}</button>`);
+    }
   }
   // Ссылка открыта и без права правки: скачать файл может любой, ставить — тот, кто за машиной.
   if (u.phase === 'needs-installer') {
@@ -1522,6 +1528,9 @@ function renderUpdate() {
       ? `<a class="btn small primary" href="${esc(u.installer.url)}" target="_blank" rel="noopener">Скачать установщик у «${esc(u.installer.from)}»</a>`
       : '<span class="banner-hint">Ни у одного из соседей нет установщика для раздачи — возьмите его у администратора.</span>');
   }
+  const running = warnRunning
+    ? `<p class="banner-hint"><b>Внимание:</b> ${warnRunning.nodes.map((n) => `«${esc(n)}»`).join(', ')} сообщают, что установленная здесь версия ${esc(warnRunning.version)} испорчена${warnRunning.reasons.length ? `: ${esc(warnRunning.reasons.join('; '))}` : ''}. Если у вас всё работает, можно ничего не делать; если нет — откатитесь на предыдущую.</p>`
+    : '';
   const failed = (u.failed || []).length
     ? `<p class="banner-hint">Не прошли проверку на этом компьютере: ${u.failed.map((f) => `${esc(f.version)} (${esc(f.reason)})`).join('; ')}.</p>` : '';
 
@@ -1529,6 +1538,7 @@ function renderUpdate() {
   bar.innerHTML = `<b>${esc(info[0])}${ver ? ` — версия ${esc(ver)}` : ''}</b>
     ${u.message ? `<p class="banner-hint">${esc(u.message)}</p>` : ''}
     ${u.phase === 'waiting' && u.waiting?.length ? `<ul>${u.waiting.map((w) => `<li>${esc(w)}</li>`).join('')}</ul>` : ''}
+    ${running}
     ${btns.length ? `<div class="banner-actions">${btns.join('')}</div>` : ''}${failed}`;
   bar.hidden = false;
 }
@@ -1544,6 +1554,11 @@ function renderUpdateStatusLine() {
   if (u.previous) parts.push(`Предыдущая версия ${u.previous} сохранена для отката.`);
   line.textContent = parts.join(' ');
   $('#setUpdateMode').disabled = !u.supported;
+  const rb = $('#btnRollback');
+  if (rb) {
+    rb.hidden = !(u.supported && u.canRollback && canEdit());
+    rb.textContent = `Откатить на версию ${u.previous || ''}`;
+  }
 }
 
 /**

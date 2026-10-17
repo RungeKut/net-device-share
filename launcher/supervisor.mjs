@@ -37,7 +37,19 @@ export const RESTART_EXIT_CODE = 75;
 export const ALREADY_RUNNING_EXIT_CODE = 77;
 const HEALTH_TIMEOUT_MS = Number(process.env.NDS_HEALTH_TIMEOUT_MS) || 120000;
 const MAX_TRIAL_ATTEMPTS = 2;
-const BACKOFF_MS = [5000, 30000, 120000];
+// Паузы между падениями и порог «петли падений» можно менять переменными окружения - для проверок.
+const BACKOFF_MS = (process.env.NDS_BACKOFF_MS || '5000,30000,120000').split(',').map(Number).filter(Number.isFinite);
+/** Столько падений за окно времени у подтверждённой версии - и это уже не случайность, а испорченная версия. */
+const CRASH_LIMIT = Number(process.env.NDS_CRASH_LIMIT) || 3;
+const CRASH_WINDOW_MS = Number(process.env.NDS_CRASH_WINDOW_MS) || 5 * 60 * 1000;
+/**
+ * Откат по падениям - только для недавно подтверждённой версии. Версия, которая
+ * работала сутки, а потом упала, чаще страдает от окружения (диск, память), чем от
+ * собственной ошибки, и менять её на старую по тройке падений было бы ошибкой.
+ */
+const FRESH_VERSION_MS = (Number(process.env.NDS_FRESH_HOURS) || 24) * 3600 * 1000;
+/** Падения из-за окружения (порт занят, нет места, нет прав) к испорченной версии не относятся. */
+const ENVIRONMENTAL = /EADDRINUSE|EACCES|EPERM|ENOSPC|ENOMEM|EMFILE/;
 
 const BASE = process.env.NDS_BASE
   ? path.resolve(process.env.NDS_BASE)
@@ -261,12 +273,59 @@ function restoreConfigSnapshot() {
   updateState(HOME, (s) => { s.configSnapshot = false; return s; });
 }
 
+/**
+ * Откат ПОДТВЕРЖДЁННОЙ версии на предыдущую.
+ *
+ * Пробный запуск ловит только то, что ломается сразу. Версия, которая прошла
+ * его и сломалась позже, раньше крутилась бы в петле «упала — перезапустилась»
+ * вечно. Теперь, если у подтверждённой версии подряд несколько падений, лаунчер
+ * сам возвращает предыдущую, а эту помечает плохой на этом узле. Версия остаётся
+ * «выше установленной» (highestInstalled не снижается), поэтому по сети её уже не
+ * поставят заново; исправление должно быть новее.
+ *
+ * config.json не откатывается: снимок живёт только на время пробного запуска, а
+ * позже пользователь мог менять настройки — затирать их старой копией хуже.
+ */
+function rollbackCommitted(reason) {
+  const st = readState(HOME);
+  const from = st.current;
+  const to = st.previous;
+  if (!from || !to || from === to) {
+    say(`откатить подтверждённую версию ${from || '?'} некуда: предыдущей нет`);
+    return false;
+  }
+  let check = verifyInstalled(BASE, to, KEYS);
+  if (!check.ok) {
+    try {
+      restoreFromArchive(BASE, to, KEYS);
+      check = verifyInstalled(BASE, to, KEYS);
+    } catch { /* ниже */ }
+  }
+  if (!check.ok) {
+    say(`откат невозможен: предыдущая версия ${to} непригодна (${check.reason})`);
+    return false;
+  }
+  updateState(HOME, (x) => {
+    x.bad[badKey(from, '')] = { reason, at: new Date().toISOString(), committed: true };
+    x.current = to;
+    x.previous = null;
+    x.pending = null;
+    x.attempts = 0;
+    x.configSnapshot = false;
+    x.rollbackRequest = null;
+    return x;
+  });
+  say(`ОТКАТ: подтверждённая версия ${from} признана плохой (${reason}); возвращаю ${to}`);
+  return true;
+}
+
 function commitTrial(version, manifest) {
   updateState(HOME, (s) => {
     s.previous = s.current && s.current !== version ? s.current : s.previous;
     s.current = version;
     s.pending = null;
     s.attempts = 0;
+    s.committedAt = Date.now();
     s.configSnapshot = false;
     if (!s.highestInstalled || compareVersions(version, s.highestInstalled) > 0) s.highestInstalled = version;
     return s;
@@ -313,7 +372,7 @@ function launch(choice, appArgs) {
       // Рабочий каталог — каталог данных: каталог версии нельзя ни удалить,
       // ни переименовать, пока в нём работает процесс (Windows).
       cwd: HOME,
-      stdio: ['inherit', 'inherit', 'inherit', 'ipc'],
+      stdio: ['inherit', 'inherit', 'pipe', 'ipc'],
       env: {
         ...process.env,
         NDS_BASE: BASE,
@@ -321,6 +380,13 @@ function launch(choice, appArgs) {
         NDS_SUPERVISED: '1',
         NDS_RUNNING_VERSION: version,
       },
+    });
+    // Сообщения об ошибках остаются на экране, а хвост запоминаем: по нему отличаем
+    // падение из-за окружения от падения самой версии.
+    let stderrTail = '';
+    child.stderr.on('data', (d) => {
+      process.stderr.write(d);
+      stderrTail = (stderrTail + d).slice(-4000);
     });
 
     child.on('message', (m) => {
@@ -346,7 +412,7 @@ function launch(choice, appArgs) {
     child.on('exit', (code, signal) => {
       clearTimeout(healthTimer);
       child = null;
-      resolve({ code, signal, healthy, ranMs: Date.now() - started, killedForHealth });
+      resolve({ code, signal, healthy, ranMs: Date.now() - started, killedForHealth, stderrTail });
     });
   });
 }
@@ -416,7 +482,18 @@ async function main() {
   flagTimer.unref();
 
   let crashes = 0;
+  const crashTimes = [];
   for (;;) {
+    // Просьба приложения откатиться (кнопка в интерфейсе): выполняем до выбора версии.
+    const asked = readState(HOME).rollbackRequest;
+    if (asked) {
+      if (!rollbackCommitted(asked.reason || 'по просьбе пользователя')) {
+        updateState(HOME, (x) => { x.rollbackRequest = null; return x; });
+      }
+      crashTimes.length = 0;
+      crashes = 0;
+    }
+
     const choice = chooseLaunch();
     if (!choice) {
       // Раскладки нет — запуск «из исходников» или старый комплект: код лежит в базе.
@@ -452,7 +529,24 @@ async function main() {
       continue;
     }
 
-    // Упала стабильная версия: пауза нарастает, чтобы не крутиться впустую.
+    // Упала подтверждённая версия. Несколько падений подряд - откат на предыдущую.
+    const now = Date.now();
+    const environmental = ENVIRONMENTAL.test(r.stderrTail || '');
+    if (!environmental) crashTimes.push(now);
+    while (crashTimes.length && now - crashTimes[0] > CRASH_WINDOW_MS) crashTimes.shift();
+    const committedAt = readState(HOME).committedAt;
+    const fresh = !committedAt || now - committedAt < FRESH_VERSION_MS;
+    if (environmental) say('падение похоже на проблему окружения (порт, права, место) — версию не винить');
+    if (crashTimes.length >= CRASH_LIMIT && fresh && !choice.adopt) {
+      const reason = `упала ${crashTimes.length} раза(з) за ${Math.round(CRASH_WINDOW_MS / 60000)} мин, последний код ${r.code ?? r.signal}`;
+      if (rollbackCommitted(reason)) {
+        crashTimes.length = 0;
+        crashes = 0;
+        continue;
+      }
+    }
+
+    // Откатиться некуда (или версия первая): пауза нарастает, чтобы не крутиться впустую.
     crashes = r.ranMs > 300000 ? 0 : crashes + 1;
     const wait = BACKOFF_MS[Math.min(crashes - 1, BACKOFF_MS.length - 1)] ?? BACKOFF_MS.at(-1);
     say(`приложение завершилось с кодом ${r.code ?? r.signal}; перезапуск через ${Math.round(wait / 1000)} с`);

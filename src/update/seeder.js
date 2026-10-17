@@ -24,7 +24,9 @@ export class Seeder {
    * @param {Array}  o.keys       доверенные ключи
    * @param {number} [o.slots]    одновременных скачиваний
    */
-  constructor({ base, keys, slots = 2 }) {
+  constructor({ base, keys, slots = 2, isBad = null }) {
+    /** (версия) → true: соседи сообщили, что версия испорчена, — её не раздаём. */
+    this.isBad = isBad;
     this.base = base;
     this.keys = keys;
     this.slots = slots;
@@ -57,6 +59,7 @@ export class Seeder {
     }
     for (const n of names) {
       if (!lib.semver.isVersion(n)) continue;
+      if (this.isBad?.(n)) continue;
       if (best && lib.semver.compareVersions(n, best) <= 0) continue;
       best = n;
     }
