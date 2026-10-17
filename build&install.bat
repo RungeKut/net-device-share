@@ -11,8 +11,11 @@ rem       обновляться по сети).
 rem    4. Собирает установщик: dist\installer\net-device-share-setup-X.exe
 rem    5. Запускает установку (Windows спросит права администратора).
 rem
-rem  Параметр:
+rem  Параметры:
 rem      --no-install   собрать установщик, но не запускать его
+rem      --silent       тихая установка без окон мастера: автозапуск, правила
+rem                     брандмауэра и ярлык на рабочем столе, затем запуск
+rem                     программы (Windows всё равно спросит права администратора)
 rem  Переменная NDS_NOPAUSE=1 убирает паузу в конце (для автоматического запуска).
 rem
 rem  Установленной программе Node.js не нужен: node.exe едет в комплекте.
@@ -35,7 +38,11 @@ for /f "tokens=2 delims=:" %%c in ('chcp') do call :save_cp %%c
 if not "%ORIG_CP%"=="866" chcp 866 >nul
 
 set "NO_INSTALL="
-if /i "%~1"=="--no-install" set "NO_INSTALL=1"
+set "SILENT="
+for %%a in (%*) do (
+  if /i "%%~a"=="--no-install" set "NO_INSTALL=1"
+  if /i "%%~a"=="--silent" set "SILENT=1"
+)
 
 echo.
 echo   Net Device Share - сборка и установка
@@ -181,10 +188,32 @@ if defined NO_INSTALL (
   echo   Установка пропущена: указан параметр --no-install.
   goto :done
 )
+if defined SILENT goto :silent_install
 echo   Запускаю установку - подтвердите запрос Windows.
 echo.
 start "" /wait "!SETUP!"
 echo   Установщик завершил работу.
+goto :done
+
+:silent_install
+echo   Тихая установка: автозапуск, правила брандмауэра, ярлык на рабочем столе.
+echo   Подтвердите запрос Windows. Журнал установки: %TEMP%\nds-setup.log
+echo.
+start "" /wait "!SETUP!" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /TASKS="autostart,firewall,desktopicon" /LOG="%TEMP%\nds-setup.log"
+if errorlevel 1 (
+  echo   Установка не удалась, код !ERRORLEVEL!. Подробности: %TEMP%\nds-setup.log
+  goto :fail
+)
+echo   Установлено.
+rem Тихая установка сама программу не запускает - запускаем, как это делает ярлык
+rem (если приложение работает, откроется его интерфейс, второй экземпляр не стартует).
+set "OPEN_VBS=%ProgramFiles%\NetDeviceShare\launcher\open.vbs"
+if exist "!OPEN_VBS!" (
+  echo   Запускаю программу - подтвердите запрос Windows.
+  start "" wscript.exe "!OPEN_VBS!"
+) else (
+  echo   Программа установлена не в стандартный каталог - запустите её ярлыком.
+)
 
 :done
 echo.
