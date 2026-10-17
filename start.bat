@@ -31,6 +31,14 @@ title Net Device Share
 rem Работаем из каталога проекта, а не из того, откуда файл вызвали:
 rem при запуске от администратора рабочим каталогом становится system32.
 cd /d "%~dp0"
+rem Текст этого файла - в CP866. Если консоль сейчас в другой кодовой
+rem странице (437, 1251, 65001...), кириллица превращается в мусор:
+rem запоминаем текущую и на время работы переключаем на 866.
+rem Начальная кодовая страница запоминается и восстанавливается при выходе.
+set "ORIG_CP=866"
+for /f "tokens=2 delims=:" %%c in ('chcp') do call :save_cp %%c
+if not "%ORIG_CP%"=="866" chcp 866 >nul
+
 
 set "APP_ARGS=%*"
 set "SKIP_ADMIN="
@@ -51,20 +59,15 @@ set "NODE_EXE=node"
 if exist "%~dp0node.exe" set "NODE_EXE=%~dp0node.exe"
 
 if "%NODE_EXE%"=="node" (
-  where node >nul 2>&1
-  if errorlevel 1 (
-    echo.
-    echo   Не найден Node.js.
-    echo.
-    echo   Установите версию 20.6 или новее: https://nodejs.org/
-    echo   После установки закройте это окно и запустите файл заново.
-    echo.
-    echo   Либо возьмите переносимый комплект - в нём node.exe уже внутри.
-    echo.
-    pause
-    exit /b 1
+  if exist "%ProgramFiles%\nodejs\node.exe" (
+    set "NODE_EXE=%ProgramFiles%\nodejs\node.exe"
+  ) else (
+    where node >nul 2>&1
+    if errorlevel 1 goto :install_node
   )
 )
+
+:node_found
 
 rem "call" здесь обязателен: если команда в for /f начинается с
 rem кавычки, cmd принимает её за имя программы целиком и поиск файла
@@ -123,6 +126,7 @@ if errorlevel 1 (
   echo   Повышение прав отклонено - продолжаю с обычными правами.
   goto :run_limited
 )
+chcp %ORIG_CP% >nul
 exit /b 0
 
 :run_limited
@@ -159,9 +163,66 @@ if not "%EXIT_CODE%"=="0" (
 )
 echo.
 pause
+chcp %ORIG_CP% >nul
 exit /b %EXIT_CODE%
 
 :trim_cp
 rem Аргумент приходит уже без окружающих пробелов - cmd их съедает сам.
 set "OLD_CP=%~1"
+goto :eof
+
+:install_node
+rem Node.js не найден - ставим его из installers\ (MSI, проверка SHA-256
+rem по manifest.json). Установка требует прав администратора.
+set "NODE_MSI="
+for /f "delims=" %%m in ('powershell -NoProfile -Command "$m=Get-Content -Raw -Encoding UTF8 'installers\manifest.json' | ConvertFrom-Json; $c=$m.components | Where-Object { $_.id -eq 'nodejs' }; $f=Join-Path (Get-Location) ('installers\'+($c.file -replace '/','\')); if ((Test-Path $f) -and ((Get-FileHash $f -Algorithm SHA256).Hash -eq $c.sha256)) { $f }" 2^>nul') do set "NODE_MSI=%%m"
+if not defined NODE_MSI goto :no_node
+
+fltmc >nul 2>&1
+if not errorlevel 1 goto :do_install_node
+if defined SKIP_ADMIN goto :no_node
+if defined NDS_ELEVATED goto :no_node
+
+echo.
+echo   Node.js не найден. Для его установки нужны права администратора.
+echo   Подтвердите запрос Windows.
+echo.
+set "NDS_SELF=%~f0"
+set "NDS_SELF_ARGS=%APP_ARGS%"
+set "NDS_ELEVATED=1"
+powershell -NoProfile -Command "try { if ($env:NDS_SELF_ARGS) { Start-Process -FilePath $env:NDS_SELF -ArgumentList $env:NDS_SELF_ARGS -Verb RunAs -ErrorAction Stop } else { Start-Process -FilePath $env:NDS_SELF -Verb RunAs -ErrorAction Stop }; exit 0 } catch { exit 1 }"
+if errorlevel 1 goto :no_node
+chcp %ORIG_CP% >nul
+exit /b 0
+
+:do_install_node
+echo.
+echo   Устанавливаю Node.js (тихо, это займёт около минуты)...
+msiexec /i "%NODE_MSI%" /qn /norestart
+rem Код 3010 - <нужна перезагрузка>: сам Node при этом установлен.
+if errorlevel 1 if not errorlevel 3010 goto :no_node
+if exist "%ProgramFiles%\nodejs\node.exe" (
+  set "NODE_EXE=%ProgramFiles%\nodejs\node.exe"
+  set "PATH=%PATH%;%ProgramFiles%\nodejs"
+  echo   Node.js установлен.
+  goto :node_found
+)
+goto :no_node
+
+:no_node
+echo.
+echo   Не найден Node.js.
+echo.
+echo   Установите версию 20.6 или новее: https://nodejs.org/
+echo   После установки запустите этот файл заново.
+echo.
+echo   Либо возьмите переносимый комплект - в нём node.exe уже лежит рядом.
+echo.
+pause
+exit /b 1
+
+:save_cp
+rem Номер страницы - последнее слово вывода chcp, без точки и пробелов.
+set "ORIG_CP=%~1"
+set "ORIG_CP=%ORIG_CP:.=%"
 goto :eof
