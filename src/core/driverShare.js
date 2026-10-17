@@ -251,7 +251,7 @@ export class DriverShare {
       if (isStub(meta.provider)) continue;
       found.set(inf, { inf, name: meta.class, provider: meta.provider, version: meta.version, how: 'найден в хранилище по коду устройства' });
     }
-    return [...found.values()];
+    return chooseCandidates([...found.values()]);
   }
 
   // ------------------------------------------------ сторона занявшего
@@ -455,4 +455,26 @@ function shortSigner(subject) {
   if (!subject) return null;
   const cn = String(subject).match(/CN=("[^"]+"|[^,]+)/);
   return (cn ? cn[1] : String(subject)).replace(/^"|"$/g, '');
+}
+
+
+/**
+ * Из найденных пакетов оставить нужные. Ставить все подряд нельзя: по одному
+ * коду устройства в хранилище может лежать несколько версий (и даже разных
+ * драйверов семейства), и старый рядом с новым только мешает.
+ *   — если есть пакеты, уже привязанные к устройству, — только они (это то, что
+ *     у владельца реально работает);
+ *   — иначе — самый свежий по дате из INF.
+ */
+export function chooseCandidates(list) {
+  const bound = list.filter((c) => c.how === 'привязан к устройству');
+  if (bound.length) return bound;
+  if (list.length <= 1) return list;
+  return [[...list].sort((a, b) => versionDate(b.version) - versionDate(a.version))[0]];
+}
+
+/** «3.9.2024.09 (09/16/2024)» → время из даты в скобках (мм/дд/гггг); неизвестно — 0. */
+export function versionDate(version) {
+  const m = /\((\d{1,2})\/(\d{1,2})\/(\d{4})\)/.exec(String(version || ''));
+  return m ? Date.UTC(+m[3], +m[1] - 1, +m[2]) : 0;
 }

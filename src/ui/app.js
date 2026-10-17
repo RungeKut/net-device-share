@@ -938,10 +938,10 @@ document.addEventListener('click', (ev) => {
     action(t, () => post(`/api/v1/update/${act}`, act === 'approve' ? { version: t.dataset.version } : {}),
       act === 'restart' ? 'Перезапуск…' : null);
   } else if (t.dataset.driver) {
-    const [id, deviceId] = t.dataset.driver.split('|');
+    const [id, deviceId] = splitLast(t.dataset.driver);
     openDriverDialog(id, deviceId);
   } else if (t.dataset.heldIp) {
-    const [attachmentId, deviceId] = t.dataset.heldIp.split('|');
+    const [attachmentId, deviceId] = splitLast(t.dataset.heldIp);
     net?.openHeldIp(attachmentId, deviceId);
   }
 });
@@ -1555,4 +1555,16 @@ function silentHolderPill(claim) {
   if (claim.holderSilentMs < claim.leaseMs / 2) return '';
   const left = Math.max(0, Math.round((claim.expiresAt - Date.now()) / 1000));
   return ` <span class="pill warn" title="Держатель не присылает проверку связи. Если связь не вернётся, аренда кончится и устройство освободится само.">держатель не отвечает ${Math.round(claim.holderSilentMs / 1000)} с · освободится через ${left} с</span>`;
+}
+
+
+/**
+ * Разбор «идентификатор занятия|устройство». Сам идентификатор занятия — это
+ * «узел|цель», то есть уже содержит «|», поэтому делить по первому или по всем
+ * разделителям нельзя: устройство — только последний кусок. (Раньше деление по
+ * всем давало вместо занятия один идентификатор узла: «занятие не найдено».)
+ */
+function splitLast(value) {
+  const cut = String(value).lastIndexOf('|');
+  return [String(value).slice(0, cut), String(value).slice(cut + 1)];
 }
