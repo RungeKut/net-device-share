@@ -1,9 +1,15 @@
 @echo off
 rem ===================================================================
-rem  Net Device Share - штатный запуск.
+rem  Net Device Share - ручной запуск (в комплекте и в установке).
 rem
-rem  Запускается двойным кликом. Любые параметры приложения можно
-rem  передать и сюда, например:
+rem  Лежит в корне собранного комплекта и установленной программы, а в
+rem  исходниках - в каталоге scripts. Собрать и поставить программу из
+rem  исходников: build&install.bat в корне проекта.
+rem
+rem  Этот файл ничего не устанавливает: node.exe лежит рядом, драйверы
+rem  USB/IP приложение доустанавливает само при первом запуске. Он только
+rem  запрашивает права администратора и запускает приложение (через
+rem  лаунчер, если он есть). Параметры приложения можно передать сюда:
 rem      start.bat --name "БУХГАЛТЕРИЯ-1" --network 192.168.1.0/24
 rem      start.bat --backend mock
 rem      start.bat --doctor
@@ -28,17 +34,21 @@ rem ===================================================================
 setlocal EnableDelayedExpansion
 title Net Device Share
 
-rem Работаем из каталога проекта, а не из того, откуда файл вызвали:
-rem при запуске от администратора рабочим каталогом становится system32.
-cd /d "%~dp0"
+rem База: рядом с этим файлом (комплект, установка) либо на уровень выше
+rem (файл лежит в scripts исходников). Работаем из неё, а не из того, откуда
+rem файл вызвали: при запуске от администратора рабочим каталогом становится
+rem system32.
+set "BASE=%~dp0"
+if not exist "%BASE%launcher\supervisor.mjs" if not exist "%BASE%src\main.js" set "BASE=%~dp0..\"
+cd /d "%BASE%"
+
 rem Текст этого файла - в CP866. Если консоль сейчас в другой кодовой
 rem странице (437, 1251, 65001...), кириллица превращается в мусор:
 rem запоминаем текущую и на время работы переключаем на 866.
-rem Начальная кодовая страница запоминается и восстанавливается при выходе.
+rem Начальная кодовая страница восстанавливается при выходе.
 set "ORIG_CP=866"
 for /f "tokens=2 delims=:" %%c in ('chcp') do call :save_cp %%c
 if not "%ORIG_CP%"=="866" chcp 866 >nul
-
 
 set "APP_ARGS=%*"
 set "SKIP_ADMIN="
@@ -51,23 +61,15 @@ if not "%APP_ARGS%"=="" (
 
 rem ------------------------------------------------------------ Node.js
 
-rem В переносимом комплекте node.exe лежит рядом с этим файлом, и тогда
-rem ставить Node в систему не нужно вовсе. Вложенный имеет приоритет:
-rem комплект должен работать одинаково независимо от того, что установлено
-rem на машине.
+rem node.exe рядом с приложением имеет приоритет: комплект и установка
+rem работают одинаково независимо от того, что стоит на машине.
 set "NODE_EXE=node"
-if exist "%~dp0node.exe" set "NODE_EXE=%~dp0node.exe"
+if exist "%BASE%node.exe" set "NODE_EXE=%BASE%node.exe"
 
 if "%NODE_EXE%"=="node" (
-  if exist "%ProgramFiles%\nodejs\node.exe" (
-    set "NODE_EXE=%ProgramFiles%\nodejs\node.exe"
-  ) else (
-    where node >nul 2>&1
-    if errorlevel 1 goto :install_node
-  )
+  where node >nul 2>&1
+  if errorlevel 1 goto :no_node
 )
-
-:node_found
 
 rem "call" здесь обязателен: если команда в for /f начинается с
 rem кавычки, cmd принимает её за имя программы целиком и поиск файла
@@ -94,6 +96,18 @@ goto :node_ok
 echo.
 echo   Установлен Node.js %NODE_VER%, а нужна версия 20.6 или новее.
 echo   Обновите: https://nodejs.org/
+echo.
+pause
+exit /b 1
+
+:no_node
+echo.
+echo   Не найден Node.js.
+echo.
+echo   Собранный комплект и установленная программа несут свой node.exe.
+echo   Для запуска из исходников поставьте Node.js 20.6 или новее
+echo   (https://nodejs.org/) либо соберите и поставьте программу целиком:
+echo   build^&install.bat в корне проекта.
 echo.
 pause
 exit /b 1
@@ -145,9 +159,9 @@ echo.
 
 rem Если рядом лежит лаунчер - запуск идёт через него: он выберет версию,
 rem проверит её целостность и откатит неудачное обновление. Без лаунчера
-rem (запуск из исходников) приложение стартует напрямую, как раньше.
-set "ENTRY=%~dp0src\main.js"
-if exist "%~dp0launcher\supervisor.mjs" set "ENTRY=%~dp0launcher\supervisor.mjs"
+rem (запуск из исходников) приложение стартует напрямую.
+set "ENTRY=%BASE%src\main.js"
+if exist "%BASE%launcher\supervisor.mjs" set "ENTRY=%BASE%launcher\supervisor.mjs"
 
 rem --- дальше и до восстановления кодовой страницы только ASCII ---
 set "OLD_CP=866"
@@ -176,56 +190,6 @@ exit /b %EXIT_CODE%
 rem Аргумент приходит уже без окружающих пробелов - cmd их съедает сам.
 set "OLD_CP=%~1"
 goto :eof
-
-:install_node
-rem Node.js не найден - ставим его из installers\ (MSI, проверка SHA-256
-rem по manifest.json). Установка требует прав администратора.
-set "NODE_MSI="
-for /f "delims=" %%m in ('powershell -NoProfile -Command "$m=Get-Content -Raw -Encoding UTF8 'installers\manifest.json' | ConvertFrom-Json; $c=$m.components | Where-Object { $_.id -eq 'nodejs' }; $f=Join-Path (Get-Location) ('installers\'+($c.file -replace '/','\')); if ((Test-Path $f) -and ((Get-FileHash $f -Algorithm SHA256).Hash -eq $c.sha256)) { $f }" 2^>nul') do set "NODE_MSI=%%m"
-if not defined NODE_MSI goto :no_node
-
-fltmc >nul 2>&1
-if not errorlevel 1 goto :do_install_node
-if defined SKIP_ADMIN goto :no_node
-if defined NDS_ELEVATED goto :no_node
-
-echo.
-echo   Node.js не найден. Для его установки нужны права администратора.
-echo   Подтвердите запрос Windows.
-echo.
-set "NDS_SELF=%~f0"
-set "NDS_SELF_ARGS=%APP_ARGS%"
-set "NDS_ELEVATED=1"
-powershell -NoProfile -Command "try { if ($env:NDS_SELF_ARGS) { Start-Process -FilePath $env:NDS_SELF -ArgumentList $env:NDS_SELF_ARGS -Verb RunAs -ErrorAction Stop } else { Start-Process -FilePath $env:NDS_SELF -Verb RunAs -ErrorAction Stop }; exit 0 } catch { exit 1 }"
-if errorlevel 1 goto :no_node
-chcp %ORIG_CP% >nul
-exit /b 0
-
-:do_install_node
-echo.
-echo   Устанавливаю Node.js (тихо, это займёт около минуты)...
-msiexec /i "%NODE_MSI%" /qn /norestart
-rem Код 3010 - <нужна перезагрузка>: сам Node при этом установлен.
-if errorlevel 1 if not errorlevel 3010 goto :no_node
-if exist "%ProgramFiles%\nodejs\node.exe" (
-  set "NODE_EXE=%ProgramFiles%\nodejs\node.exe"
-  set "PATH=%PATH%;%ProgramFiles%\nodejs"
-  echo   Node.js установлен.
-  goto :node_found
-)
-goto :no_node
-
-:no_node
-echo.
-echo   Не найден Node.js.
-echo.
-echo   Установите версию 20.6 или новее: https://nodejs.org/
-echo   После установки запустите этот файл заново.
-echo.
-echo   Либо возьмите переносимый комплект - в нём node.exe уже лежит рядом.
-echo.
-pause
-exit /b 1
 
 :save_cp
 rem Номер страницы - последнее слово вывода chcp, без точки и пробелов.

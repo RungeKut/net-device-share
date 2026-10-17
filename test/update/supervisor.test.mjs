@@ -251,3 +251,15 @@ test('установленное приложение: данные из install
   assert.equal(st.current, '1.0.0');
   assert.equal(st.pending, '2.0.0');
 });
+
+test('запуск из исходников: нет app/ и нет каталога данных — приложение всё равно стартует', () => {
+  const c = env();
+  fs.mkdirSync(path.join(c.base, 'src'), { recursive: true });
+  const home = path.join(c.dir, 'ещё-нет-такого-каталога');
+  fs.writeFileSync(path.join(c.base, 'src', 'main.js'),
+    `import fs from 'node:fs'; fs.writeFileSync(process.env.NDS_HOME + '/ran.txt', process.env.NDS_SUPERVISED || 'no');`);
+  fs.writeFileSync(path.join(c.base, 'package.json'), '{"type":"module"}');
+  const r = run({ ...c, home }, []);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.equal(fs.readFileSync(path.join(home, 'ran.txt'), 'utf8'), 'no', 'без пометки «под лаунчером»: самообновления нет');
+});
