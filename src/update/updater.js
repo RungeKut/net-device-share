@@ -40,6 +40,8 @@ const HEALTHY_AFTER_MS = Number(process.env.NDS_UPDATE_HEALTHY_MS) || 45000;
 const CROSS_NETWORK_DELAY_MS = 10 * 60 * 1000;
 const REJECT_PAUSE_MS = 60 * 60 * 1000;
 const MAX_DOWNLOAD_MS = 5 * 60 * 1000;
+/** Подготовленную версию, которую никто уже не раздаёт и не проверяет, забываем через столько. */
+const STALE_STAGED_MS = 60 * 60 * 1000;
 
 /** Число из настройки; 0 — допустимое значение, поэтому «|| по умолчанию» здесь не годится. */
 const num = (v, def) => (v === null || v === undefined || !Number.isFinite(Number(v)) ? def : Number(v));
@@ -59,6 +61,7 @@ export class Updater extends EventEmitter {
     this.candidate = null;       // { version, sha256, from }
     this.staged = null;          // { version, sha256, at }
     this.needsInstaller = null;  // { version, reason, url, from, recheckAt }
+    this.noSourceSince = null;   // с какого момента ни один узел не работает на подготовленной версии
     this.approved = null;        // версия, которую пользователь разрешил ставить (режим «спрашивать»)
     this.eligibleAt = null;
     this.retryAt = null;
@@ -242,12 +245,20 @@ export class Updater extends EventEmitter {
     if (this.retryAt && Date.now() < this.retryAt) return;
 
     try {
-      // Уже скачано — остаётся дождаться момента.
+      // Уже скачано — остаётся дождаться момента. Но только если соседи не показывают
+      // версию ещё новее: иначе узел застрял бы на подготовленной, которую уже никто
+      // не проверяет (например, она откатилась у первого узла), и не взял бы следующую.
       if (this.staged && this._stagedStillValid(st)) {
-        this._evaluateRestart(st);
-        return;
+        const newer = this._pickCandidate(st);
+        if (!newer || lib.semver.compareVersions(newer, this.staged.version) <= 0) {
+          this._evaluateRestart(st);
+          return;
+        }
+        log.info(`соседи показывают версию ${newer}, новее подготовленной ${this.staged.version} — подготовленную оставляем, берём новую`);
       }
       this.staged = null;
+      this.approved = null;
+      this.noSourceSince = null;
 
       const version = this._pickCandidate(st);
       if (!version) {
@@ -512,6 +523,23 @@ export class Updater extends EventEmitter {
       stepMs: num(this.app.config.get('updateWaveStepSec'), 30) * 1000,
     });
     this.eligibleAt = wave.eligibleAt;
+
+    // Ни один узел не работает на этой версии слишком долго: проверять её некому.
+    // Забываем подготовленную (файлы на диске остаются): вернётся источник — возьмём заново.
+    if (!sources.length) {
+      this.noSourceSince = this.noSourceSince || Date.now();
+      if (Date.now() - this.noSourceSince > STALE_STAGED_MS) {
+        log.info(`версию ${v} никто не раздаёт и не проверяет уже больше часа — подготовленную забываем`);
+        this.staged = null;
+        this.approved = null;
+        this.noSourceSince = null;
+        this.waiting = [];
+        this._set('idle', '');
+        return;
+      }
+    } else {
+      this.noSourceSince = null;
+    }
 
     if (wave.eligibleAt === null) {
       // Версию мы взяли у соседа, а теперь ни один узел на ней не работает: «канарейка»
