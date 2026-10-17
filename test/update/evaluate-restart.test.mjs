@@ -92,3 +92,41 @@ test('очередь: у двух ожидающих узлов места ра�
   const canaryReady = base[0].startedAt + 10 * 60000;
   assert.ok([0, 30000].includes(mine - canaryReady), `eligibleAt = канарейка + место × шаг (разница ${mine - canaryReady})`);
 });
+
+// ------------------------------- подготовленная версия не должна «приклеивать» узел
+
+test('соседи показывают версию новее подготовленной — узел берёт новую, а не ждёт старую', async () => {
+  const { u } = setup({ peers: [{ ...peer('canary', '2.3.0'), address: '127.0.0.1', apiPort: 1 }] });
+  u.staged = { version: V, sha256: 'x', at: Date.now() };       // подготовлена 2.2.0, но у соседей уже 2.3.0
+  await u.tick();
+  assert.equal(u.staged, null, 'устаревшая подготовленная брошена');
+  assert.equal(u.candidate?.version, '2.3.0');
+});
+
+test('подготовленная всё ещё самая новая — узел продолжает ждать её', async () => {
+  const { u } = setup({ peers: [peer('canary', V, Date.now() - 60000)] });
+  await u.tick();
+  assert.equal(u.staged?.version, V);
+  assert.equal(u.phase, 'waiting');
+});
+
+test('версию давно никто не раздаёт и не проверяет — подготовленную забываем', () => {
+  const { u, restarted } = setup({ peers: [peer('other-old', '2.1.0')] });
+  u._evaluateRestart({});
+  assert.equal(u.staged?.version, V, 'сразу не забываем');
+  u.noSourceSince = Date.now() - 61 * 60000;
+  u._evaluateRestart({});
+  assert.equal(u.staged, null);
+  assert.equal(u.phase, 'idle');
+  assert.deepEqual(restarted, []);
+});
+
+test('источник вернулся — отсчёт забывания сбрасывается', () => {
+  const peers = [peer('other-old', '2.1.0')];
+  const { u } = setup({ peers });
+  u._evaluateRestart({});
+  assert.ok(u.noSourceSince);
+  peers.push(peer('canary', V, Date.now() - 60000));
+  u._evaluateRestart({});
+  assert.equal(u.noSourceSince, null);
+});
