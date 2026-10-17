@@ -269,6 +269,21 @@
         но и посредника. Изменение требует перезапуска.</small>
     </label>
 
+    <div class="field">
+      <span><label><input type="checkbox" id="setMetricsEnabled"> Метрики для Prometheus</label></span>
+      <input type="text" id="setMetricsToken" autocomplete="off" spellcheck="false" placeholder="токен доступа (необязательно)">
+      <div class="row-actions">
+        <button type="button" class="btn small" id="btnMetricsGen">Создать токен</button>
+        <label class="muted"><input type="checkbox" id="setMetricsTokenClear"> снять токен</label>
+      </div>
+      <small id="metricsHint">Выключено по умолчанию. Включённый узел отдаёт на порту интерфейса адрес
+        <code>/metrics</code> — не только своё, а всё, что он видит: все узлы сети со статистикой,
+        устройства, кто их занял, трафик. Достаточно подключить к Prometheus один узел.
+        Без токена метрики отдаются только из рабочей сети; с токеном — откуда угодно, с заголовком
+        <code>Authorization: Bearer &lt;токен&gt;</code>. Токен хранится хешем и показывается только
+        при создании: скопируйте его до сохранения.</small>
+    </div>
+
     <label class="field">
       <span>Пароль для доступа с других компьютеров</span>
       <input type="password" id="setWebPassword" autocomplete="new-password">

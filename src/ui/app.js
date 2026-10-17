@@ -1097,6 +1097,10 @@ $('#btnSettings').addEventListener('click', () => {
   $('#setSeeOpen').checked = c.seeOpen !== false;
   $('#setShowToOpen').checked = c.showToOpen !== false;
   renderRealmNote();
+  $('#setMetricsEnabled').checked = Boolean(c.metricsEnabled);
+  $('#setMetricsToken').value = '';
+  $('#setMetricsToken').placeholder = c.metricsTokenSet ? '•••••• (токен задан)' : 'токен доступа (необязательно)';
+  $('#setMetricsTokenClear').checked = false;
   $('#setWebPassword').value = '';
   $('#setWebPassword').placeholder = c.hasWebPassword ? '•••••• (задан)' : 'не задан — извне только просмотр';
   $('#setLease').value = Math.round(c.claimLeaseMs / 1000);
@@ -1198,6 +1202,11 @@ $('#settings').addEventListener('close', async () => {
   patch.networks = collectNetworks();
   patch.seeOpen = $('#setSeeOpen').checked;
   patch.showToOpen = $('#setShowToOpen').checked;
+
+  patch.metricsEnabled = $('#setMetricsEnabled').checked;
+  const tok = $('#setMetricsToken').value.trim();
+  if (tok) patch.metricsToken = tok;
+  else if ($('#setMetricsTokenClear').checked) patch.metricsToken = '';
 
   // Пустое поле означает «не менять»: иначе открытие настроек втихую
   // стирало бы заданный пароль.
@@ -1583,3 +1592,14 @@ function splitLast(value) {
   const cut = String(value).lastIndexOf('|');
   return [String(value).slice(0, cut), String(value).slice(cut + 1)];
 }
+
+// Метрики: случайный токен создаётся здесь и показывается один раз — на сервере остаётся только хеш.
+$('#btnMetricsGen').addEventListener('click', () => {
+  const bytes = new Uint8Array(24);
+  crypto.getRandomValues(bytes);
+  const token = btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  $('#setMetricsToken').value = token;
+  $('#setMetricsTokenClear').checked = false;
+  $('#setMetricsEnabled').checked = true;
+  toast('Токен создан: скопируйте его сейчас и нажмите «Сохранить» — потом он не покажется', 'ok');
+});

@@ -1,6 +1,6 @@
 {
   "name": "net-device-share",
-  "version": "2.1.11",
+  "version": "2.2.0",
   "description": "Совместный доступ к USB, COM, LPT и сетевым интерфейсам по сети: каталог, группы, учёт занятости и запросы",
   "type": "module",
   "main": "src/main.js",
@@ -17,6 +17,7 @@
     "build": "node scripts/build-release.mjs",
     "build:update": "node scripts/build-update.mjs",
     "build:installer": "node scripts/build-installer.mjs",
+    "build:grafana": "node scripts/build-grafana-dashboard.mjs",
     "keygen": "node scripts/release-keygen.mjs",
     "test": "node --test test/*.test.mjs test/update/*.test.mjs",
     "check": "node scripts/check-files.mjs",

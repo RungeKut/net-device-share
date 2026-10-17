@@ -755,7 +755,7 @@ export class App extends EventEmitter {
       'apiPort', 'discoveryPort', 'usbipPort', 'usbipdPath', 'usbipPath', 'logLevel', 'enabledTypes',
       'meterTraffic', 'trafficPort', 'netLinkPort', 'autoInstall',
       'seeds', 'gossipIntervalMs', 'remotePollIntervalMs', 'announceIntervalMs',
-      'announceIdleIntervalMs', 'announceBackoff', 'announceTransport', 'updateMode'];
+      'announceIdleIntervalMs', 'announceBackoff', 'announceTransport', 'updateMode', 'metricsEnabled'];
     const clean = {};
     for (const k of allowed) {
       if (patch[k] !== undefined) clean[k] = patch[k];
@@ -776,6 +776,11 @@ export class App extends EventEmitter {
       throw new Error(`неизвестный канал анонсов «${clean.announceTransport}»`);
     }
     if (clean.announceBackoff !== undefined) clean.announceBackoff = Boolean(clean.announceBackoff);
+    if (clean.metricsEnabled !== undefined) clean.metricsEnabled = Boolean(clean.metricsEnabled);
+    if (patch.metricsToken !== undefined && patch.metricsToken !== '' && patch.metricsToken !== null
+      && !/^[A-Za-z0-9_-]{16,128}$/.test(String(patch.metricsToken))) {
+      throw new Error('токен метрик: 16–128 знаков — латинские буквы, цифры, «-» и «_»');
+    }
     if (clean.updateMode !== undefined && !['auto', 'ask', 'off'].includes(clean.updateMode)) {
       throw new Error('режим обновления: auto, ask или off');
     }
@@ -805,6 +810,12 @@ export class App extends EventEmitter {
     }
 
     this.config.set(clean);
+
+    // Токен метрик — как пароль: приходит отдельным полем, хранится хешем.
+    if (patch.metricsToken !== undefined) {
+      this.config.setMetricsToken(patch.metricsToken || null);
+      log.info(patch.metricsToken ? 'токен метрик задан' : 'токен метрик снят');
+    }
 
     // Пароль удалённого доступа приходит отдельным полем и никогда не
     // хранится открытым.
@@ -984,6 +995,8 @@ export class App extends EventEmitter {
       autoInstall: c.autoInstall,
       meterTraffic: c.meterTraffic,
       updateMode: this.updater ? this.updater._mode() : (c.updateMode || 'ask'),
+      metricsEnabled: Boolean(c.metricsEnabled),
+      metricsTokenSet: this.config.hasMetricsToken(),
       trafficPort: c.trafficPort,
       netLinkPort: c.netLinkPort,
       enabledTypes: c.enabledTypes,

@@ -28,6 +28,8 @@ Net Device Share ${VERSION} — общий доступ к USB-устройст�
   --log-level <уровень>   error | warn | info | debug | trace
   --no-open               не открывать браузер при запуске
   --doctor                проверить окружение и выйти
+  --metrics               включить метрики Prometheus на этот запуск (GET /metrics)
+  --metrics-token <строка> токен для метрик на этот запуск (иначе — только из рабочей сети)
   --autostart <действие>  enable | disable | status — автозапуск при входе в систему
   --networks              показать доступные сети и выйти
   --help                  эта справка
@@ -154,6 +156,12 @@ async function main() {
 
   const config = new Config(typeof args.config === 'string' ? args.config : undefined);
   applyCliOverrides(config, args);
+  // Метрики из командной строки действуют только на этот запуск и в файл не пишутся.
+  if (args.metrics) {
+    config.data.metricsEnabled = true;
+    config.runtimeOverrides.metricsEnabled = true;
+  }
+  if (typeof args['metrics-token'] === 'string') config.runtimeMetricsToken = args['metrics-token'];
   setLevel(config.get('logLevel'));
 
   if (args.networks) {
