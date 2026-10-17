@@ -816,10 +816,12 @@ function renderPeers() {
       <div class="card-actions"></div>
     </article>`;
 
-  const peers = state.peers.map((p) => `
-    <article class="card ${p.online ? 'free' : 'offline'}">
+  const peers = state.peers.map((p) => {
+    const url = nodeUrl(p);
+    return `
+    <article class="card ${p.online ? 'free' : 'offline'}${url ? ' node-link' : ''}"${url ? ` data-node-url="${esc(url)}" title="Открыть интерфейс узла в новой вкладке"` : ''}>
       <div class="card-main">
-        <div class="card-title">${esc(p.name)}
+        <div class="card-title">${url ? `<a class="node-name" href="${esc(url)}" target="_blank" rel="noopener">${esc(p.name)}</a>` : esc(p.name)}
           <span class="pill ${p.online ? 'free' : 'err'}">${p.online ? 'в сети' : 'не отвечает'}</span>
           ${p.origin && p.origin !== 'local' ? `<span class="pill remote" title="${esc(remoteHint(p))}">другая сеть</span>` : ''}
           ${p.realmLabel ? `<span class="pill plain" title="круг доверия ${esc(p.realm || '')}">${esc(p.realmLabel)}</span>` : ''}</div>
@@ -834,9 +836,25 @@ function renderPeers() {
         </div>
       </div>
       <div class="card-actions"></div>
-    </article>`).join('');
+    </article>`;
+  }).join('');
 
-  box.innerHTML = selfCard + (peers || '<div class="empty">Других узлов в сети не найдено.</div>');
+  box.innerHTML = selfCard
+    + (peers ? '<p class="hint">Нажмите на узел, чтобы открыть его интерфейс в новой вкладке.</p>' + peers
+      : '<div class="empty">Других узлов в сети не найдено.</div>');
+}
+
+/**
+ * Адрес интерфейса другого узла. Только для отвечающих узлов, и только из
+ * проверенных частей: адрес и порт пришли по сети, подставлять их в ссылку
+ * как есть нельзя.
+ */
+function nodeUrl(p) {
+  if (!p || !p.online) return '';
+  const host = String(p.address || '');
+  const port = Number(p.apiPort);
+  if (!/^[0-9a-fA-F:.]+$/.test(host) || !Number.isInteger(port) || port < 1 || port > 65535) return '';
+  return `http://${host.includes(':') ? `[${host}]` : host}:${port}/`;
 }
 
 function renderLog() {
@@ -854,6 +872,13 @@ document.addEventListener('click', (ev) => {
   const t = ev.target;
   if (!(t instanceof HTMLElement)) return;
   ensureNotificationPermission();
+
+  const nodeCard = t.closest('[data-node-url]');
+  if (nodeCard && !t.closest('a, button, input, select, textarea, label')
+    && !String(window.getSelection?.() || '')) {
+    window.open(nodeCard.dataset.nodeUrl, '_blank', 'noopener');
+    return;
+  }
 
   const tab = t.closest('.tab');
   if (tab) {
