@@ -385,6 +385,10 @@ function entryActions(entry) {
 
   if (entry.busyByMe && entry.attachmentId) {
     acts.push(`<button class="btn small danger" data-detach="${esc(entry.attachmentId)}">Освободить</button>`);
+    // Драйвер у владельца — рядом с «Освободить»: человек только что занял устройство
+    // и именно здесь ищет, что с ним делать дальше (причины отказа — на вкладке «Занято мной»).
+    const att = (state.attachments || []).find((x) => x.id === entry.attachmentId);
+    if (att && att.state === 'attached') acts.push(driverButtons(att, String(entry.target).startsWith('group:') ? null : entry.target));
   } else if (entry.busy) {
     // Владелец забирает своё без спроса: оборудование стоит у него.
     if (entry.ownerSelf) {
@@ -754,8 +758,8 @@ function renderAttached() {
  * как недоработка, а причина обычно в самой ситуации (другая система,
  * нет прав администратора, своё устройство).
  */
-function driverButtons(a) {
-  const parts = a.parts.filter((p) => p.hasTransport && p.type === 'usb');
+function driverButtons(a, onlyDeviceId = null) {
+  const parts = a.parts.filter((p) => p.hasTransport && p.type === 'usb' && (!onlyDeviceId || p.deviceId === onlyDeviceId));
   return parts.filter((p) => !p.driverBlock).map((p) => `<button class="btn small"
     data-driver="${esc(a.id)}|${esc(p.deviceId)}"
     title="Взять у владельца драйвер этого устройства и установить его на этом компьютере"

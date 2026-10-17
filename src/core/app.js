@@ -177,6 +177,8 @@ export class App extends EventEmitter {
       // менеджер подключений спрашивает его по узлу, а не хранит у себя.
       keyFor: (nodeId) => this.keyForNode(nodeId),
       net: this.net,
+      // Подключение, которое пережило перезапуск, привязываем к владельцу по адресу.
+      peerByAddress: (address) => this.peers?.list().find((p) => p.online && p.address === address) || null,
     });
     this.peers = new PeerRegistry({
       nodeId: this.config.get('nodeId'),

@@ -34,8 +34,10 @@ export class AttachManager extends EventEmitter {
    *   подписывать вызов надо тем ключом, который примет именно он.
    * @param {import('./netShare.js').NetShare} [o.net] — сетевые карты
    */
-  constructor({ backend, config, share, keyFor, net = null }) {
+  constructor({ backend, config, share, keyFor, net = null, peerByAddress = null }) {
     super();
+    /** (адрес) → известный узел. Нужен, чтобы узнать «чужое» подключение: чьё оно. */
+    this.peerByAddress = peerByAddress;
     this.backend = backend;
     this.net = net;
     this.config = config;
@@ -105,7 +107,17 @@ export class AttachManager extends EventEmitter {
         target: a.busid,
         kind: 'device',
         title: `USB ${a.vendorId || '????'}:${a.productId || '????'}`,
-        parts: [{ deviceId: `usb:${a.busid}`, key: a.busid, description: 'внешнее подключение', hasTransport: true, vhciPort: a.vhciPort }],
+        parts: [{
+          deviceId: `usb:${a.busid}`,
+          key: a.busid,
+          // Тип нужен интерфейсу: по нему он решает, что показать у устройства
+          // (кнопки и пояснения) — без него «внешнее» подключение выглядело пустым.
+          type: 'usb',
+          title: `USB ${a.vendorId || '????'}:${a.productId || '????'}`,
+          description: 'внешнее подключение',
+          hasTransport: true,
+          vhciPort: a.vhciPort,
+        }],
         since: Date.now(),
         state: 'attached',
         lastError: null,
@@ -412,7 +424,86 @@ export class AttachManager extends EventEmitter {
    * Продление аренд. Ответ владельца приносит ещё и запросы к нам как
    * к держателю: отдельный канал для этого не нужен, heartbeat идёт и так.
    */
+  /**
+   * «Усыновление» подключений, о которых приложение забыло.
+   *
+   * Подключение USB/IP переживает перезапуск приложения (его держит драйвер), а
+   * записи о занятиях лежат в памяти. После перезапуска такое подключение —
+   * «вне приложения»: нет проверки связи, нет кнопок, а владелец через 30 с
+   * считает аренду брошенной. Если владелец — известный узел и аренда за нами ещё
+   * жива (он отвечает на проверку связи), возвращаем подключению нормальную
+   * запись. Не жива — оно остаётся внешним, с объяснением почему.
+   */
+  async _adoptOrphans() {
+    if (!this.peerByAddress) return;
+    for (const rec of [...this.attachments.values()]) {
+      if (!rec.orphan) continue;
+      const peer = this.peerByAddress(rec.host);
+      if (!peer || !peer.online) continue;
+      const part = rec.parts[0];
+      const target = part.deviceId;
+      const id = attachKey(peer.nodeId, target);
+      if (this.attachments.has(id)) continue;
+
+      try {
+        await rpc({
+          host: peer.address,
+          port: peer.apiPort,
+          path: '/api/v1/peer/heartbeat',
+          method: 'POST',
+          body: { target },
+          key: this.keyFor(peer.nodeId),
+          nodeId: this.config.get('nodeId'),
+          timeoutMs: 5000,
+        });
+      } catch (e) {
+        const gone = e.code === 'no_claim' || e.code === 'forbidden';
+        rec.orphanNote = gone
+          ? `владелец «${peer.name}» не считает это подключение вашим (аренда истекла или устройство занято другим)`
+          : `владелец «${peer.name}» не ответил: ${e.message}`;
+        continue;
+      }
+
+      const dev = (peer.devices || []).find((d) => d.deviceId === target);
+      this.attachments.delete(rec.id);
+      this.attachments.set(id, {
+        id,
+        orphan: false,
+        adopted: true,
+        nodeId: peer.nodeId,
+        nodeName: peer.name,
+        host: peer.address,
+        apiPort: peer.apiPort,
+        usbipPort: rec.usbipPort,
+        target,
+        kind: 'device',
+        title: dev?.title || rec.title,
+        parts: [{
+          deviceId: target,
+          key: part.key,
+          type: 'usb',
+          title: dev?.title || part.title,
+          description: dev?.description || part.description,
+          hasTransport: true,
+          vhciPort: part.vhciPort,
+          netKey: null, adapter: null, ip: null, ipApplied: null, ipNote: null, error: null,
+        }],
+        since: rec.since,
+        attachedAt: rec.since,
+        state: 'attached',
+        stage: null,
+        lastError: null,
+        self: false,
+        lastHeartbeat: Date.now(),
+        heartbeatFails: 0,
+      });
+      log.info(`подключение ${target} от «${peer.name}» узнано заново после перезапуска — проверка связи и управление восстановлены`);
+      this.emit('changed');
+    }
+  }
+
   async _heartbeatAll() {
+    await this._adoptOrphans();
     for (const rec of [...this.attachments.values()]) {
       if (rec.orphan || rec.state !== 'attached') continue;
 
