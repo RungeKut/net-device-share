@@ -129,7 +129,10 @@ export class DriverShare {
     if (parseDeviceId(dev.deviceId).type !== 'usb') {
       throw fail('driver_unsupported', 'Драйвер можно скопировать только для USB-устройства.');
     }
-    if (!dev.vendorId || !dev.productId) {
+    // Код устройства лежит в meta (так его отдаёт hub), а не на верхнем уровне записи.
+    const vendorId = dev.meta?.vendorId ?? dev.vendorId;
+    const productId = dev.meta?.productId ?? dev.productId;
+    if (!vendorId || !productId) {
       throw fail('driver_unavailable',
         'У владельца не определён код устройства (VID:PID), поэтому драйвер подобрать не удалось.');
     }
@@ -140,10 +143,10 @@ export class DriverShare {
         + 'с подтверждением запроса Windows.');
     }
 
-    const candidates = await this._findInfs(dev.vendorId, dev.productId);
+    const candidates = await this._findInfs(vendorId, productId);
     if (!candidates.length) {
       throw fail('driver_unavailable',
-        `Для устройства ${dev.vendorId}:${dev.productId} у владельца нет стороннего драйвера, который можно перенести. `
+        `Для устройства ${vendorId}:${productId} у владельца нет стороннего драйвера, который можно перенести. `
         + 'Скорее всего, оно работает на встроенном драйвере Windows (такие драйверы лежат в системе '
         + 'иначе и в виде отдельного пакета не выгружаются — но и ставить их не нужно, '
         + 'Windows подберёт их сама), либо драйвер поставлен установщиком производителя '
@@ -194,7 +197,7 @@ export class DriverShare {
           'Подходящие пакеты драйвера найдены, но Windows у владельца не смогла их выгрузить '
           + '(pnputil /export-driver завершился с ошибкой). Подробности — в журнале владельца.');
       }
-      log.info(`драйвер для ${dev.vendorId}:${dev.productId}: ${packages.map((p) => p.inf).join(', ')}, ${Math.round(total / 1024)} КБ`);
+      log.info(`драйвер для ${vendorId}:${productId}: ${packages.map((p) => p.inf).join(', ')}, ${Math.round(total / 1024)} КБ`);
       return { packages };
     } finally {
       fs.rmSync(work, { recursive: true, force: true });
