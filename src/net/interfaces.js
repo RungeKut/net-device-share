@@ -36,13 +36,25 @@ export function resolveNetwork(cidr) {
 
   if (!cidr || cidr === 'auto') {
     // Приоритет приватным диапазонам — так автовыбор попадает в LAN,
-    // а не в туннель провайдера или адрес виртуального адаптера.
+    // а не в туннель провайдера. Виртуальные адаптеры (VMware, Hyper-V, наш
+    // же TAP чужой карты) берутся, только если настоящих нет: адрес TAP чужой
+    // карты — это адрес в чужой сети, часто совпадающий с адресом самого
+    // владельца, и узел, объявивший его, недостижим для соседей.
     const priv = nets.filter((n) => isPrivate(n.address));
-    return (priv[0] || nets[0]);
+    const real = priv.filter((n) => !isVirtualInterface(n));
+    return real[0] || priv[0] || nets.find((n) => !isVirtualInterface(n)) || nets[0];
   }
   return nets.find((n) => n.cidr === cidr)
       || nets.find((n) => ipInCidr(n.address, cidr))
       || null;
+}
+
+/** Имена и MAC-префиксы виртуальных адаптеров, которые не годятся в рабочую сеть. */
+const VIRTUAL_NAME = /vEthernet|VMware|VirtualBox|Hyper-V|Bluetooth|TAP|OpenVPN|WireGuard|Tailscale|ZeroTier|Docker|WSL|Loopback| на /i;
+const VIRTUAL_MAC = /^(00:ff|00:50:56|00:0c:29|00:15:5d|08:00:27|0a:00:27)/i;
+
+export function isVirtualInterface({ iface, mac }) {
+  return VIRTUAL_NAME.test(iface || '') || VIRTUAL_MAC.test(mac || '');
 }
 
 export function maskToPrefix(mask) {
