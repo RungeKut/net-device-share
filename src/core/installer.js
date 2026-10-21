@@ -178,19 +178,19 @@ export class Installer extends EventEmitter {
       }
       this._step('info', `  SHA-256 совпадает`);
 
-      let sig = await verifySignature(file);
-      // UnknownError — Windows не смог дойти до проверки цепочки (сеть только
-      // поднялась, служба сертификатов занята). Это не «подпись плохая»,
-      // поэтому перед отказом пробуем ещё, а не доверяем без проверки.
-      for (let i = 0; i < 2 && sig.status === 'UnknownError'; i++) {
-        this._step('info', '  проверка подписи не завершилась, повтор через 5 с');
-        await new Promise((r) => setTimeout(r, 5000));
-        sig = await verifySignature(file);
-      }
-      if (sig.status !== 'Valid') {
+      const sig = await verifySignature(file);
+      // На компьютере без доступа к Windows Update нет корня цепочки издателя
+      // (например GlobalSign Code Signing R45): статус UnknownError/NotTrusted,
+      // хотя подпись цела. Принимаем это только для издателя, чей отпечаток
+      // закреплён в манифесте, и только вместе с совпавшим SHA-256 выше.
+      const pinned = c.signerThumbprint && sig.thumbprint
+        && c.signerThumbprint.toLowerCase() === String(sig.thumbprint).toLowerCase();
+      if (sig.status !== 'Valid' && pinned && ['UnknownError', 'NotTrusted'].includes(sig.status)) {
+        this._step('warn', `  корневой сертификат издателя не установлен в Windows; издатель совпадает с закреплённым (${shortSigner(sig.signer)}), файл — по SHA-256 из манифеста`);
+      } else if (sig.status !== 'Valid') {
         throw new Error(`подпись ${path.basename(file)} недействительна (${sig.status}${sig.message ? `: ${sig.message}` : ''}) — установка отменена`);
       }
-      this._step('info', `  подпись действительна: ${shortSigner(sig.signer)}`);
+      if (sig.status === 'Valid') this._step('info', `  подпись действительна: ${shortSigner(sig.signer)}`);
 
       work.push({ component: c, file });
     }
@@ -323,7 +323,7 @@ async function sha256(file) {
 async function verifySignature(file) {
   const script = '[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; '
     + `$s = Get-AuthenticodeSignature -LiteralPath '${psQuote(file)}'; `
-    + '[pscustomobject]@{ status = $s.Status.ToString(); message = $s.StatusMessage; signer = $s.SignerCertificate.Subject } | ConvertTo-Json -Compress';
+    + '[pscustomobject]@{ status = $s.Status.ToString(); message = $s.StatusMessage; signer = $s.SignerCertificate.Subject; thumbprint = $s.SignerCertificate.Thumbprint } | ConvertTo-Json -Compress';
   const r = await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { timeoutMs: 30000 });
   if (!r.ok) return { status: 'Unknown', signer: null };
   try {

@@ -71,6 +71,7 @@
       "project": "https://github.com/vadimgrn/usbip-win2",
       "license": "GPL-3.0",
       "expectedSigner": "Cloudyne Systems (Scheibling Consulting AB)",
+      "signerThumbprint": "9AC56B6C76141395D74FFF6652818376E80B9C95",
       "signerNote": "Установщик подписан сторонней компанией, а не автором проекта. Подпись действительна; для драйвера ядра этот факт стоит учитывать осознанно.",
       "command": "{file}",
       "args": [
