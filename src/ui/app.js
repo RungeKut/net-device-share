@@ -330,6 +330,38 @@ function statusPill(entry) {
   return '<span class="pill free">свободно</span>';
 }
 
+/** Кто сейчас в общем мосту карты. Карта при этом не «занята»: подключаться могут и остальные. */
+function joinPill(entry) {
+  const joins = entry.joins || [];
+  if (!joins.length) return '';
+  const names = joins.map((j) => j.holderName).join(', ');
+  const title = 'Карта подключена в общий мост: эти узлы работают в сети владельца одновременно. Подключиться может любой ещё.';
+  return `<span class="pill ${entry.joinedByMe ? 'mine' : 'warn'}" title="${esc(title)}">в мосту: ${esc(names)}</span>`;
+}
+
+/** Можно ли подключить эту карту в общий мост с нашего компьютера. */
+function canJoinBridge(d) {
+  return d.type === 'net' && !d.ownerSelf && d.ownerOnline && d.hasTransport !== false
+    && d.meta?.bridgeJoin === true && !d.busy && !d.joinedByMe && d.attachState !== 'attaching';
+}
+
+/** Кнопки карты внутри группы: целиком группу занимают её кнопкой, но в мост карту можно подключить отдельно. */
+function memberActions(d) {
+  if (!canEdit()) return '';
+  if (d.joinedByMe && d.attachmentId) return `<button class="btn small danger" data-detach="${esc(d.attachmentId)}">Выйти из моста</button>`;
+  return canJoinBridge(d) ? joinButton(d) : '';
+}
+
+function joinButton(d) {
+  const m = d.meta || {};
+  const adv = m.staticAddress
+    ? ` У владельца статический адрес ${m.staticAddress.address}/${m.staticAddress.prefixLength}${m.staticAddress.next ? `, вам предложим ${m.staticAddress.next}` : ''}.`
+    : '';
+  return `<button class="btn small primary" data-join="${esc(d.ownerId)}|${esc(d.target)}"
+    title="${esc(`На этом компьютере появится адаптер в сети владельца. Владелец остаётся в ней под своим адресом, карта остаётся доступной остальным узлам.${adv}`)}"
+    >Подключиться в мост</button>`;
+}
+
 /**
  * Скорость обмена — «байт в минуту».
  *
@@ -383,6 +415,11 @@ function entryActions(entry) {
   if (!canEdit()) return '';
   const acts = [];
 
+  if (entry.joinedByMe && entry.attachmentId) {
+    acts.push(`<button class="btn small danger" data-detach="${esc(entry.attachmentId)}">Выйти из моста</button>`);
+  }
+  if (canJoinBridge(entry)) acts.push(joinButton(entry));
+
   if (entry.busyByMe && entry.attachmentId) {
     acts.push(`<button class="btn small danger" data-detach="${esc(entry.attachmentId)}">Освободить</button>`);
     // Драйвер у владельца — рядом с «Освободить»: человек только что занял устройство
@@ -397,7 +434,7 @@ function entryActions(entry) {
     } else if (entry.ownerOnline) {
       acts.push(`<button class="btn small" data-ask="${esc(entry.ownerId)}|${esc(entry.target)}|${esc(entry.title)}">Попросить</button>`);
     }
-  } else if (entry.ownerOnline && entry.available !== false) {
+  } else if (entry.ownerOnline && entry.available !== false && !entry.joinedByMe) {
     // У COM, LPT и сетевых интерфейсов проброса нет — есть только учёт
     // занятости. Кнопка «Занять» обещала бы то, чего не будет: человек
     // жмёт её и идёт искать новое устройство в системе. Поэтому здесь
@@ -424,6 +461,7 @@ function deviceMeta(d) {
   if (m.status) bits.push(`состояние: ${esc(m.status)}`);
   if (m.mac) bits.push(`MAC: <span class="mono">${esc(m.mac)}</span>`);
   if (m.linkSpeed) bits.push(`скорость: ${esc(m.linkSpeed)}`);
+  if (m.usedIps?.length) bits.push(usedIpsText(m.usedIps, m.scannedAt));
   if (m.ip) {
     // Настройки карты, с которыми её получит занявший.
     bits.push(ipText(m.ip));
@@ -431,6 +469,15 @@ function deviceMeta(d) {
     bits.push(`адреса: <span class="mono">${esc(m.addresses.map((a) => a.address).join(', '))}</span>`);
   }
   return bits;
+}
+
+/** Занятые адреса в сети карты (владелец сканирует её в фоне). Весь список — в подсказке. */
+function usedIpsText(ips, scannedAt) {
+  const shown = ips.slice(0, 12);
+  const rest = ips.length - shown.length;
+  const when = scannedAt ? ` · проверено ${at(scannedAt)}` : '';
+  return `<span title="${esc(ips.join(', '))}">занято адресов в сети: <b>${ips.length}</b> — `
+    + `<span class="mono">${esc(shown.join(', '))}${rest > 0 ? ` и ещё ${rest}` : ''}</span>${esc(when)}</span>`;
 }
 
 /** Настройки IPv4 одной строкой: адрес, шлюз, DNS — или DHCP. */
@@ -473,6 +520,7 @@ function deviceCard(d, { insideGroup = false } = {}) {
           <span class="type-icon" title="${esc(d.typeTitle)}">${esc(d.icon)}</span>
           ${esc(d.title)}
           ${insideGroup ? '' : statusPill(d)}
+          ${joinPill(d)}
           ${d.busy ? trafficPill(d.traffic) : ''}
           ${transportPill(d.hasTransport, d.meta?.transportNote)}
           ${d.ownerSelf ? '<span class="pill plain">моё</span>' : ''}
@@ -487,10 +535,11 @@ function deviceCard(d, { insideGroup = false } = {}) {
           ${d.vhciPort !== null && d.vhciPort !== undefined ? `<span>порт VHCI: <b>${esc(d.vhciPort)}</b></span>` : ''}
           ${d.adapter ? `<span>адаптер у вас: <b>${esc(d.adapter)}</b></span>` : ''}
           ${d.adapter && d.adapterIp ? `<span>${adapterIpText(d.adapterIp, d.adapterIpApplied)}</span>` : ''}
+          ${d.adapter && !d.adapterIp && d.adapterNote ? `<span class="pill warn">${esc(d.adapterNote)}</span>` : ''}
           ${d.lastError ? `<span class="pill err">${esc(d.lastError)}</span>` : ''}
         </div>
       </div>
-      <div class="card-actions">${insideGroup ? '' : entryActions(d)}</div>
+      <div class="card-actions">${insideGroup ? memberActions(d) : entryActions(d)}</div>
     </article>`;
 }
 
@@ -723,6 +772,7 @@ function renderAttached() {
           <span class="pill ${a.state === 'error' ? 'err' : 'mine'}">${esc(label[a.state] || a.state)}</span>
           ${a.state === 'attaching' && a.stage ? `<span class="pill warn">${esc(a.stage)}</span>` : ''}
           ${a.self ? '<span class="pill plain">своё устройство</span>' : ''}
+          ${a.mode === 'bridge' ? '<span class="pill warn" title="Карта подключена в общий мост владельца: остальные узлы работают в той же сети одновременно с вами">в общем мосту</span>' : ''}
           ${a.orphan ? '<span class="pill plain">вне приложения</span>' : ''}
         </div>
         <div class="card-meta">
@@ -735,7 +785,10 @@ function renderAttached() {
           ${a.parts.map((p) => `<span>${esc(p.description || p.deviceId)}${partState(p)} ${p.traffic ? trafficPill(p.traffic) : ''}</span>`).join('')}
         </div>
         ${a.parts.filter((p) => p.adapter && (p.ip || p.ipNote)).map((p) => `<div class="card-meta"><span>${
-          p.ip ? adapterIpText(p.ip, p.ipApplied) : `<span class="pill warn">${esc(p.ipNote)}</span>`}</span></div>`).join('')}
+          p.ip ? adapterIpText(p.ip, p.ipApplied) : `<span class="pill warn">${esc(p.ipNote)}</span>`}</span>${
+          !p.ip && p.suggest ? `<button class="btn small primary" data-held-ip="${esc(a.id)}|${esc(p.deviceId)}"
+            title="Откроется окно настроек с предложенным адресом — останется нажать «Сохранить»">Задать ${esc(p.suggest.address)}</button>` : ''}</div>
+          ${p.usedIps?.length ? `<div class="card-meta"><span>${usedIpsText(p.usedIps)}</span></div>` : ''}`).join('')}
         ${a.parts.some((p) => p.hasTransport) && !a.parts.some((p) => p.traffic)
           ? '<p class="hint">Скорость не показывается: у владельца выключен учёт трафика.</p>' : ''}
         ${driverNotes(a)}
@@ -904,6 +957,10 @@ document.addEventListener('click', (ev) => {
       reserve
         ? 'Забронировано. В системе устройство не появится: подключайтесь к нему физически'
         : 'Занято');
+  } else if (t.dataset.join) {
+    const [nodeId, target] = splitLast(t.dataset.join);
+    action(t, () => post('/api/v1/attach', { nodeId, target, mode: 'bridge' }),
+      'Подключено в мост: адаптер появится в «Сетевых подключениях»');
   } else if (t.dataset.take) {
     const [nodeId, target] = t.dataset.take.split('|');
     if (confirm('Забрать устройство себе? Тот, кто с ним работает, потеряет соединение без предупреждения.')) {

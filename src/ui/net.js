@@ -929,6 +929,16 @@ export function initNet(h) {
     const p = a?.parts.find((x) => x.deviceId === deviceId);
     if (!p) return;
     let cfg = p.ip;
+    // Мост в сети со статикой: владелец предложил свободный адрес — подставляем
+    // его, человеку остаётся проверить и сохранить.
+    if (!cfg && p.adapter && p.suggest) {
+      cfg = {
+        dhcp: false,
+        addresses: [{ address: p.suggest.address, prefixLength: p.suggest.prefixLength }],
+        gateways: p.suggest.gateways || [],
+        dns: p.suggest.dns || [],
+      };
+    }
     if (!p.adapter) {
       // Бронь: настройки — у владельца, берём их из каталога.
       const entries = s.catalog.flatMap((e) => (e.kind === 'group' ? e.members : [e]));

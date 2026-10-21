@@ -492,9 +492,12 @@ export class ShareManager extends EventEmitter {
    * её можно, только пока в мосту никого нет.
    */
   async join(target, who) {
-    const { kind, devices } = this._resolve(target);
-    const dev = devices[0];
-    if (kind !== 'device' || dev.type !== 'net') throw errWith('not_joinable', 'в мост подключают сетевую карту, а не группу или устройство другого вида');
+    // Карта внутри группы тоже подключается в мост отдельно: группа при этом
+    // целиком занята быть не может (см. _claim), а остальные участники — могут.
+    if (String(target).startsWith('group:')) throw errWith('not_joinable', 'в мост подключают сетевую карту, а не группу');
+    const dev = this.devices.get(target);
+    if (!dev) throw errWith('device_not_found', `устройство ${target} не найдено`);
+    if (dev.type !== 'net') throw errWith('not_joinable', 'в мост подключают только сетевую карту');
     if (!dev.shared) throw errWith('not_shared', `устройство ${dev.title} не опубликовано`);
     if (!dev.hasTransport || !dev.meta?.bridgeJoin) {
       throw errWith('not_joinable', dev.meta?.joinNote || 'эту карту в мост подключить нельзя');
