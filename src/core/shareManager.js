@@ -527,6 +527,19 @@ export class ShareManager extends EventEmitter {
       throw e;
     }
 
+    // Пока устройство возвращается драйверу (unbind идёт секунды), оно не
+    // свободно: без этой отметки третий узел занимал его между удалением
+    // занятия и концом unbind, а новый bind обгонял старый unbind.
+    const held = resolved.devices.filter((d) => !this.preparing.has(d.deviceId));
+    for (const d of held) this.preparing.add(d.deviceId);
+    try {
+      return await this._release(resolved, target, holderId, force);
+    } finally {
+      for (const d of held) this.preparing.delete(d.deviceId);
+    }
+  }
+
+  async _release(resolved, target, holderId, force) {
     let released = 0;
     for (const dev of resolved.devices) {
       const claim = this.claims.get(dev.deviceId);
@@ -631,9 +644,9 @@ export class ShareManager extends EventEmitter {
     req.answeredAt = Date.now();
 
     if (accept) {
-      await this.release(req.target, holderId, { force: true });
-      // Держим цель за просителем: иначе между освобождением и его попыткой
-      // занять вклинится кто-то ещё, и согласие окажется впустую.
+      // Бронь ставится ДО освобождения: release ждёт драйвер секундами, и
+      // всё это время цель иначе не была бы закрыта ни занятием, ни бронью.
+      let reserved = [];
       try {
         const { devices } = this._resolve(req.target);
         for (const dev of devices) {
@@ -643,8 +656,15 @@ export class ShareManager extends EventEmitter {
             until: Date.now() + RESERVATION_MS,
           });
         }
+        reserved = devices;
       } catch (e) {
         log.warn(`бронь за "${req.requesterName}" не поставлена: ${e.message}`);
+      }
+      try {
+        await this.release(req.target, holderId, { force: true });
+      } catch (e) {
+        for (const dev of reserved) this.reservations.delete(dev.deviceId);
+        throw e;
       }
       log.info(`запрос ${requestId} удовлетворён, ${req.target} забронировано за "${req.requesterName}"`);
     } else {
