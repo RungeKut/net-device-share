@@ -60,6 +60,7 @@ export function stateHash(devices, extra = '') {
       d.shared ? 1 : 0,
       d.bindState,
       d.claim ? `${d.claim.holderId}@${d.claim.since}` : '-',
+      (d.joins || []).map((j) => j.holderId).sort().join(',') || '-',
       d.reservedFor ? d.reservedFor.nodeId : '-',
       d.purpose || '',
       d.traffic || '-',

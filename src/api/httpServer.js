@@ -452,6 +452,16 @@ export class ApiServer {
 
         case 'POST /api/v1/peer/claim': {
           if (!body?.target || !callerId) return sendJson(res, 400, { error: 'bad_request', message: 'нужны target и идентификатор узла' });
+          // «В мост»: подключение, а не занятие — карта остаётся доступной остальным.
+          if (body.mode === 'bridge') {
+            const joined = await share.join(body.target, {
+              holderId: callerId,
+              holderName: body.holderName || callerId.slice(0, 8),
+              holderAddress: remote,
+            });
+            this.app.onStateChanged();
+            return sendJson(res, 200, joined);
+          }
           const result = await share.claim(body.target, {
             holderId: callerId,
             holderName: body.holderName || callerId.slice(0, 8),
@@ -713,7 +723,7 @@ export class ApiServer {
           return sendJson(res, 200, r);
         }
         case '/api/v1/attach':
-          return sendJson(res, 200, await this.app.attachTarget(body.nodeId, body.target, { force: Boolean(body.force) }));
+          return sendJson(res, 200, await this.app.attachTarget(body.nodeId, body.target, { force: Boolean(body.force), mode: body.mode === 'bridge' ? 'bridge' : 'exclusive' }));
         case '/api/v1/detach': {
           const r = await this.app.attach.detach(body.id);
           this.app.onStateChanged();

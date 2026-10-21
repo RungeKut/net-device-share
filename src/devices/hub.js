@@ -109,7 +109,7 @@ export class DeviceHub {
     d.hasTransport = !blocker;
     d.meta = { ...d.meta, transportNote: blocker };
     d.bound = Boolean(this.net?.isLent(d.deviceId));
-    return d;
+    return this.net ? this.net.decorate(d) : d;
   }
 
   // Операции с драйвером имеют смысл только для устройств с пробросом.
@@ -131,11 +131,11 @@ export class DeviceHub {
     return this.backend.bind(device.key);
   }
 
-  async unbind(device) {
+  async unbind(device, holder = {}) {
     if (device.type === 'net') {
       // Проброс мог исчезнуть, пока карта отдана (сменились права, пропал
       // драйвер), — вернуть её всё равно нужно.
-      return this.net ? this.net.unlend(device) : { ok: true };
+      return this.net ? this.net.unlend(device, holder) : { ok: true };
     }
     if (!device.hasTransport) return { ok: true, reservationOnly: true };
     return this.backend.unbind(device.key);

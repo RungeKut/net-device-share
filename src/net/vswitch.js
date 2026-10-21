@@ -186,3 +186,38 @@ export function macBytes(text) {
   const hex = String(text || '').replace(/[^0-9a-f]/gi, '');
   return hex.length === 12 ? Buffer.from(hex, 'hex') : null;
 }
+
+/**
+ * Порт коммутатора для сокета держателя — то, что LinkServer принимает вместо
+ * посредника TAP (те же setSink / writeFrames / onceDrain).
+ *
+ * Через такой порт к одной карте подключаются несколько узлов сразу: их
+ * кадры сводит коммутатор, а не единственный TAP. Коммутатор не просит
+ * подождать — отстающий порт у него теряет кадры, поэтому writeFrames
+ * всегда «успешен», а onceDrain вызывается сразу.
+ */
+export class SocketPort {
+  /** @param {VSwitch} sw @param {string} id @param {string} label */
+  constructor(sw, id, label = id) {
+    this.sink = null;
+    this.handle = sw.attach(id, {
+      send: (frames) => { if (this.sink && !this.sink.destroyed) this.sink.write(frames); },
+      backlog: () => this.sink?.writableLength || 0,
+      label,
+    });
+  }
+
+  setSink(sink) { this.sink = sink; }
+
+  writeFrames(frames) {
+    this.handle.input(frames);
+    return true;
+  }
+
+  onceDrain(cb) { cb(); }
+
+  close() {
+    this.handle.detach();
+    this.sink = null;
+  }
+}

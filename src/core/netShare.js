@@ -46,19 +46,24 @@ import os from 'node:os';
 import { EventEmitter } from 'node:events';
 import { logger } from '../log.js';
 import { LinkServer, LinkClient } from '../net/tapLink.js';
-import { keepRelay } from '../net/relayKeeper.js';
+import { keepRelay, plugRelay } from '../net/relayKeeper.js';
+import { scanSubnet, suggestNextIp } from '../net/netScan.js';
 import { listTaps, createTap, renameAdapter, driverFilesPresent, friendlyName } from '../net/tapAdapters.js';
 import { bridge, unbridge, bridgeMembers, bridgeAdapter, setBridgeIp, withBridgeLock } from '../net/bridge.js';
 import {
   readIpConfig, applyIpConfig, resetIpConfig, validateIpConfig, BORROWED_METRIC,
 } from '../net/ipConfig.js';
-import { garpFrame, macBytes } from '../net/vswitch.js';
+import { garpFrame, macBytes, VSwitch, SocketPort } from '../net/vswitch.js';
 import { isElevated } from './installer.js';
 
 const log = logger('net-share');
 
 /** Окно учёта скорости — минута, как у счётчика USB/IP. */
 const WINDOW_SECONDS = 60;
+
+/** Как часто сканировать сеть карты в фоне, и насколько свежим должен быть результат при подключении. */
+const SCAN_EVERY_MS = 3 * 60 * 1000;
+const SCAN_FRESH_MS = 60 * 1000;
 
 /** Как часто смотреть, не появились ли у адаптера занявшего новые адреса. */
 const ADDRESS_WATCH_MS = 3000;
@@ -87,6 +92,16 @@ function ownAddresses(ip) {
   return ip.lease?.address ? [ip.lease.address] : [];
 }
 
+/** Адрес карты в её сети (ручной или от DHCP) вместе с длиной префикса; null — адреса нет. */
+function nicAddress(ip) {
+  if (!ip) return null;
+  const a = ip.dhcp
+    ? (ip.lease?.address ? { address: ip.lease.address, prefixLength: ip.lease.prefixLength } : null)
+    : ip.addresses?.[0];
+  if (!a?.address || !a.prefixLength || a.address.startsWith('169.254.')) return null;
+  return a;
+}
+
 export class NetShare extends EventEmitter {
   /**
    * @param {object} o
@@ -109,6 +124,9 @@ export class NetShare extends EventEmitter {
     /** GUID адаптеров, которые сейчас в работе, — чтобы не выдать один дважды. */
     this.busyTaps = new Set();
     this.meters = new Map();
+    /** deviceId → { at, address, prefixLength, hosts: [{ip, mac}] } — фоновое сканирование сети карты. */
+    this.scans = new Map();
+    this.scanning = new Map();
     this.tickTimer = null;
     /** Разборки мостов, которые ещё идут. */
     this.teardowns = Promise.resolve();
@@ -283,7 +301,7 @@ export class NetShare extends EventEmitter {
    *   ipNote — почему их нет, если их нет
    */
   lend(dev, holder) {
-    return withBridgeLock(() => this._lend(dev, holder));
+    return withBridgeLock(() => (holder?.mode === 'bridge' ? this._lendBridge(dev, holder) : this._lend(dev, holder)));
   }
 
   async _lend(dev, { holderId, holderAddress = null }) {
@@ -293,6 +311,9 @@ export class NetShare extends EventEmitter {
     const grant = (l) => ({ port: this.config.get('netLinkPort'), token: l.token, ip: l.ip, ipNote: l.ipNote || null });
 
     const existing = this.lends.get(dev.deviceId);
+    if (existing?.mode === 'bridge') {
+      throw errWith('bridge_busy', `карта «${existing.nic}» подключена в общий мост — целиком её не отдать, пока узлы из него не вышли`);
+    }
     if (existing) {
       if (existing.holderId === holderId && existing.session) return grant(existing);
       // Владелец забрал карту у одного держателя и отдаёт другому: мост
@@ -386,6 +407,222 @@ export class NetShare extends EventEmitter {
     }
   }
 
+  // ------------------------------------------------ подключение в общий мост
+
+  /**
+   * Почему эту карту нельзя подключить в мост (null — можно).
+   *
+   * Отличие от целиком отданной карты: владелец остаётся в той же сети под
+   * своим адресом, поэтому у карты должна быть связь и адрес IPv4, который
+   * переедет на мост.
+   */
+  joinBlocker(dev) {
+    const blocker = this.lendBlocker(dev);
+    if (blocker) return blocker;
+    const m = dev.meta || dev.details || {};
+    if (m.status && m.status !== 'Up') return 'у карты нет связи (кабель не подключён) — подключать в мост нечего';
+    if (!nicAddress(m.ip)) return 'у карты нет адреса IPv4 — владельцу нечем оставаться в этой сети';
+    return null;
+  }
+
+  /**
+   * Подключить узел в общий мост карты. Первый подключившийся собирает мост:
+   * карта и наш TAP в мосту Windows, а адрес владельца с карты переезжает на
+   * адаптер моста — он не теряет сеть. Каждый следующий получает свой порт
+   * на программном коммутаторе, который сводит всех участников.
+   */
+  async _lendBridge(dev, { holderId, holderAddress = null }) {
+    const blocker = this.joinBlocker(dev);
+    if (blocker) throw errWith('unavailable', blocker);
+
+    const existing = this.lends.get(dev.deviceId);
+    if (existing) {
+      if (existing.mode !== 'bridge') {
+        throw errWith('bridge_busy', `карта «${existing.nic}» отдана целиком — в мост её сейчас не подключить`);
+      }
+      return this._addHolder(existing, dev, holderId, holderAddress);
+    }
+    const other = [...this.lends.values()][0];
+    if (other) {
+      throw errWith('bridge_busy', `на этом компьютере уже отдана карта «${other.nic}». Мост в Windows один, `
+        + 'и вторая карта в нём слила бы две сети в одну — освободите первую');
+    }
+
+    const nic = dev.title;
+    const lend = {
+      deviceId: dev.deviceId, nic, nicMac: dev.meta?.mac || null, mode: 'bridge',
+      tap: null, relay: null, wire: null, sw: new VSwitch({ id: dev.deviceId, name: nic }), holders: new Map(),
+      hostIp: null, hostIpApplied: null, holderId: null, token: null, ip: null, ipNote: null,
+      stopped: false, shared: null, bridge: null, session: null,
+    };
+    this.lends.set(dev.deviceId, lend);
+    this._meterBegin(dev.deviceId);
+
+    try {
+      await this.teardowns;
+      const members = await bridgeMembers();
+      const sw = this.fabric.switchOfNic(nic);
+      if (members.length && !(sw && members.includes(nic))) {
+        throw errWith('bridge_foreign', `на компьютере уже есть сетевой мост (${members.join(', ')}), `
+          + 'собранный не приложением. Мост в Windows один — разберите его в «Сетевых подключениях»');
+      }
+      lend.shared = sw || null;
+
+      const guid = dev.meta?.guid || dev.details?.guid;
+      // Адрес владельца читается до моста: после сборки он переедет на мост.
+      if (!lend.shared) lend.hostIp = guid ? await readIpConfig(guid).catch(() => null) : null;
+
+      const tap = await this._pickTap('server');
+      lend.tap = tap;
+      const tapName = friendlyName(`NDS мост — ${nic}`);
+      if (await renameAdapter(tap.guid, tapName)) tap.name = tapName;
+
+      this.config.set({ netLent: { nic, tap: tap.name, shared: Boolean(lend.shared), mode: 'bridge' } });
+      if (lend.shared) {
+        log.info(`карта «${nic}» подключается в мост коммутатора «${sw.name}»: добавляется «${tap.name}»…`);
+        await bridge([tap.name], { hostIp: true });
+      } else {
+        log.info(`карта «${nic}» подключается в общий мост: «${nic}» + «${tap.name}», адрес владельца остаётся на мосту…`);
+        // Карта первой: MAC моста — её MAC, и компьютер остаётся в сети под
+        // прежним адресом (DHCP выдаст тот же).
+        await bridge([nic, tap.name], { hostIp: true });
+        const ba = await bridgeAdapter().catch(() => null);
+        if (ba) {
+          lend.bridge = { guid: ba.guid, name: ba.name, ip: await readIpConfig(ba.guid).catch(() => null) };
+          if (lend.hostIp) {
+            lend.hostIpApplied = await applyIpConfig(ba.guid, lend.hostIp);
+            if (!lend.hostIpApplied.ok) log.warn(`адрес карты «${nic}» на мост не перенесён: ${lend.hostIpApplied.error}`);
+          }
+          this.config.set({ netLent: { nic, tap: tap.name, shared: false, mode: 'bridge', bridge: lend.bridge } });
+        }
+      }
+
+      await this._keepRelay(lend, tap.guid, `карта «${nic}»`, (relay) => {
+        lend.relay = relay;
+        lend.wire?.detach();
+        lend.wire = plugRelay(lend.sw, 'wire', relay, 'провод');
+      });
+      const grant = await this._addHolder(lend, dev, holderId, holderAddress);
+      log.info(`карта «${nic}» подключена в общий мост, канал на порту ${this.config.get('netLinkPort')}`);
+      return grant;
+    } catch (e) {
+      log.error(`карту «${nic}» в мост подключить не удалось: ${e.message}`);
+      await this._teardownLend(lend);
+      throw e;
+    }
+  }
+
+  /** Порт на коммутаторе и пропуск для ещё одного узла. */
+  async _addHolder(lend, dev, holderId, holderAddress) {
+    this._dropHolder(lend, holderId);
+    const port = new SocketPort(lend.sw, `holder:${holderId}`, `узел ${holderId.slice(0, 8)}`);
+    const session = this.server.open({
+      relay: port,
+      allowAddress: holderAddress && !/^127\.|^::1$/.test(holderAddress) ? holderAddress : null,
+      label: `карта «${lend.nic}» → ${holderId.slice(0, 8)}`,
+      deviceId: lend.deviceId,
+    });
+    lend.holders.set(holderId, { holderId, port, session });
+    const advice = await this._joinAdvice(lend, dev);
+    this.emit('changed');
+    return {
+      port: this.config.get('netLinkPort'), token: session.token, mode: 'bridge',
+      ip: advice.dhcp ? { dhcp: true, addresses: [], gateways: [], dns: [] } : null,
+      ipNote: advice.note, suggest: advice.suggest, usedIps: advice.used,
+    };
+  }
+
+  _dropHolder(lend, holderId) {
+    const h = lend.holders?.get(holderId);
+    if (!h) return;
+    h.session.close();
+    h.port.close();
+    lend.holders.delete(holderId);
+  }
+
+  /**
+   * Что сказать подключившемуся про адрес. В сети с DHCP адаптер просто
+   * получает его сам. В сети со статикой DHCP, скорее всего, нет — тогда
+   * предлагаем свободный адрес следующим за владельцем и показываем, какие
+   * заняты.
+   */
+  async _joinAdvice(lend, dev) {
+    const cfg = lend.hostIp || dev.meta?.ip || null;
+    const own = nicAddress(cfg);
+    if (cfg?.dhcp || !own) return { dhcp: Boolean(cfg?.dhcp), note: null, suggest: null, used: [] };
+
+    const scan = await this._scan(dev, { maxAgeMs: SCAN_FRESH_MS }).catch((e) => {
+      log.warn(`сеть карты «${lend.nic}» не просканирована: ${e.message}`);
+      return this.scans.get(dev.deviceId) || null;
+    });
+    const used = (scan?.hosts || []).map((h) => h.ip);
+    const ownIps = (cfg.addresses || []).map((a) => a.address);
+    const next = suggestNextIp({
+      address: own.address, prefixLength: own.prefixLength, used,
+      reserved: [...ownIps, ...(cfg.gateways || []), ...(cfg.dns || [])],
+    });
+    const suggest = next ? { address: next, prefixLength: own.prefixLength, gateways: cfg.gateways || [], dns: cfg.dns || [] } : null;
+    const note = `В этой сети у владельца статический адрес ${own.address}/${own.prefixLength}, DHCP, скорее всего, нет. `
+      + (next ? `Задайте адаптеру свободный адрес — например, ${next}.` : 'Свободный адрес в подсети не нашёлся — задайте его вручную.');
+    return { dhcp: false, note, suggest, used };
+  }
+
+  // -------------------------------------- сканирование занятых адресов в сети
+
+  /**
+   * Дополнить устройство тем, что известно из сканирования, и при
+   * необходимости запустить новое. Вызывается при каждом опросе устройств,
+   * поэтому ничего не ждёт: результат появится при следующем.
+   */
+  decorate(d) {
+    const m = d.meta || {};
+    const blocker = this.joinBlocker(d);
+    d.meta = { ...m, bridgeJoin: !blocker, joinNote: blocker };
+    const scan = this.scans.get(d.deviceId);
+    if (scan) d.meta = { ...d.meta, usedIps: scan.hosts.map((h) => h.ip), scannedAt: scan.at };
+    if (!blocker) {
+      const cfg = this.lends.get(d.deviceId)?.hostIp || m.ip;
+      const own = nicAddress(cfg);
+      if (own && cfg && !cfg.dhcp) {
+        d.meta.staticAddress = { ...own, next: suggestNextIp({
+          address: own.address, prefixLength: own.prefixLength,
+          used: (scan?.hosts || []).map((h) => h.ip),
+          reserved: [...(cfg.addresses || []).map((a) => a.address), ...(cfg.gateways || []), ...(cfg.dns || [])],
+        }) };
+      }
+      if (this.config.isShared(d.deviceId) && (!scan || Date.now() - scan.at > SCAN_EVERY_MS)) {
+        this._scan(d, { maxAgeMs: SCAN_EVERY_MS }).catch((e) => log.debug(`сканирование «${d.title}»: ${e.message}`));
+      }
+    }
+    return d;
+  }
+
+  /** Просканировать сеть карты (не чаще maxAgeMs; параллельные вызовы делят один запуск). */
+  async _scan(dev, { maxAgeMs }) {
+    const id = dev.deviceId;
+    const cached = this.scans.get(id);
+    if (cached && Date.now() - cached.at < maxAgeMs) return cached;
+    if (this.scanning.has(id)) return this.scanning.get(id);
+
+    const lend = this.lends.get(id);
+    // Пока карта в мосту, адрес владельца живёт на мосту, и соседей надо
+    // искать у него. Целиком отданная карта адреса не имеет вовсе.
+    if (lend && lend.mode !== 'bridge') return cached || null;
+    const cfg = lend?.hostIp || dev.meta?.ip;
+    const own = nicAddress(cfg);
+    const alias = lend?.bridge?.name || dev.title;
+    if (!own) return cached || null;
+
+    const run = (async () => {
+      const hosts = await scanSubnet({ alias, address: own.address, prefixLength: own.prefixLength });
+      const scan = { at: Date.now(), address: own.address, prefixLength: own.prefixLength, hosts };
+      this.scans.set(id, scan);
+      return scan;
+    })().finally(() => this.scanning.delete(id));
+    this.scanning.set(id, run);
+    return run;
+  }
+
   _openSession(lend, holderId, holderAddress) {
     lend.session = this.server.open({
       relay: lend.relay,
@@ -402,7 +639,8 @@ export class NetShare extends EventEmitter {
   _scheduleTeardownOnDisconnect(deviceId) {
     if (!deviceId) return;
     const lend = this.lends.get(deviceId);
-    if (!lend || lend.teardownTimer) return;
+    // У подключения в мост срок держит аренда каждого узла (heartbeat), а не канал.
+    if (!lend || lend.mode === 'bridge' || lend.teardownTimer) return;
     lend.teardownTimer = setTimeout(() => {
       lend.teardownTimer = null;
       if (lend.session?.connected()) return;
@@ -429,12 +667,20 @@ export class NetShare extends EventEmitter {
    * Вызывается при любом освобождении сетевой карты — и отданной, и
    * забронированной: у брони здесь возвращаются настройки держателя.
    */
-  async unlend(dev) {
+  async unlend(dev, holder = {}) {
     if (this.config.get('netRestore')?.[dev.deviceId]) {
       await this._restoreHeld(dev.deviceId).catch((e) => log.error(`настройки карты «${dev.title}» не возвращены: ${e.message}`));
     }
     const lend = this.lends.get(dev.deviceId);
     if (!lend) return { ok: true };
+    if (lend.mode === 'bridge' && holder.holderId) {
+      this._dropHolder(lend, holder.holderId);
+      // Пока в мосту кто-то остался, он живёт: общий мост разбирает последний.
+      if (lend.holders.size) {
+        this.emit('changed');
+        return { ok: true, remaining: lend.holders.size };
+      }
+    }
     this._cancelTeardownTimer(dev.deviceId);
     lend.session?.close();
     lend.session = null;
@@ -446,6 +692,8 @@ export class NetShare extends EventEmitter {
   async _teardownLend(lend) {
     lend.stopped = true;
     lend.session?.close();
+    for (const id of [...(lend.holders?.keys() || [])]) this._dropHolder(lend, id);
+    lend.wire?.detach();
     this.lends.delete(lend.deviceId);
     this.meters.delete(lend.deviceId);
     // Устройства стенда помнят адрес карты за MAC адаптера занявшего.
@@ -738,7 +986,9 @@ export class NetShare extends EventEmitter {
         nic: l.nic,
         tap: l.tap ? { name: l.tap.name, guid: l.tap.guid } : null,
         holderId: l.holderId,
-        connected: Boolean(l.session?.connected()),
+        connected: l.mode === 'bridge' ? [...l.holders.values()].some((h) => h.session.connected()) : Boolean(l.session?.connected()),
+        mode: l.mode || 'exclusive',
+        holders: l.mode === 'bridge' ? [...l.holders.keys()] : undefined,
         shared: l.shared ? { id: l.shared.id, name: l.shared.name } : null,
         failed: l.failed || null,
       })),
@@ -812,7 +1062,9 @@ export class NetShare extends EventEmitter {
       bytesOutPerMinute: sum(m.ringOut),
       totalIn: m.totalIn,
       totalOut: m.totalOut,
-      connections: lend?.session?.connected() ? 1 : 0,
+      connections: lend?.mode === 'bridge'
+        ? [...lend.holders.values()].filter((h) => h.session.connected()).length
+        : (lend?.session?.connected() ? 1 : 0),
       lastActivity: m.lastActivity,
     };
   }

@@ -468,7 +468,7 @@ export class App extends EventEmitter {
   }
 
   /** Занять цель. force — право владельца забрать своё без спроса. */
-  async attachTarget(nodeId, target, { force = false } = {}) {
+  async attachTarget(nodeId, target, { force = false, mode = 'exclusive' } = {}) {
     const info = this._targetInfo(nodeId, target);
 
     const needsClient = info.devices.some((d) => d.hasTransport && d.type !== 'net');
@@ -480,7 +480,7 @@ export class App extends EventEmitter {
       if (why) throw new Error(why);
     }
 
-    const r = await this.attach.attach(info, { force });
+    const r = await this.attach.attach(info, { force, mode });
     const peer = this.peers.get(nodeId);
     if (peer) this.peers.refreshPeerState(peer).catch(() => {});
     this.onStateChanged();
@@ -1227,6 +1227,9 @@ export class App extends EventEmitter {
       reservedFor: d.reservedFor || null,
       busy: Boolean(d.claim),
       busyByMe: Boolean(d.claim && d.claim.holderId === selfId),
+      // Подключённые в общий мост карты: карта остаётся доступной остальным.
+      joins: d.joins || [],
+      joinedByMe: Boolean(held && held.mode === 'bridge'),
       attachmentId: held ? held.id : null,
       attachState: held ? held.state : null,
       attachStage: held?.stage || null,
@@ -1237,6 +1240,9 @@ export class App extends EventEmitter {
       adapter: held ? (held.parts.find((p) => p.adapter)?.adapter ?? null) : null,
       adapterIp: held ? (held.parts.find((p) => p.adapter)?.ip ?? null) : null,
       adapterIpApplied: held ? (held.parts.find((p) => p.adapter)?.ipApplied ?? null) : null,
+      // Подсказка владельца про адрес (мост в сети со статикой) и занятые адреса.
+      adapterNote: held ? (held.parts.find((p) => p.adapter)?.ipNote ?? null) : null,
+      adapterSuggest: held ? (held.parts.find((p) => p.adapter)?.suggest ?? null) : null,
     };
   }
 

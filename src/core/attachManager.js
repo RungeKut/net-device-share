@@ -151,7 +151,11 @@ export class AttachManager extends EventEmitter {
    * @param {object} t { nodeId, nodeName, host, apiPort, usbipPort, target, kind, title, devices[] }
    * @param {boolean} force — право владельца забрать своё без спроса
    */
-  async attach(t, { force = false } = {}) {
+  async attach(t, { force = false, mode = 'exclusive' } = {}) {
+    const bridgeMode = mode === 'bridge';
+    if (bridgeMode && t.nodeId === this.config.get('nodeId')) {
+      throw new Error('свою карту в мост подключать незачем: она и так в вашей сети');
+    }
     const id = attachKey(t.nodeId, t.target);
     const current = this.attachments.get(id);
     if (current && (current.state === 'attached' || current.state === 'attaching')) {
@@ -168,6 +172,8 @@ export class AttachManager extends EventEmitter {
       usbipPort: t.usbipPort || this.config.get('usbipPort'),
       target: t.target,
       kind: t.kind || 'device',
+      // bridge — подключение в общий мост карты: карта остаётся доступной другим.
+      mode: bridgeMode ? 'bridge' : 'exclusive',
       title: t.title,
       parts: (t.devices || []).map((d) => ({
         deviceId: d.deviceId,
@@ -185,6 +191,9 @@ export class AttachManager extends EventEmitter {
         ipApplied: null,
         // Почему владелец не прислал настройки (карта в его коммутаторе).
         ipNote: null,
+        // Свободный адрес, который предложил владелец (мост в сети со статикой).
+        suggest: null,
+        usedIps: null,
         error: null,
       })),
       since: Date.now(),
@@ -204,7 +213,12 @@ export class AttachManager extends EventEmitter {
       this._stage(rec, net
         ? 'владелец готовит карту: адаптер и мост, до минуты'
         : 'запрос права у владельца');
-      const grant = await this._requestClaim(t, force);
+      const grant = await this._requestClaim(t, force, mode);
+      if (bridgeMode && grant.mode !== 'bridge') {
+        // Узел старой версии не знает про мост и занял карту целиком.
+        await this._requestRelease(rec).catch(() => {});
+        throw new Error('у владельца версия приложения без подключения в мост — обновите его, и кнопка заработает');
+      }
       rec.usbipPort = grant.usbipPort || rec.usbipPort;
       rec.leaseMs = grant.leaseMs;
 
@@ -355,6 +369,8 @@ export class AttachManager extends EventEmitter {
     part.ip = res.ip;
     part.ipApplied = res.ipApplied;
     part.ipNote = link.ipNote || null;
+    part.suggest = link.suggest || null;
+    part.usedIps = link.usedIps || null;
   }
 
   /** Держатель поменял настройки IP карты — запомнить, что теперь на ней. */
@@ -375,7 +391,7 @@ export class AttachManager extends EventEmitter {
 
   // --------------------------------------------------------------- вызовы
 
-  async _requestClaim(t, force) {
+  async _requestClaim(t, force, mode = 'exclusive') {
     if (t.nodeId === this.config.get('nodeId')) {
       return this.share.claim(t.target, {
         holderId: this.config.get('nodeId'),
@@ -392,7 +408,7 @@ export class AttachManager extends EventEmitter {
         port: t.apiPort,
         path: '/api/v1/peer/claim',
         method: 'POST',
-        body: { target: t.target, holderName: this.config.get('name'), force: Boolean(force) },
+        body: { target: t.target, holderName: this.config.get('name'), force: Boolean(force), ...(mode === 'bridge' ? { mode } : {}) },
         key: this.keyFor(t.nodeId),
         nodeId: this.config.get('nodeId'),
         timeoutMs: slow ? 180000 : 15000,

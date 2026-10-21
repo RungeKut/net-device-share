@@ -59,6 +59,14 @@ export class ShareManager extends EventEmitter {
     this.claims = new Map();
     /** @type {Map<string, object>} deviceId → бронь после согласия держателя */
     this.reservations = new Map();
+    /**
+     * Подключения «в мост»: сетевую карту владельца в общий мост могут
+     * включить несколько узлов сразу, и это не занятие — карта остаётся
+     * свободной для следующих. deviceId → Map(holderId → подключение).
+     */
+    this.joins = new Map();
+    /** Подключения одной карты идут по очереди: мост собирается один раз. */
+    this.joinChains = new Map();
     /** @type {Map<string, object>} requestId → запрос */
     this.requests = new Map();
     /**
@@ -148,6 +156,11 @@ export class ShareManager extends EventEmitter {
         log.warn(`устройство ${id} исчезло, занятость узла "${claim.holderName}" снята`);
         this.emit('claim-revoked', { deviceId: id, claim, reason: 'device_gone' });
       }
+      for (const join of this._joinsOf(id).values()) {
+        log.warn(`устройство ${id} исчезло, подключение узла "${join.holderName}" снято`);
+        this.emit('claim-revoked', { deviceId: id, claim: join, reason: 'device_gone' });
+      }
+      this.joins.delete(id);
       this.reservations.delete(id);
       // Отданная сетевая карта пропала (выдернули USB-адаптер) — мост с её
       // TAP-адаптером больше ни к чему, и сам он не разберётся.
@@ -167,7 +180,7 @@ export class ShareManager extends EventEmitter {
     if (!dev) throw errWith('device_not_found', `устройство ${deviceId} не найдено`);
     if (dev.unavailableReason) throw errWith('unavailable', dev.unavailableReason);
 
-    if (!shared && this.claims.has(deviceId)) {
+    if (!shared && this._held(deviceId)) {
       throw errWith('busy', 'устройство сейчас занято — сначала освободите его');
     }
     if (!shared) {
@@ -239,7 +252,7 @@ export class ShareManager extends EventEmitter {
   setGroupShared(groupId, shared) {
     const group = this.groups().find((g) => g.id === groupId);
     if (!group) throw errWith('not_found', 'группа не найдена');
-    if (!shared && group.members.some((m) => this.claims.has(m))) {
+    if (!shared && group.members.some((m) => this._held(m))) {
       throw errWith('busy', 'группа сейчас занята — сначала освободите её');
     }
     const groups = this.groups().map((g) => (g.id === groupId ? { ...g, shared: Boolean(shared) } : g));
@@ -265,7 +278,7 @@ export class ShareManager extends EventEmitter {
       }
     }
     for (const m of clean) {
-      if (this.claims.has(m)) throw errWith('busy', 'нельзя менять состав, пока устройства группы заняты');
+      if (this._held(m)) throw errWith('busy', 'нельзя менять состав, пока устройства группы заняты');
     }
 
     const existing = this.groups().find((g) => g.id === groupId);
@@ -289,7 +302,7 @@ export class ShareManager extends EventEmitter {
   deleteGroup(groupId) {
     const group = this.groups().find((g) => g.id === groupId);
     if (!group) throw errWith('not_found', 'группа не найдена');
-    if (group.members.some((m) => this.claims.has(m))) {
+    if (group.members.some((m) => this._held(m))) {
       throw errWith('busy', 'группа сейчас занята — сначала освободите её');
     }
     this.config.set({ groups: this.groups().filter((g) => g.id !== groupId) });
@@ -369,6 +382,11 @@ export class ShareManager extends EventEmitter {
         blocking.push({ dev, claim: existing });
         continue;
       }
+      const joined = [...this._joinsOf(dev.deviceId).values()].filter((j) => j.holderId !== holderId);
+      if (joined.length && !preempt) {
+        blocking.push({ dev, joined });
+        continue;
+      }
       const reserved = this.reservations.get(dev.deviceId);
       if (reserved && reserved.nodeId !== holderId && reserved.until > Date.now() && !preempt) {
         blocking.push({ dev, reserved });
@@ -376,10 +394,13 @@ export class ShareManager extends EventEmitter {
     }
     if (blocking.length) {
       const first = blocking[0];
-      const who = first.claim ? first.claim.holderName : first.reserved.nodeName;
+      const who = first.claim ? first.claim.holderName
+        : first.joined ? first.joined.map((j) => j.holderName).join(', ')
+        : first.reserved.nodeName;
       throw errWith('busy',
         kind === 'group'
           ? `группа занята: ${first.dev.title} — у узла "${who}"`
+          : first.joined ? `в мост карты подключены узлы: ${who} — целиком её занять нельзя, пока они не выйдут`
           : `устройство занято узлом "${who}"`,
         { claim: first.claim ? { ...first.claim } : null, blocking: blocking.map((b) => b.dev.title) });
     }
@@ -387,6 +408,7 @@ export class ShareManager extends EventEmitter {
     // Владелец забирает своё: снимаем чужие аренды перед захватом.
     if (preempt) {
       for (const dev of devices) {
+        for (const join of [...this._joinsOf(dev.deviceId).values()]) await this._leave(dev, join.holderId, 'owner_preempt');
         const existing = this.claims.get(dev.deviceId);
         if (existing && existing.holderId !== holderId) {
           this.claims.delete(dev.deviceId);
@@ -455,11 +477,122 @@ export class ShareManager extends EventEmitter {
     };
   }
 
+  _joinsOf(deviceId) {
+    return this.joins.get(deviceId) || new Map();
+  }
+
+  /** Занято ли устройство хоть как-то: занятием или подключением в мост. */
+  _held(deviceId) {
+    return this.claims.has(deviceId) || this._joinsOf(deviceId).size > 0;
+  }
+
+  /**
+   * Подключить узел в общий мост сетевой карты. В отличие от claim карта
+   * остаётся доступной остальным: подключаться могут все, а целиком занять
+   * её можно, только пока в мосту никого нет.
+   */
+  async join(target, who) {
+    const { kind, devices } = this._resolve(target);
+    const dev = devices[0];
+    if (kind !== 'device' || dev.type !== 'net') throw errWith('not_joinable', 'в мост подключают сетевую карту, а не группу или устройство другого вида');
+    if (!dev.shared) throw errWith('not_shared', `устройство ${dev.title} не опубликовано`);
+    if (!dev.hasTransport || !dev.meta?.bridgeJoin) {
+      throw errWith('not_joinable', dev.meta?.joinNote || 'эту карту в мост подключить нельзя');
+    }
+    if (who.holderId === this.config.get('nodeId')) {
+      throw errWith('not_joinable', 'свою карту в мост подключать незачем: она и так в вашей сети');
+    }
+    // Мост собирается один раз, дальше подключения идут по очереди.
+    const prev = this.joinChains.get(dev.deviceId) || Promise.resolve();
+    const run = prev.catch(() => {}).then(() => this._join(dev, who));
+    this.joinChains.set(dev.deviceId, run.catch(() => {}));
+    return run;
+  }
+
+  async _join(dev, { holderId, holderName, holderAddress = null }) {
+    const id = dev.deviceId;
+    const taker = this.claims.get(id);
+    if (taker) {
+      throw errWith('busy', `карта занята целиком узлом "${taker.holderName}" — в мост её сейчас не подключить`, { claim: { ...taker } });
+    }
+    if (this.preparing.has(id)) throw errWith('busy', `${dev.title} прямо сейчас готовится — попробуйте через несколько секунд`);
+    const reserved = this.reservations.get(id);
+    if (reserved && reserved.nodeId !== holderId && reserved.until > Date.now()) {
+      throw errWith('busy', `карта забронирована узлом "${reserved.nodeName}"`);
+    }
+
+    let r;
+    try {
+      r = await this.hub.bind(dev, { holderId, holderAddress, mode: 'bridge' });
+    } catch (e) {
+      dev.bindState = BIND_STATE.ERROR;
+      dev.lastError = e.message;
+      dev.stateStamp = Date.now();
+      this._emitIfChanged(true);
+      throw errWith('bind_failed', `не удалось подключить в мост ${dev.title}: ${e.message}`);
+    }
+
+    const now = Date.now();
+    const lease = this.config.get('claimLeaseMs');
+    const byHolder = this.joins.get(id) || new Map();
+    byHolder.set(holderId, { holderId, holderName, since: byHolder.get(holderId)?.since || now, renewedAt: now, expiresAt: now + lease, mode: CLAIM_MODE.REMOTE });
+    this.joins.set(id, byHolder);
+    dev.bindState = BIND_STATE.BOUND;
+    dev.stateStamp = now;
+    dev.lastError = null;
+    this.reservations.delete(id);
+    this.trafficBegin(id);
+    log.info(`${dev.title}: узел "${holderName}" подключён в мост (подключённых: ${byHolder.size})`);
+    this._emitIfChanged(true);
+
+    return {
+      ok: true,
+      target: id,
+      kind: 'device',
+      mode: 'bridge',
+      usbipPort: this.dataPort(),
+      links: r?.link ? [{ deviceId: id, ...r.link }] : [],
+      leaseMs: lease,
+      devices: [this.toDto(dev)],
+    };
+  }
+
+  /** Снять одно подключение; когда оно последнее, мост разбирается. */
+  async _leave(dev, holderId, reason) {
+    const byHolder = this.joins.get(dev.deviceId);
+    const join = byHolder?.get(holderId);
+    if (!join) return;
+    byHolder.delete(holderId);
+    if (!byHolder.size) this.joins.delete(dev.deviceId);
+    const last = !byHolder.size;
+    try {
+      await this.hub.unbind(dev, { holderId, mode: 'bridge' });
+      if (last) {
+        dev.bindState = BIND_STATE.UNBOUND;
+        dev.stateStamp = Date.now();
+        dev.lastError = null;
+      }
+    } catch (e) {
+      log.warn(`отключение ${holderId} от ${dev.deviceId} не удалось: ${e.message}`);
+      if (last) { dev.bindState = BIND_STATE.ERROR; dev.stateStamp = Date.now(); dev.lastError = e.message; }
+    }
+    this.emit('claim-revoked', { deviceId: dev.deviceId, claim: join, reason });
+    log.info(`${dev.title}: узел "${join.holderName}" вышел из моста${last ? ', мост разобран' : ''}`);
+    this._emitIfChanged(true);
+  }
+
   renew(target, holderId) {
     const { devices } = this._resolve(target);
     const lease = this.config.get('claimLeaseMs');
     let renewed = 0;
     for (const dev of devices) {
+      const join = this._joinsOf(dev.deviceId).get(holderId);
+      if (join) {
+        join.expiresAt = Date.now() + lease;
+        join.renewedAt = Date.now();
+        renewed++;
+        continue;
+      }
       const claim = this.claims.get(dev.deviceId);
       if (!claim) continue;
       if (claim.holderId !== holderId) throw errWith('forbidden', 'занято другим узлом');
@@ -540,6 +673,18 @@ export class ShareManager extends EventEmitter {
   }
 
   async _release(resolved, target, holderId, force) {
+    // Подключение в мост снимается отдельно от занятия: у карты их может
+    // быть несколько. Владелец с force снимает все.
+    if (resolved.kind === 'device') {
+      const dev = resolved.devices[0];
+      const joins = this._joinsOf(dev.deviceId);
+      if (joins.has(holderId) || (force && joins.size && !this.claims.has(dev.deviceId))) {
+        const who = joins.has(holderId) ? [holderId] : [...joins.keys()];
+        for (const id of who) await this._leave(dev, id, id === holderId ? 'released' : 'forced');
+        return { ok: true, released: who.length };
+      }
+    }
+
     let released = 0;
     for (const dev of resolved.devices) {
       const claim = this.claims.get(dev.deviceId);
@@ -725,6 +870,15 @@ export class ShareManager extends EventEmitter {
         .catch((e) => log.error('автоосвобождение не удалось:', e.message));
     }
 
+    for (const [deviceId, byHolder] of this.joins) {
+      for (const join of byHolder.values()) {
+        if (join.expiresAt > now) continue;
+        log.warn(`подключение ${deviceId} узлом "${join.holderName}" истекло — снимаем`);
+        const dev = this.devices.get(deviceId);
+        if (dev) this._leave(dev, join.holderId, 'expired').catch((e) => log.error('снятие подключения не удалось:', e.message));
+      }
+    }
+
     for (const [deviceId, res] of this.reservations) {
       if (res.until > now) continue;
       this.reservations.delete(deviceId);
@@ -765,6 +919,7 @@ export class ShareManager extends EventEmitter {
       hasTransport: dev.hasTransport,
       shared: Boolean(dev.shared),
       bindState: dev.bindState,
+      joins: [...this._joinsOf(dev.deviceId).values()].map((j) => ({ holderId: j.holderId, holderName: j.holderName, since: j.since })),
       claim: claim ? { ...claim, holderSilentMs: claim.mode === CLAIM_MODE.REMOTE ? Date.now() - (claim.renewedAt || claim.since) : 0, leaseMs: this.config.get('claimLeaseMs') } : null,
       reservedFor: reserved && reserved.until > Date.now() ? { ...reserved } : null,
       groupId: group ? group.id : null,
