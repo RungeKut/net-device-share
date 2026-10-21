@@ -657,6 +657,10 @@ export class PeerRegistry extends EventEmitter {
     if (this.inflight.has(peer.nodeId)) return;
     this.inflight.add(peer.nodeId);
     try {
+      // Пересказанный узел: сначала выясняем, как до него добраться, — иначе
+      // первый запрос состояния уходил бы напрямую в никуда.
+      const main = this.primaryRoute(peer);
+      if (main && main.kind !== 'direct' && !main.mode) await this.probeRoute(peer, main);
       const ep = await this.endpoint(peer, peer.apiPort);
       const state = await rpc({
         host: ep.host,

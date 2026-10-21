@@ -541,6 +541,10 @@ export class App extends EventEmitter {
       const route = (routeKey && peer.routes.get(routeKey)) || this.peers.primaryRoute(peer);
       if (routeKey && !peer.routes.get(routeKey)) throw new Error('выбранный маршрут до узла уже недоступен — обновите список');
       if (route) {
+        if (route.kind !== 'direct' && !route.mode) await this.peers.probeRoute(peer, route);
+        if (route.kind !== 'direct' && !route.mode) {
+          throw new Error(`узел «${peer.name}» по адресу ${route.address} недоступен ни напрямую, ни через шлюз`);
+        }
         const ep = await this.peers.endpoint(peer, route.apiPort || peer.apiPort, route.key);
         info.routeKey = route.key;
         info.tunnel = ep.tunnel;
