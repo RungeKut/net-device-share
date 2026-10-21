@@ -1406,7 +1406,7 @@ function renderFederation() {
 
   const rows = [];
   if (d.blocked) {
-    rows.push('<div class="fed-row err">Адреса указаны, но общий ключ не задан — обмен выключен.</div>');
+    rows.push('<div class="fed-row err">Адреса указаны, но узел не состоит ни в одном круге: включите «узлы без ключа» или задайте ключ сети — иначе обмен выключен.</div>');
   } else if (!d.enabled) {
     rows.push('<div class="fed-row muted">Адреса не указаны — работаем только в своей подсети.</div>');
   } else {
