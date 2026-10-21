@@ -68,18 +68,21 @@ export function isVirtualInterface({ iface, mac }) {
  *
  * @returns {object[]} первый элемент — основная сеть (её адрес узел показывает о себе)
  */
-export function resolveNetworks(cidr) {
+export function resolveNetworks(cidr, { exclude = [] } = {}) {
   if (cidr && cidr !== 'auto') {
     const one = resolveNetwork(cidr);
     return one ? [one] : [];
   }
   const seen = new Set();
+  const skip = new Set(exclude);
   const real = listNetworks()
+    .filter((n) => !skip.has(n.iface))
     .filter((n) => isPrivate(n.address) && !isVirtualInterface(n))
     .filter((n) => !seen.has(n.cidr) && seen.add(n.cidr));
   if (real.length) return real;
+  // Исключённые карты не возвращаются и запасным путём: иначе исключение было бы пустым.
   const one = resolveNetwork('auto');
-  return one ? [one] : [];
+  return one && !skip.has(one.iface) ? [one] : [];
 }
 
 export function maskToPrefix(mask) {

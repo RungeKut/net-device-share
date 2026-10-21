@@ -220,7 +220,10 @@ export class NetShare extends EventEmitter {
     if (!m.hardware) return 'это программный адаптер — пробрасывается только настоящая сетевая карта';
     if (m.wireless) return 'Wi-Fi не пропускает кадры с чужими MAC-адресами — пробросить его мостом нельзя';
     if (dev.title && [].concat(this.workingIface() || []).includes(dev.title)) {
-      return 'через эту карту работает само приложение: отдав её, компьютер потеряет связь с остальными узлами';
+      return this.config.get('network') === 'auto'
+        ? 'приложение ищет через эту карту узлы (автоматический выбор сетей): отдав её, компьютер потеряет связь с узлами этой сети. '
+          + 'Отметьте у карты «Не использовать для обнаружения» или выберите основную сеть вручную в настройках — тогда её можно пробросить'
+        : 'через эту карту работает само приложение: отдав её, компьютер потеряет связь с остальными узлами';
     }
     if (!driverFilesPresent()) return 'нет файлов драйвера TAP (installers/windows/tap-windows6-9.27.0)';
     if (!this.elevated) return 'приложение запущено без прав администратора — мост Windows без них не собирается';
@@ -625,7 +628,13 @@ export class NetShare extends EventEmitter {
   decorate(d) {
     const m = d.meta || {};
     const blocker = this.joinBlocker(d);
-    d.meta = { ...m, bridgeJoin: !blocker, joinNote: blocker };
+    const excluded = (this.config.get('discoveryExclude') || []).includes(d.title);
+    const inUse = [].concat(this.workingIface() || []).includes(d.title);
+    d.meta = {
+      ...m, bridgeJoin: !blocker, joinNote: blocker,
+      // Через эту карту приложение сейчас ищет узлы; excluded — карту исключили из обнаружения.
+      discoveryUse: inUse, discoveryExcluded: excluded, discoveryAuto: this.config.get('network') === 'auto',
+    };
     const scan = this.scans.get(d.deviceId);
     if (scan) d.meta = { ...d.meta, usedIps: scan.hosts.map((h) => h.ip), scannedAt: scan.at };
     if (!blocker) {

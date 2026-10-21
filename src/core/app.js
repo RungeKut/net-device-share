@@ -92,7 +92,7 @@ export class App extends EventEmitter {
   }
 
   async start() {
-    this.networks = resolveNetworks(this.config.get('network'));
+    this.networks = this._resolveNets();
     this.network = this.networks[0] || null;
     if (!this.network) {
       throw new Error('не найден подходящий сетевой интерфейс IPv4 — проверьте подключение к сети');
@@ -309,6 +309,11 @@ export class App extends EventEmitter {
     return (this.networks.find((n) => ipInCidr(peerAddress, n.cidr)) || this.network).address;
   }
 
+  /** Сети узла по настройкам: «автоматически» — все настоящие карты, кроме исключённых из обнаружения. */
+  _resolveNets(cidr = this.config.get('network'), exclude = this.config.get('discoveryExclude') || []) {
+    return resolveNetworks(cidr, { exclude });
+  }
+
   _setNetworks(nets) {
     this.networks = nets;
     this.network = nets[0];
@@ -323,7 +328,7 @@ export class App extends EventEmitter {
    */
   async _watchNetworks() {
     if (this.stopping || !this.discovery) return;
-    const now = resolveNetworks(this.config.get('network'));
+    const now = this._resolveNets();
     if (!now.length) return;
     const sig = (list) => list.map((n) => `${n.iface}|${n.address}/${n.prefix}`).sort().join(';');
     if (sig(now) === sig(this.networks)) return;
@@ -834,7 +839,7 @@ export class App extends EventEmitter {
       'apiPort', 'discoveryPort', 'usbipPort', 'usbipdPath', 'usbipPath', 'logLevel', 'enabledTypes',
       'meterTraffic', 'trafficPort', 'netLinkPort', 'autoInstall',
       'seeds', 'gossipIntervalMs', 'remotePollIntervalMs', 'announceIntervalMs',
-      'announceIdleIntervalMs', 'announceBackoff', 'announceTransport', 'updateMode', 'metricsEnabled'];
+      'announceIdleIntervalMs', 'announceBackoff', 'announceTransport', 'updateMode', 'metricsEnabled', 'discoveryExclude'];
     const clean = {};
     for (const k of allowed) {
       if (patch[k] !== undefined) clean[k] = patch[k];
@@ -847,6 +852,10 @@ export class App extends EventEmitter {
       if (!clean.enabledTypes.length) clean.enabledTypes = ['usb'];
     }
     if (clean.seeds !== undefined) clean.seeds = this._cleanSeeds(clean.seeds);
+    if (clean.discoveryExclude !== undefined) {
+      clean.discoveryExclude = [...new Set((Array.isArray(clean.discoveryExclude) ? clean.discoveryExclude : [])
+        .map((x) => String(x || '').trim()).filter(Boolean))].slice(0, 50);
+    }
 
     if (clean.networks !== undefined) clean.networks = this._cleanNetworks(clean.networks);
     if (clean.seeOpen !== undefined) clean.seeOpen = Boolean(clean.seeOpen);
@@ -911,11 +920,15 @@ export class App extends EventEmitter {
     const needsRestart = ['apiPort', 'discoveryPort', 'usbipPort', 'meterTraffic', 'trafficPort', 'netLinkPort']
       .some((k) => clean[k] !== undefined && clean[k] !== before[k]);
 
-    if (clean.network !== undefined && clean.network !== before.network) {
-      const nets = resolveNetworks(clean.network);
+    const excludeChanged = clean.discoveryExclude !== undefined
+      && JSON.stringify(clean.discoveryExclude) !== JSON.stringify(before.discoveryExclude || []);
+    if ((clean.network !== undefined && clean.network !== before.network) || excludeChanged) {
+      const nets = this._resolveNets(clean.network ?? before.network, clean.discoveryExclude ?? before.discoveryExclude ?? []);
       if (!nets.length) {
-        this.config.set({ network: before.network });
-        throw new Error(`сеть ${clean.network} недоступна на этом компьютере`);
+        this.config.set({ network: before.network, discoveryExclude: before.discoveryExclude || [] });
+        throw new Error(clean.network !== undefined && clean.network !== before.network
+          ? `сеть ${clean.network} недоступна на этом компьютере`
+          : 'нельзя исключить все сети: приложению негде искать узлы');
       }
       this._setNetworks(nets);
       await this.discovery.setNetworks(this.networks);
@@ -1218,6 +1231,7 @@ export class App extends EventEmitter {
         busy: this.netManager.busy,
       } : null,
       networks: listNetworks(),
+      discoveryExclude: this.config.get('discoveryExclude') || [],
       deviceTypes: Object.values(DEVICE_TYPES).map((t) => ({ ...t })),
       reservationNote: RESERVATION_NOTE,
       localDevices,

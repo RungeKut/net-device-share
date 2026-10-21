@@ -399,7 +399,24 @@ function trafficPill(t) {
     + `${idle ? '⏸' : '⇅'} ${esc(formatRate(total))}</span>`;
 }
 
-function transportPill(hasTransport, note) {
+/** Что потеряют соседи, если приложение перестанет искать узлы в сети карты. */
+function neighborsOnNetwork(cidr) {
+  return (state.peers || []).filter((p) => p.online && p.network === cidr);
+}
+
+/** Пояснение: карта задействована в обнаружении, и как её освободить для проброса. */
+function discoveryInfo(meta, note) {
+  // Значок — только когда причина отказа именно эта, а не, например, Wi-Fi.
+  if (!meta?.discoveryUse || !/ищет через эту карту узлы|работает само приложение/.test(note || '')) return '';
+  const text = meta.discoveryAuto
+    ? 'Через эту карту приложение ищет узлы (автоматический выбор сетей), поэтому пробросить её нельзя. '
+      + 'Чтобы можно было: отметьте у карты в «Моих устройствах» «Не использовать для обнаружения» '
+      + 'или выберите основную сеть вручную в настройках. Тогда приложение перестанет работать в этой сети и потеряет в ней соседей.'
+    : 'Через эту карту работает само приложение: отдав её, компьютер потеряет связь с остальными узлами.';
+  return ` <span class="info-i" tabindex="0" title="${esc(text)}" aria-label="${esc(text)}">ⓘ</span>`;
+}
+
+function transportPill(hasTransport, note, meta) {
   // По сети пробрасываются USB и сетевые карты. Для COM, LPT и карт, которые
   // отдать нельзя, приложение ведёт только учёт занятости, и не сказать об
   // этом заметно — значит отправить человека искать в системе устройство,
@@ -410,7 +427,7 @@ function transportPill(hasTransport, note) {
     ? `Проброса нет: ${note}. Приложение учитывает, кто занял устройство, но данные по сети не передаёт.`
     : 'Проброса нет: приложение учитывает, кто занял устройство, '
       + 'но данные по сети не передаёт. Подключаться к нему нужно физически.';
-  return `<span class="pill warn" title="${esc(why)}">только бронь</span>`;
+  return `<span class="pill warn" title="${esc(why)}">только бронь</span>${discoveryInfo(meta, note)}`;
 }
 
 /** Кнопки для записи каталога — и для устройства, и для группы. */
@@ -541,7 +558,7 @@ function deviceCard(d, { insideGroup = false } = {}) {
           ${insideGroup ? '' : statusPill(d)}
           ${joinPill(d)}
           ${d.busy ? trafficPill(d.traffic) : ''}
-          ${transportPill(d.hasTransport, d.meta?.transportNote)}
+          ${transportPill(d.hasTransport, d.meta?.transportNote, d.meta)}
           ${d.ownerSelf ? '<span class="pill plain">моё</span>' : ''}
           ${d.ownerOnline ? '' : '<span class="pill err">владелец офлайн</span>'}
         </div>
@@ -668,6 +685,20 @@ function renderOutgoing() {
 
 // ------------------------------------------------------------ мои устройства
 
+/**
+ * «Не использовать для обнаружения»: приложение не ищет узлы в сети этой карты,
+ * и карту можно пробросить. Показывается у настоящих карт при автоматическом
+ * выборе сетей — там карта по умолчанию задействована в поиске.
+ */
+function discoveryToggle(d, ro) {
+  const m = d.meta || {};
+  if (d.type !== 'net' || ro || !m.hardware || !m.discoveryAuto) return '';
+  if (!m.discoveryUse && !m.discoveryExcluded) return '';
+  return `<label class="member disc-toggle" title="Приложение не будет искать узлы и объявляться в сети этой карты. Карту можно будет пробросить; соседи из этой сети пропадут из списка.">
+    <input type="checkbox" data-disc-exclude="${esc(d.title)}" ${m.discoveryExcluded ? 'checked' : ''}>
+    <span>Не использовать для обнаружения узлов</span></label>`;
+}
+
 function renderMine() {
   const items = state.localDevices;
   const box = $('#mineList');
@@ -707,7 +738,7 @@ function renderMine() {
             ${esc(d.description)}
             ${blocked ? '' : status}
             ${d.claim ? trafficPill(d.traffic) : ''}
-            ${transportPill(d.hasTransport, d.meta?.transportNote)}
+            ${transportPill(d.hasTransport, d.meta?.transportNote, d.meta)}
             ${d.groupId ? `<span class="pill group-pill">${inGroup ? 'отдано группой' : 'в группе (не опубл.)'} «${esc(d.groupName || '')}»</span>` : ''}
           </div>
           <div class="card-meta">
@@ -717,6 +748,7 @@ function renderMine() {
             ${d.lastError ? `<span class="pill err">${esc(d.lastError)}</span>` : ''}
             ${blocked ? `<span class="pill err">${esc(d.unavailableReason)}</span>` : ''}
           </div>
+          ${discoveryToggle(d, ro)}
           ${blocked || ro ? (d.purpose ? `<div class="purpose">${esc(d.purpose)}</div>` : '')
             : `<input class="purpose-input" data-purpose="${esc(d.deviceId)}" value="${esc(d.purpose || '')}"
                  maxlength="500" placeholder="для чего это устройство — текст видят все">`}
@@ -1026,6 +1058,26 @@ document.addEventListener('click', (ev) => {
 document.addEventListener('change', (ev) => {
   const t = ev.target;
   if (!(t instanceof HTMLElement)) return;
+  if (t.dataset.discExclude !== undefined) {
+    const iface = t.dataset.discExclude;
+    const now = new Set(state.discoveryExclude || []);
+    if (t.checked) {
+      const net = (state.self?.networks || []).find((n) => n.iface === iface);
+      const lost = net ? neighborsOnNetwork(net.cidr) : [];
+      const names = lost.slice(0, 8).map((p) => p.name).join(', ');
+      const msg = net
+        ? `Приложение перестанет искать узлы в сети ${net.cidr} (${iface}).${lost.length ? ` Соседи из неё (${lost.length}: ${names}${lost.length > 8 ? '…' : ''}) пропадут из списка.` : ''} Продолжить?`
+        : `Приложение перестанет использовать «${iface}» для поиска узлов. Продолжить?`;
+      if (!confirm(msg)) { t.checked = false; return; }
+      now.add(iface);
+    } else {
+      now.delete(iface);
+    }
+    post('/api/v1/settings', { discoveryExclude: [...now] })
+      .then(() => toast(t.checked ? 'Карта исключена из обнаружения — её можно пробросить' : 'Карта снова участвует в обнаружении', 'ok'))
+      .catch((e) => { t.checked = !t.checked; toast(e.message, 'err'); });
+    return;
+  }
   if (t.dataset.purpose) {
     post('/api/v1/purpose', { deviceId: t.dataset.purpose, purpose: t.value })
       .then(() => toast('Описание сохранено', 'ok'))
@@ -1282,6 +1334,15 @@ $('#settings').addEventListener('close', async () => {
     announceBackoff: $('#setAnnounceBackoff').checked,
     announceTransport: $('#setAnnounceTransport').value,
   };
+  // Выбор основной сети вручную: в остальных сетях приложение перестанет работать.
+  if (patch.network !== 'auto' && patch.network !== state.config.network) {
+    const lostNets = (state.self?.networks || []).filter((n) => n.cidr !== patch.network);
+    const lost = lostNets.flatMap((n) => neighborsOnNetwork(n.cidr));
+    if (lostNets.length && !confirm(`Основная сеть — ${patch.network}. В остальных сетях (${lostNets.map((n) => n.cidr).join(', ')}) `
+      + `приложение перестанет искать узлы${lost.length ? `: из списка пропадут ${lost.length} (${lost.slice(0, 8).map((p) => p.name).join(', ')}${lost.length > 8 ? '…' : ''})` : ''}. Карты этих сетей можно будет пробросить. Продолжить?`)) {
+      return;
+    }
+  }
   patch.networks = collectNetworks();
   patch.seeOpen = $('#setSeeOpen').checked;
   patch.showToOpen = $('#setShowToOpen').checked;

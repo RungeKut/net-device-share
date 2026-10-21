@@ -605,3 +605,7 @@ a.node-name:hover { border-bottom-style: solid; }
 .route-opt { display: flex; gap: 10px; align-items: flex-start; padding: 8px 10px; border: 1px solid var(--line, #d6dbe3); border-radius: 8px; cursor: pointer; }
 .route-opt:has(input:checked) { border-color: var(--accent, #2563eb); }
 .route-opt input { margin-top: 3px; }
+
+/* Значок пояснения у карты, задействованной в обнаружении, и галочка исключения */
+.info-i { display: inline-block; margin-left: 4px; cursor: help; color: var(--accent); font-weight: 600; }
+.disc-toggle { margin-top: 6px; }
