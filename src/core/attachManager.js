@@ -505,46 +505,57 @@ export class AttachManager extends EventEmitter {
   }
 
   async _heartbeatAll() {
-    await this._adoptOrphans();
-    for (const rec of [...this.attachments.values()]) {
-      if (rec.orphan || rec.state !== 'attached') continue;
+    // Новый обход не стартует, пока идёт прежний: недоступный владелец держит
+    // свой запрос до таймаута, и обходы иначе накладывались бы друг на друга.
+    if (this._heartbeating) return;
+    this._heartbeating = true;
+    try {
+      await this._adoptOrphans();
+      // Параллельно: при последовательном обходе один молчащий владелец (до 5 с
+      // таймаута) задерживал продление остальных, и аренды истекали каскадом.
+      const list = [...this.attachments.values()].filter((rec) => !rec.orphan && rec.state === 'attached');
+      await Promise.allSettled(list.map((rec) => this._heartbeatOne(rec)));
+    } finally {
+      this._heartbeating = false;
+    }
+  }
 
-      try {
-        const res = rec.nodeId === this.config.get('nodeId')
-          ? this.share.renew(rec.target, this.config.get('nodeId'))
-          : await rpc({
-            host: rec.host,
-            port: rec.apiPort || this.config.get('apiPort'),
-            path: '/api/v1/peer/heartbeat',
-            method: 'POST',
-            body: { target: rec.target },
-            key: this.keyFor(rec.nodeId),
-            nodeId: this.config.get('nodeId'),
-            timeoutMs: 5000,
-          });
+  async _heartbeatOne(rec) {
+    try {
+      const res = rec.nodeId === this.config.get('nodeId')
+        ? this.share.renew(rec.target, this.config.get('nodeId'))
+        : await rpc({
+          host: rec.host,
+          port: rec.apiPort || this.config.get('apiPort'),
+          path: '/api/v1/peer/heartbeat',
+          method: 'POST',
+          body: { target: rec.target },
+          key: this.keyFor(rec.nodeId),
+          nodeId: this.config.get('nodeId'),
+          timeoutMs: 5000,
+        });
 
-        rec.lastHeartbeat = Date.now();
-        rec.heartbeatFails = 0;
-        if (rec.lastError) { rec.lastError = null; this.emit('changed'); }
-        this._absorbRequests(rec, res?.pendingRequests);
-        // Скорость измеряет владелец — у него стоит счётчик. Держателю она
-        // приезжает попутно, отдельного канала для этого не нужно.
-        this._absorbTraffic(rec, res?.traffic);
-      } catch (e) {
-        rec.heartbeatFails = (rec.heartbeatFails || 0) + 1;
-        rec.lastError = e.message;
-        log.warn(`heartbeat по ${rec.target} (${rec.nodeName}) не прошёл: ${e.message}`);
+      rec.lastHeartbeat = Date.now();
+      rec.heartbeatFails = 0;
+      if (rec.lastError) { rec.lastError = null; this.emit('changed'); }
+      this._absorbRequests(rec, res?.pendingRequests);
+      // Скорость измеряет владелец — у него стоит счётчик. Держателю она
+      // приезжает попутно, отдельного канала для этого не нужно.
+      this._absorbTraffic(rec, res?.traffic);
+    } catch (e) {
+      rec.heartbeatFails = (rec.heartbeatFails || 0) + 1;
+      rec.lastError = e.message;
+      log.warn(`heartbeat по ${rec.target} (${rec.nodeName}) не прошёл: ${e.message}`);
 
-        const revoked = e.code === 'no_claim' || e.code === 'forbidden'
-          || /no_claim|forbidden|занято другим/i.test(e.message);
-        // Право отозвано — отцепляемся сразу. Сетевой сбой — три попытки,
-        // чтобы не рвать рабочее подключение из-за одного потерянного пакета.
-        if (revoked || rec.heartbeatFails >= 3) {
-          log.warn(`${rec.title}: ${revoked ? 'право отозвано владельцем' : 'узел недоступен'} — отцепляемся`);
-          await this.detach(rec.id, { keepClaim: revoked }).catch(() => {});
-        }
-        this.emit('changed');
+      const revoked = e.code === 'no_claim' || e.code === 'forbidden'
+        || /no_claim|forbidden|занято другим/i.test(e.message);
+      // Право отозвано — отцепляемся сразу. Сетевой сбой — три попытки,
+      // чтобы не рвать рабочее подключение из-за одного потерянного пакета.
+      if (revoked || rec.heartbeatFails >= 3) {
+        log.warn(`${rec.title}: ${revoked ? 'право отозвано владельцем' : 'узел недоступен'} — отцепляемся`);
+        await this.detach(rec.id, { keepClaim: revoked }).catch(() => {});
       }
+      this.emit('changed');
     }
   }
 

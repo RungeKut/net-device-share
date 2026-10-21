@@ -48,7 +48,7 @@ import { logger } from '../log.js';
 import { LinkServer, LinkClient } from '../net/tapLink.js';
 import { keepRelay } from '../net/relayKeeper.js';
 import { listTaps, createTap, renameAdapter, driverFilesPresent, friendlyName } from '../net/tapAdapters.js';
-import { bridge, unbridge, bridgeMembers, bridgeAdapter, setBridgeIp } from '../net/bridge.js';
+import { bridge, unbridge, bridgeMembers, bridgeAdapter, setBridgeIp, withBridgeLock } from '../net/bridge.js';
 import {
   readIpConfig, applyIpConfig, resetIpConfig, validateIpConfig, BORROWED_METRIC,
 } from '../net/ipConfig.js';
@@ -282,7 +282,11 @@ export class NetShare extends EventEmitter {
    *   ip — настройки IPv4 карты: занявший ставит их своему адаптеру;
    *   ipNote — почему их нет, если их нет
    */
-  async lend(dev, { holderId, holderAddress = null }) {
+  lend(dev, holder) {
+    return withBridgeLock(() => this._lend(dev, holder));
+  }
+
+  async _lend(dev, { holderId, holderAddress = null }) {
     const blocker = this.lendBlocker(dev);
     if (blocker) throw errWith('unavailable', blocker);
 

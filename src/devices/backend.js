@@ -61,17 +61,24 @@ export function psQuote(s) {
 }
 
 /** Общая обёртка над PowerShell: кодировка и разбор JSON в одном месте. */
-export async function psJson(script, { timeoutMs = 20000 } = {}) {
+/**
+ * strict: сбой PowerShell (код, таймаут, мусор в выводе) — исключение, а не
+ * пустой список. Пустой список — это ответ «ничего нет»; тем, кто по нему
+ * принимает решения (например, стирает записи), его нельзя путать со сбоем.
+ */
+export async function psJson(script, { timeoutMs = 20000, strict = false } = {}) {
   // Без явной кодировки PowerShell пишет в перенаправленный поток в кодировке
   // консоли (на русской Windows — CP866), и кириллица приходит мусором.
   const full = '[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; ' + script;
   const r = await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', full], { timeoutMs });
+  if (strict && !r.ok) throw new Error(`PowerShell завершился с кодом ${r.code}: ${(r.stderr || '').trim().slice(0, 200)}`);
   if (!r.ok || !r.stdout.trim()) return [];
   try {
     const parsed = JSON.parse(r.stdout);
     return Array.isArray(parsed) ? parsed : [parsed];
   } catch (e) {
     log.debug('не разобрался вывод PowerShell:', e.message);
+    if (strict) throw e;
     return [];
   }
 }

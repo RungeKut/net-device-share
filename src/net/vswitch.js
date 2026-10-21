@@ -26,6 +26,8 @@ const AGE_MS = 300000;
 
 /** Очередь порта, после которой кадры для него отбрасываются. */
 const PORT_BACKLOG_LIMIT = 1024 * 1024;
+/** Предел таблицы адресов: через uplink приходят все MAC соседней сети, без предела таблица росла бы без остановки. */
+const MAX_MACS = 4096;
 
 const macKey = (buf, at) => buf.toString('hex', at, at + 6);
 
@@ -68,6 +70,18 @@ export class VSwitch extends EventEmitter {
     for (const [mac, at] of this.macs) if (at.port === id) this.macs.delete(mac);
   }
 
+  _learn(mac, portId, now) {
+    // delete + set переносит запись в конец Map: первой вытесняется самая давно не слышанная.
+    this.macs.delete(mac);
+    if (this.macs.size >= MAX_MACS) {
+      for (const [k, v] of this.macs) {
+        if (now - v.seen >= this.ageMs) this.macs.delete(k);
+      }
+      if (this.macs.size >= MAX_MACS) this.macs.delete(this.macs.keys().next().value);
+    }
+    this.macs.set(mac, { port: portId, seen: now });
+  }
+
   /**
    * Кадры, пришедшие в порт. Каждый уходит туда, где живёт получатель,
    * или во все порты, если получатель неизвестен или это рассылка.
@@ -90,7 +104,7 @@ export class VSwitch extends EventEmitter {
       port.rx += len;
 
       // Источник: групповой MAC источником не бывает — такие не запоминаем.
-      if ((frames[f + 6] & 1) === 0) this.macs.set(macKey(frames, f + 6), { port: port.id, seen: now });
+      if ((frames[f + 6] & 1) === 0) this._learn(macKey(frames, f + 6), port.id, now);
 
       const group = (frames[f] & 1) === 1;
       const known = group ? null : this.macs.get(macKey(frames, f));

@@ -89,6 +89,9 @@ export class DirectoryService extends EventEmitter {
     this.peers = opts.peers;
     this.timer = null;
     this.stopped = false;
+    // Поколение цепочки раундов: круг, начатый до stop(), не должен после
+    // нового start() рождать вторую цепочку таймеров.
+    this.generation = 0;
     /** @type {Map<string, object>} адрес → как прошёл последний обмен */
     this.seedState = new Map();
     /** @type {Map<string, string>} nodeId соседа → отпечаток его каталога */
@@ -121,6 +124,7 @@ export class DirectoryService extends EventEmitter {
 
   start() {
     this.stopped = false;
+    this.generation++;
     if (this.blocked) {
       log.error('указаны узлы из других сетей, но нет ни одной ключевой сети — обмен каталогом выключен');
       log.error('заведите сеть с общим ключом в настройках: без ключа узлы из других сетей работать не будут');
@@ -131,7 +135,7 @@ export class DirectoryService extends EventEmitter {
       return this;
     }
     log.info(`обмен каталогом включён: ${this._seedList().length} адрес(ов), раз в ${Math.round(this.opts.intervalMs() / 1000)} с`);
-    this._round();
+    this._round(this.generation);
     return this;
   }
 
@@ -218,8 +222,8 @@ export class DirectoryService extends EventEmitter {
     }
   }
 
-  async _round() {
-    if (this.stopped) return;
+  async _round(generation = this.generation) {
+    if (this.stopped || generation !== this.generation) return;
     const seeds = this._seedList();
     const defaultPort = this.opts.defaultPort();
     const selfId = this.opts.selfEntry().nodeId;
@@ -239,8 +243,8 @@ export class DirectoryService extends EventEmitter {
     this.lastRound = Date.now();
     this.emit('changed');
 
-    if (this.stopped) return;
-    this.timer = setTimeout(() => this._round(), this.opts.intervalMs());
+    if (this.stopped || generation !== this.generation) return;
+    this.timer = setTimeout(() => this._round(generation), this.opts.intervalMs());
     this.timer.unref?.();
   }
 

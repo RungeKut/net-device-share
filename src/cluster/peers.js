@@ -40,9 +40,11 @@ export class PeerRegistry extends EventEmitter {
     this.trafficTimer = null;
     this.inflight = new Set();
     this.pinging = new Set();
+    this.stopped = false;
   }
 
   start() {
+    this.stopped = false;
     this.sweepTimer = setInterval(() => this._sweep(), 2000);
     this.sweepTimer.unref?.();
     this._scheduleRemotePoll();
@@ -59,6 +61,7 @@ export class PeerRegistry extends EventEmitter {
   }
 
   stop() {
+    this.stopped = true;
     clearInterval(this.sweepTimer);
     clearInterval(this.trafficTimer);
     clearTimeout(this.pollTimer);
@@ -80,6 +83,8 @@ export class PeerRegistry extends EventEmitter {
 
   _scheduleRemotePoll() {
     clearTimeout(this.pollTimer);
+    // Опрос, закончившийся после stop(), не должен взводить таймер заново.
+    if (this.stopped) return;
     this.pollTimer = setTimeout(() => {
       this._pollRemote()
         .catch((e) => log.debug(`опрос удалённых узлов: ${e.message}`))

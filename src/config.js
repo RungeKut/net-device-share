@@ -279,7 +279,8 @@ export class Config {
     }
     const salt = crypto.randomBytes(16).toString('hex');
     const hash = crypto.scryptSync(String(password), salt, 32).toString('hex');
-    this.set({ webPassword: { salt, hash } });
+    // Новый пароль обрывает прежние сессии: их подпись держится на sessionSecret.
+    this.set({ webPassword: { salt, hash }, sessionSecret: crypto.randomBytes(32).toString('hex') });
   }
 
   checkWebPassword(password) {

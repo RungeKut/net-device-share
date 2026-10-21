@@ -63,11 +63,25 @@ async function script(action, adapters = []) {
   return res;
 }
 
-/** Кто сейчас в мосту (имена подключений). */
+/**
+ * Одна сборка моста за раз на весь процесс. «Мост свободен» проверяет и
+ * проброс карты, и коммутатор; без общей очереди обе проверки проходили
+ * одновременно, и вторая молча докладывала адаптеры к чужому мосту — а это
+ * слияние двух сетей, которое обе проверки как раз запрещают.
+ */
+let bridgeQueue = Promise.resolve();
+export function withBridgeLock(fn) {
+  const run = bridgeQueue.then(fn, fn);
+  bridgeQueue = run.catch(() => {});
+  return run;
+}
+
+/** Кто сейчас в мосту (имена подключений). Сбой опроса — исключение: «никого» им не подменяем. */
 export async function bridgeMembers() {
   const items = await psJson(
     "Get-NetAdapterBinding -AllBindings -ErrorAction SilentlyContinue | Where-Object { $_.ComponentID -eq 'ms_implat' -and $_.Enabled } "
     + '| Select-Object -Property Name | ConvertTo-Json -Compress',
+    { strict: true },
   );
   return items.map((i) => i.Name).filter(Boolean);
 }

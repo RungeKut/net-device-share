@@ -166,7 +166,7 @@ export class TapRelay extends EventEmitter {
       frames = this._out.push(chunk);
     } catch (e) {
       log.error(`посредник прислал ${e.message} — обмен прекращён`);
-      if (this.sink) this.sink.destroy(e);
+      this.sink?.destroy?.(e); // у sink из plugRelay (EventEmitter) destroy нет
       this.stop();
       return;
     }

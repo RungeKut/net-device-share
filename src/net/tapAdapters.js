@@ -46,6 +46,7 @@ export async function listNetAdapters() {
   const items = await psJson(
     'Get-NetAdapter -ErrorAction SilentlyContinue | '
     + 'Select-Object -Property Name,InterfaceGuid,Status,MacAddress,PnPDeviceID,ComponentID | ConvertTo-Json -Compress -Depth 3',
+    { strict: true },
   );
   if (!Array.isArray(items)) throw new Error('PowerShell вернул не массив адаптеров');
   return items.map((a) => ({
@@ -120,7 +121,8 @@ export async function createTap() {
 async function waitTaps(pick, ms = 30000, list = listTaps) {
   const until = Date.now() + ms;
   while (Date.now() < until) {
-    const found = pick(await list());
+    // Разовый сбой PowerShell — не повод бросать ожидание: пробуем ещё.
+    const found = pick(await list().catch(() => null) ?? []);
     if (found) return found;
     await new Promise((res) => setTimeout(res, 700));
   }

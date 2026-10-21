@@ -57,7 +57,7 @@ import {
   createTap, removeTap, removeAdapter, renameAdapter, friendlyName, setTapMac, setAdapterMac, setAdapterEnabled,
   macProblem, normalizeMac, formatMac, randomMac, driverFilesPresent,
 } from '../net/tapAdapters.js';
-import { bridge, unbridge, bridgeMembers, bridgeAdapter, setBridgeIp } from '../net/bridge.js';
+import { bridge, unbridge, bridgeMembers, bridgeAdapter, setBridgeIp, withBridgeLock } from '../net/bridge.js';
 import { readIpConfig, applyIpConfig, validateIpConfig, ensureCategories } from '../net/ipConfig.js';
 import { listAdapters, firewallState } from '../net/adapters.js';
 
@@ -539,7 +539,11 @@ export class NetManager extends EventEmitter {
    * Карта ставится первой: MAC моста — MAC первого участника, и тогда
    * компьютер остаётся в сети под MAC своей карты (DHCP выдаст тот же адрес).
    */
-  async _buildUplink(rec, adapters) {
+  _buildUplink(rec, adapters) {
+    return withBridgeLock(() => this._buildUplinkLocked(rec, adapters));
+  }
+
+  async _buildUplinkLocked(rec, adapters) {
     if (this._bridgeSwitchRec()) {
       throw errWith('bridge_busy', `мост Windows уже у коммутатора «${this._bridgeSwitchRec().name}», а мост в Windows один — добавьте карту туда`);
     }
