@@ -178,7 +178,15 @@ export class Installer extends EventEmitter {
       }
       this._step('info', `  SHA-256 совпадает`);
 
-      const sig = await verifySignature(file);
+      let sig = await verifySignature(file);
+      // UnknownError — Windows не смог дойти до проверки цепочки (сеть только
+      // поднялась, служба сертификатов занята). Это не «подпись плохая»,
+      // поэтому перед отказом пробуем ещё, а не доверяем без проверки.
+      for (let i = 0; i < 2 && sig.status === 'UnknownError'; i++) {
+        this._step('info', '  проверка подписи не завершилась, повтор через 5 с');
+        await new Promise((r) => setTimeout(r, 5000));
+        sig = await verifySignature(file);
+      }
       if (sig.status !== 'Valid') {
         throw new Error(`подпись ${path.basename(file)} недействительна (${sig.status}${sig.message ? `: ${sig.message}` : ''}) — установка отменена`);
       }
