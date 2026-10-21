@@ -285,12 +285,13 @@ function fakeApp(body = '{"access":"full","passwordRequired":false,"local":true}
   });
 }
 
-const runAsync = (cmd, args, env) => new Promise((resolve) => {
+/** encoding: кодировка вывода; cscript печатает в OEM-кодовой странице, не в UTF-8. */
+const runAsync = (cmd, args, env, { encoding = 'utf-8' } = {}) => new Promise((resolve) => {
   const child = spawn(cmd, args, { env: { ...process.env, ...env }, stdio: ['ignore', 'pipe', 'pipe'] });
-  let stdout = '';
-  child.stdout.on('data', (d) => { stdout += d; });
-  child.stderr.on('data', (d) => { stdout += d; });
-  child.on('exit', (status) => resolve({ status, stdout }));
+  const chunks = [];
+  child.stdout.on('data', (d) => chunks.push(d));
+  child.stderr.on('data', (d) => chunks.push(d));
+  child.on('exit', (status) => resolve({ status, stdout: new TextDecoder(encoding).decode(Buffer.concat(chunks)) }));
 });
 
 test('второй запуск: приложение уже отвечает — второй экземпляр не стартует, лаунчер не зацикливается', async () => {
@@ -329,23 +330,29 @@ test('ярлык (open.vbs): работает — открыть адрес; н�
   const VBS = path.join(path.dirname(SUP), 'open.vbs');
   const vbs = (port) => {
     fs.writeFileSync(path.join(c.home, 'config.json'), JSON.stringify({ apiPort: port }));
-    return runAsync('cscript.exe', ['//nologo', VBS, '/dry'], { NDS_HOME: c.home });
+    return runAsync('cscript.exe', ['//nologo', VBS, '/dry'], { NDS_HOME: c.home }, { encoding: 'ibm866' });
   };
 
   const { server, port } = await fakeApp();
-  let r = await vbs(port);
-  assert.match(r.stdout, new RegExp(`OPEN http://127.0.0.1:${port}/`), r.stdout);
-  assert.doesNotMatch(r.stdout, /START/, 'второй экземпляр не запускается');
-  server.close();
-
-  r = await vbs(port);                       // теперь никто не слушает
-  assert.match(r.stdout, /START .*supervisor\.mjs"? --no-open|START .* --no-open/, r.stdout);
-  assert.match(r.stdout, new RegExp(`WAIT-AND-OPEN http://127.0.0.1:${port}/`));
-
   const other = await fakeApp('{"что-то":"чужое"}');
-  r = await vbs(other.port);
-  assert.match(r.stdout, /MESSAGE .*занят другой программой/, r.stdout);
-  other.server.close();
+  // Закрытие в finally: упавший assert иначе оставляет слушающий сокет, и
+  // node --test после отчёта не выходит.
+  try {
+    let r = await vbs(port);
+    assert.match(r.stdout, new RegExp(`OPEN http://127.0.0.1:${port}/`), r.stdout);
+    assert.doesNotMatch(r.stdout, /START/, 'второй экземпляр не запускается');
+    server.close();
+
+    r = await vbs(port);                       // теперь никто не слушает
+    assert.match(r.stdout, /START .*supervisor\.mjs"? --no-open|START .* --no-open/, r.stdout);
+    assert.match(r.stdout, new RegExp(`WAIT-AND-OPEN http://127.0.0.1:${port}/`));
+
+    r = await vbs(other.port);
+    assert.match(r.stdout, /MESSAGE .*занят другой программой/, r.stdout);
+  } finally {
+    server.close();
+    other.server.close();
+  }
 });
 
 // ---------------------------------------- откат ПОДТВЕРЖДЁННОЙ версии (падает позже пробы)
