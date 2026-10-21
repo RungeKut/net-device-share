@@ -130,6 +130,28 @@ function openBrowser(url) {
   }
 }
 
+const NETWORK_RETRY_MS = 60_000;
+
+/**
+ * Без IPv4-интерфейса (кабель не воткнут, адаптер ещё не получил адрес при
+ * загрузке) приложение раньше завершалось с ошибкой, а лаунчер считал это
+ * падением. Ждём сеть на месте: падение здесь не лечится перезапуском.
+ */
+async function waitForNetwork(config) {
+  if (resolveNetwork(config.get('network'))) return;
+
+  log.warn(`нет подходящего сетевого интерфейса IPv4 — повторная проверка каждые ${NETWORK_RETRY_MS / 1000} с`);
+  // Лаунчер просит остановиться через IPC; обычный обработчик ниже ещё не
+  // зарегистрирован, а без него ожидание пришлось бы убивать силой.
+  const onMessage = (m) => { if (m?.type === 'shutdown') process.exit(0); };
+  process.on('message', onMessage);
+  while (!resolveNetwork(config.get('network'))) {
+    await new Promise((resolve) => setTimeout(resolve, NETWORK_RETRY_MS));
+  }
+  process.off('message', onMessage);
+  log.info('сеть появилась — запускаемся');
+}
+
 async function main() {
   const args = parseArgs();
 
@@ -175,6 +197,8 @@ async function main() {
     await doctor(config);
     return;
   }
+
+  await waitForNetwork(config);
 
   const app = new App(config);
   await app.start();

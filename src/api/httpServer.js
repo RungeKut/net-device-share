@@ -361,7 +361,7 @@ export class ApiServer {
       return sendJson(res, 401, { error: 'bad_signature', message: 'неверная подпись — не совпадает общий ключ' });
     }
     // Вызов без подписи из открытого круга — только если мы в нём состоим.
-    if (circle.open && !local && !realms.keyed().length) {
+    if (circle.open && !local) {
       return sendJson(res, 403, { error: 'out_of_network', message: 'открытый круг не выходит за пределы своей подсети' });
     }
 

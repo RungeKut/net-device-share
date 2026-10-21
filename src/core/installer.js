@@ -180,7 +180,7 @@ export class Installer extends EventEmitter {
 
       const sig = await verifySignature(file);
       if (sig.status !== 'Valid') {
-        throw new Error(`подпись ${path.basename(file)} недействительна (${sig.status}) — установка отменена`);
+        throw new Error(`подпись ${path.basename(file)} недействительна (${sig.status}${sig.message ? `: ${sig.message}` : ''}) — установка отменена`);
       }
       this._step('info', `  подпись действительна: ${shortSigner(sig.signer)}`);
 
@@ -315,7 +315,7 @@ async function sha256(file) {
 async function verifySignature(file) {
   const script = '[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; '
     + `$s = Get-AuthenticodeSignature -LiteralPath '${psQuote(file)}'; `
-    + '[pscustomobject]@{ status = $s.Status.ToString(); signer = $s.SignerCertificate.Subject } | ConvertTo-Json -Compress';
+    + '[pscustomobject]@{ status = $s.Status.ToString(); message = $s.StatusMessage; signer = $s.SignerCertificate.Subject } | ConvertTo-Json -Compress';
   const r = await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { timeoutMs: 30000 });
   if (!r.ok) return { status: 'Unknown', signer: null };
   try {

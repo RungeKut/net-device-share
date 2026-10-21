@@ -279,7 +279,9 @@ export class AttachManager extends EventEmitter {
       });
     }
 
-    this.attachments.delete(id);
+    // За время освобождения устройство могли занять заново: стирать надо
+    // только свою запись, а не новую с тем же id.
+    if (this.attachments.get(id) === rec) this.attachments.delete(id);
     log.info(`${rec.title} освобождено`);
     this.emit('changed');
     return { ok: true };

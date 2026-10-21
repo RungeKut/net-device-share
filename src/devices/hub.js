@@ -48,9 +48,11 @@ export class DeviceHub {
 
     const [usb, slow] = await Promise.all([
       this._enabled('usb')
-        ? this.backend.listLocal().catch((e) => {
+        ? this.backend.listLocal().then((list) => (this._lastUsb = list)).catch((e) => {
+          // Сбой опроса — не «устройств нет»: пустой список отозвал бы все
+          // аренды. Оставляем прошлый результат до следующего опроса.
           log.warn('перечисление USB не удалось:', e.message);
-          return [];
+          return this._lastUsb || [];
         })
         : Promise.resolve([]),
       (wantPorts || wantNet) ? this._listSlow(wantPorts, wantNet) : Promise.resolve({ ports: [], nets: [] }),
