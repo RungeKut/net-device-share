@@ -59,6 +59,7 @@ function makeNode(name, version, extraConfig = {}, compat) {
     updateMode: 'auto',
     updateCanaryMinutes: 0,
     updateWaveStepSec: 1,
+    updateGraceSec: 0,
     ...extraConfig,
   }));
   const env = {

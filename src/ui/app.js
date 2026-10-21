@@ -1043,9 +1043,9 @@ document.addEventListener('click', (ev) => {
   } else if (t.dataset.update) {
     const act = t.dataset.update;
     if (act === 'rollback' && !confirm('Откатиться на предыдущую версию? Приложение перезапустится, подключения к устройствам оборвутся, а нынешняя версия будет помечена плохой на этом компьютере.')) return;
-    if (act === 'restart' && !confirm('Перезапустить приложение сейчас? Подключения к устройствам, которые вы занимаете или отдаёте, оборвутся.')) return;
+    if ((act === 'restart' || act === 'now') && !confirm('Перезапустить приложение сейчас? Подключения к устройствам, которые вы занимаете или отдаёте, оборвутся.')) return;
     action(t, () => post(`/api/v1/update/${act}`, act === 'approve' ? { version: t.dataset.version } : {}),
-      act === 'restart' ? 'Перезапуск…' : act === 'rollback' ? 'Откат…' : null);
+      act === 'restart' || act === 'now' ? 'Обновление…' : act === 'rollback' ? 'Откат…' : null);
   } else if (t.dataset.driver) {
     const [id, deviceId] = splitLast(t.dataset.driver);
     openDriverDialog(id, deviceId);
@@ -1666,8 +1666,10 @@ function renderUpdate() {
     if (u.awaitingApproval) {
       btns.push(`<button class="btn small primary" data-update="approve" data-version="${esc(u.staged?.version || '')}">Разрешить установку</button>`);
     }
-    if (u.canRestartNow && (u.phase === 'waiting' || u.awaitingApproval)) {
-      btns.push('<button class="btn small danger" data-update="restart">Перезапустить сейчас</button>');
+    // «Обновить сейчас» — пока версия скачивается, ждёт очереди или разрешения: сервер сам
+    // решит, перезапускаться ли сразу или сперва взять версию у соседей.
+    if (u.canUpdateNow && ['checking', 'downloading', 'queued', 'waiting', 'awaiting-approval'].includes(u.phase)) {
+      btns.push('<button class="btn small danger" data-update="now">Обновить сейчас</button>');
     }
     if (u.phase === 'error') btns.push('<button class="btn small" data-update="retry">Повторить</button>');
     // Соседи сообщают, что работающая у нас версия испорчена: откатить можно вручную.

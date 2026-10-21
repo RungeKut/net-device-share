@@ -81,6 +81,11 @@ export class Updater extends EventEmitter {
     this.rejected = new Map();   // "версия|sha8" → { reason, until }
     this.sourceBackoff = new Map();
     this.firstSeen = new Map();  // версия → когда увидели у соседей
+    /** До какого момента показываем «перезапуск через N с», прежде чем обновиться самим. */
+    this.graceUntil = null;
+    this.graceTimer = null;
+    /** Версия, которую человек велел поставить сейчас: очередь и занятость не проверяем. */
+    this.updateNowFor = null;
     this.timers = [];
     this.running = app.version;
   }
@@ -244,13 +249,16 @@ export class Updater extends EventEmitter {
     try {
       const selfId = this.app.config.get('nodeId');
       const peers = this.app.peers.list().filter((p) => p.online && p.address && p.apiPort);
-      const results = await Promise.allSettled(peers.map(async (p) => ({
-        p,
-        r: await rpc({
-          host: p.address, port: p.apiPort, path: '/api/v1/peer/update-status',
-          key: this.app.realms.keyFor(p.realm), nodeId: selfId, timeoutMs: 4000,
-        }),
-      })));
+      const results = await Promise.allSettled(peers.map(async (p) => {
+        const ep = await this._endpoint(p);
+        return {
+          p,
+          r: await rpc({
+            host: ep.host, port: ep.port, path: '/api/v1/peer/update-status',
+            key: this.app.realms.keyFor(p.realm), nodeId: selfId, timeoutMs: 4000,
+          }),
+        };
+      }));
       const next = new Map();
       for (const x of results) {
         if (x.status !== 'fulfilled') continue;        // старый узел без этой ручки — не беда
@@ -299,6 +307,19 @@ export class Updater extends EventEmitter {
     return best;
   }
 
+  /**
+   * Куда обращаться к узлу: прямо или туннелем через шлюз. Узел из другой сети,
+   * до которого нет маршрута, раньше был для самообновления недостижим.
+   */
+  async _endpoint(p) {
+    const peers = this.app.peers;
+    // Запись без маршрутов (узел, объявленный до появления шлюзов) — просто его адрес.
+    if (typeof peers.primaryRoute !== 'function' || !p.routes) return { host: p.address, port: p.apiPort, tunnel: false };
+    const r = peers.primaryRoute(p);
+    if (r && r.kind !== 'direct' && !r.mode) await peers.probeRoute(p, r);
+    return peers.endpoint(p, p.apiPort);
+  }
+
   _sourcesFor(version) {
     const selfId = this.app.config.get('nodeId');
     const all = this.app.peers.list().filter((p) => p.online && p.version === version);
@@ -307,7 +328,11 @@ export class Updater extends EventEmitter {
     if (!this.firstSeen.has(version)) this.firstSeen.set(version, now);
     // Узлы из других сетей — только когда в своей подсети источника не нашлось
     // достаточно долго: через маршрутизатор качать дороже и менее надёжно.
-    const useRemote = !local.length && now - this.firstSeen.get(version) >= CROSS_NETWORK_DELAY_MS;
+    // Ждать незачем, если в своей подсети больше никого нет (ручная проверка тоже не ждёт):
+    // обновиться первым в подсети некому, а источник — только за маршрутизатором.
+    const alone = !this.app.peers.list().some((p) => p.online && p.origin === 'local');
+    const useRemote = !local.length
+      && (alone || this.forced || now - this.firstSeen.get(version) >= CROSS_NETWORK_DELAY_MS);
     const pool = local.length ? local : (useRemote ? all : []);
     const free = (p) => (this.sourceBackoff.get(p.nodeId) || 0) < now;
     const primary = orderSources(selfId, version, pool.filter(free));
@@ -335,6 +360,7 @@ export class Updater extends EventEmitter {
 
     const st = this._state();
     this.checkedAt = Date.now();
+    this.forced = force;
     if (force) this.retryAt = null;
     if (this.retryAt && Date.now() < this.retryAt) return;
 
@@ -354,6 +380,7 @@ export class Updater extends EventEmitter {
       }
       this.staged = null;
       this.approved = null;
+      this.graceUntil = null;
       this.noSourceSince = null;
 
       const version = this._pickCandidate(st);
@@ -398,8 +425,15 @@ export class Updater extends EventEmitter {
     let retryAfter = 0;
     for (const src of sources) {
       const key = this.app.realms.keyFor(src.realm);
+      let ep;
+      try {
+        ep = await this._endpoint(src);
+      } catch (e) {
+        this._markSourceFailed(src, `путь до узла: ${e.message}`);
+        continue;
+      }
       const call = (path, opts = {}) => rpc({
-        host: src.address, port: src.apiPort, path, key, nodeId: this.app.config.get('nodeId'),
+        host: ep.host, port: ep.port, path, key, nodeId: this.app.config.get('nodeId'),
         timeoutMs: 15000, ...opts,
       });
 
@@ -463,7 +497,7 @@ export class Updater extends EventEmitter {
 
       try {
         this._set('downloading', `скачиваю версию ${manifest.version} у «${src.name}» (${Math.round(manifest.payload.size / 1024)} КБ)`);
-        const payload = await this._download(src, key, token, manifest.payload.size);
+        const payload = await this._download(ep, key, token, manifest.payload.size);
         // Проверка и раскладка — из того же буфера, что скачали.
         const bundle = { manifestBytes, sig, payload };
         lib.layout.installRelease(this.base, bundle, this.keys);
@@ -513,8 +547,9 @@ export class Updater extends EventEmitter {
 
     let found = null;
     for (const p of holders) {
-      if (await this._httpOk(p.address, p.apiPort, '/download')) {
-        found = { url: `http://${p.address}:${p.apiPort}/download`, from: p.name };
+      const ep = await this._endpoint(p).catch(() => null);
+      if (ep && await this._httpOk(ep.host, ep.port, '/download')) {
+        found = { url: `http://${ep.host}:${ep.port}/download`, from: p.name };
         break;
       }
     }
@@ -554,12 +589,12 @@ export class Updater extends EventEmitter {
   }
 
   /** Скачивание архива с жёсткими пределами: размер из подписанного манифеста, время, простой. */
-  _download(src, key, token, expectedSize) {
+  _download(ep, key, token, expectedSize) {
     return new Promise((resolve, reject) => {
       const selfId = this.app.config.get('nodeId');
       const req = http.request({
-        host: src.address,
-        port: src.apiPort,
+        host: ep.host,
+        port: ep.port,
         path: `/api/v1/peer/release/payload?token=${encodeURIComponent(token)}`,
         method: 'GET',
         headers: { [AUTH_HEADER]: sign('', key), [NODE_HEADER]: selfId },
@@ -600,6 +635,13 @@ export class Updater extends EventEmitter {
     const v = this.staged?.version;
     if (!v) return;
     const mode = this._mode();
+
+    // «Обновить сейчас»: человек уже решил, ни очередь, ни занятость не проверяем.
+    if (this.updateNowFor === v) {
+      this.updateNowFor = null;
+      this.restartInto(v);
+      return;
+    }
 
     if (mode === 'ask' && this.approved !== v) {
       this._set('awaiting-approval', `версия ${v} подготовлена — ждёт вашего разрешения`);
@@ -662,9 +704,31 @@ export class Updater extends EventEmitter {
     }
 
     if (!policy.ok || (wave.eligibleAt !== null && Date.now() < wave.eligibleAt)) {
+      this.graceUntil = null;
       this._set('waiting', `версия ${v} подготовлена; ${this.waiting.join('; ')}`);
       return;
     }
+
+    // Всё готово, и обновление пойдёт само. Но не мгновенно: человек должен
+    // увидеть, что оно будет, и успеть нажать «Обновить сейчас» или закончить
+    // начатое. Раньше первый узел (и узел, которому не из кого строить очередь)
+    // перезапускался сразу после скачивания, и в интерфейсе об этом не было ни слова.
+    // Разрешённое вручную (approve) ждать не заставляем.
+    if (this.approved !== v) {
+      const graceMs = num(this.app.config.get('updateGraceSec'), 60) * 1000;
+      if (graceMs > 0) {
+        this.graceUntil = this.graceUntil || Date.now() + graceMs;
+        const left = this.graceUntil - Date.now();
+        if (left > 0) {
+          this._set('waiting', `версия ${v} подготовлена; перезапуск через ${Math.ceil(left / 1000)} с — можно не ждать`);
+          clearTimeout(this.graceTimer);
+          this.graceTimer = setTimeout(() => this.tick(), left + 200);
+          this.graceTimer.unref?.();
+          return;
+        }
+      }
+    }
+    this.graceUntil = null;
     this.restartInto(v);
   }
 
@@ -689,6 +753,22 @@ export class Updater extends EventEmitter {
     if (!this.staged || (version && this.staged.version !== version)) throw new Error('нет подготовленной версии для этого разрешения');
     this.approved = this.staged.version;
     this.tick();
+    return this.snapshot();
+  }
+
+  /**
+   * «Обновить сейчас». Версия уже подготовлена — перезапускаемся; ещё нет —
+   * идём за ней и перезапускаемся, как только она скачана и проверена.
+   */
+  updateNow() {
+    if (this.staged) {
+      this.restartInto(this.staged.version);
+      return this.snapshot();
+    }
+    const v = this.candidate?.version || this._pickCandidate(this._state());
+    if (!v) throw new Error('новой версии у соседей сейчас нет');
+    this.updateNowFor = v;
+    this.tick({ force: true });
     return this.snapshot();
   }
 
@@ -760,6 +840,9 @@ export class Updater extends EventEmitter {
       lastError: this.lastError,
       checkedAt: this.checkedAt,
       canRestartNow: Boolean(this.staged) && this.phase !== 'restarting',
+      // Есть что ставить прямо сейчас: версия подготовлена или её можно взять у соседей.
+      canUpdateNow: Boolean(this.staged || this.candidate) && this.phase !== 'restarting' && this.phase !== 'trial',
+      graceUntil: this.graceUntil,
       awaitingApproval: this.phase === 'awaiting-approval',
       sharing: held ? { version: held.version, active: this.seeder.activeCount } : null,
       previous: st.previous || null,

@@ -59,7 +59,7 @@ const MUTATING = new Set([
   '/api/v1/net/adapter/update', '/api/v1/net/adapter/delete',
   '/api/v1/net/held/ip',
   '/api/v1/driver/prepare', '/api/v1/driver/install', '/api/v1/driver/cancel',
-  '/api/v1/update/check', '/api/v1/update/approve', '/api/v1/update/restart', '/api/v1/update/retry',
+  '/api/v1/update/check', '/api/v1/update/approve', '/api/v1/update/restart', '/api/v1/update/now', '/api/v1/update/retry',
   '/api/v1/update/rollback',
 ]);
 
@@ -796,6 +796,8 @@ export class ApiServer {
           return sendJson(res, 200, this.app.updater.approve(body.version));
         case '/api/v1/update/restart':
           return sendJson(res, 200, this.app.updater.restartNow());
+        case '/api/v1/update/now':
+          return sendJson(res, 200, this.app.updater.updateNow());
         case '/api/v1/update/rollback':
           return sendJson(res, 200, this.app.updater.rollbackNow());
         case '/api/v1/update/retry':

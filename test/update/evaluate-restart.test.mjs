@@ -8,10 +8,10 @@ import { Updater } from '../../src/update/updater.js';
 const V = '2.2.0';
 
 /** Минимум приложения, нужный updater.evaluate: настройки, список узлов, занятость. */
-function setup({ peers = [], mode = 'auto', busy = false, canaryMin = 10, stepSec = 30 } = {}) {
+function setup({ peers = [], mode = 'auto', busy = false, canaryMin = 10, stepSec = 30, graceSec = 0 } = {}) {
   const config = {
     get: (k) => ({
-      nodeId: 'me', updateMode: mode, updateCanaryMinutes: canaryMin, updateWaveStepSec: stepSec, updateSlots: 2,
+      nodeId: 'me', updateMode: mode, updateCanaryMinutes: canaryMin, updateWaveStepSec: stepSec, updateGraceSec: graceSec, updateSlots: 2,
     }[k]),
   };
   const app = {
@@ -129,4 +129,42 @@ test('источник вернулся — отсчёт забывания сб
   peers.push(peer('canary', V, Date.now() - 60000));
   u._evaluateRestart({});
   assert.equal(u.noSourceSince, null);
+});
+
+// ---------------------------------------------------------- «перезапуск через N с»
+
+test('автообновление не мгновенное: сперва «перезапуск через N с», потом перезапуск', () => {
+  const { u, restarted } = setup({ peers: [peer('canary', V, Date.now() - 11 * 60000)], graceSec: 60 });
+  u._evaluateRestart({});
+  assert.deepEqual(restarted, [], 'сразу не перезапускаемся');
+  assert.equal(u.phase, 'waiting');
+  assert.match(u.message, /перезапуск через \d+ с/);
+  assert.ok(u.graceUntil > Date.now());
+
+  u.graceUntil = Date.now() - 1;           // время вышло
+  u._evaluateRestart({});
+  assert.deepEqual(restarted, [V]);
+  clearTimeout(u.graceTimer);
+});
+
+test('разрешённое вручную обновление ждать не заставляют', () => {
+  const { u, restarted } = setup({ peers: [peer('canary', V, Date.now() - 11 * 60000)], graceSec: 60, mode: 'ask' });
+  u.approved = V;
+  u._evaluateRestart({});
+  assert.deepEqual(restarted, [V]);
+});
+
+test('«Обновить сейчас»: подготовленная версия — перезапуск без очереди и без проверки занятости', () => {
+  const { u, restarted } = setup({ peers: [], graceSec: 60, busy: true });
+  u.snapshot = () => ({});
+  u.updateNow();
+  assert.deepEqual(restarted, [V]);
+});
+
+test('«Обновить сейчас» без подготовленной версии: флаг ставится, и перезапуск идёт сразу, как только версия скачана', () => {
+  const { u, restarted } = setup({ peers: [], graceSec: 60, busy: true });
+  u.updateNowFor = V;
+  u._evaluateRestart({});
+  assert.deepEqual(restarted, [V]);
+  assert.equal(u.updateNowFor, null);
 });

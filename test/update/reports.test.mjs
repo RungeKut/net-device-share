@@ -38,7 +38,7 @@ const peerRec = (nodeId, port, version = '2.1.0', startedAt = Date.now() - 36000
 function setup(peers, { mode = 'auto' } = {}) {
   const app = {
     version: '2.1.0',
-    config: { get: (k) => ({ nodeId: 'me', updateMode: mode, updateCanaryMinutes: 0, updateWaveStepSec: 0, updateSlots: 2 }[k]) },
+    config: { get: (k) => ({ nodeId: 'me', updateMode: mode, updateCanaryMinutes: 0, updateWaveStepSec: 0, updateGraceSec: 0, updateSlots: 2 }[k]) },
     peers: { list: () => peers },
     share: { claims: new Map() },
     attach: { attachments: new Map() },
