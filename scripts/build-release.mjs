@@ -35,6 +35,7 @@ import { fileURLToPath } from 'node:url';
 import { buildAndSign } from './build-update.mjs';
 import { installRelease } from '../launcher/lib/layout.js';
 import { TRUSTED_KEYS } from '../launcher/lib/keys.js';
+import { stampVersion } from './lib/version.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const DIST = path.join(ROOT, 'dist');
