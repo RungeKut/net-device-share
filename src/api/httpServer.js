@@ -402,7 +402,7 @@ export class ApiServer {
         // устройств, ни занятости здесь нет: их каждый спрашивает у
         // владельца напрямую, чтобы мост не оказался в тракте данных.
         case 'GET /api/v1/peer/directory':
-          return sendJson(res, 200, this.app.directory.payload(circle.realm));
+          return sendJson(res, 200, this.app.directory.payload(circle.realm, this.app.networkOf(remote)));
 
         case 'POST /api/v1/peer/directory': {
           // Круг доверия сверяем и здесь. Узел БЕЗ ключа принимает любую
@@ -432,7 +432,26 @@ export class ApiServer {
             // его сами, не дожидаясь своего круга обмена.
             this.app.onStateChanged();
           }
-          return sendJson(res, 200, this.app.directory.payload(circle.realm));
+          return sendJson(res, 200, this.app.directory.payload(circle.realm, local ? this.app.networkOf(remote) : null));
+        }
+
+        case 'POST /api/v1/peer/tunnel': {
+          // Шлюз открывает порт, ведущий на порт узла в другой нашей сети.
+          // Только к узлам из каталога, только к их же портам и только тому, кто
+          // попросил: это не прокси «куда угодно».
+          if (!body?.nodeId || !body?.address || !Number.isInteger(body.port)) {
+            return sendJson(res, 400, { error: 'bad_request', message: 'нужны nodeId, address и port' });
+          }
+          const peers = this.app.peers;
+          const peer = peers.get(body.nodeId);
+          const route = peer && peer.online && peer.realm === circle.realm
+            ? [...peer.routes.values()].find((r) => r.address === body.address && (r.kind === 'direct' || r.mode === 'direct'))
+            : null;
+          if (!route) return sendJson(res, 404, { error: 'not_found', message: 'этот узел нам напрямую недоступен — туннель не открыть' });
+          const allowed = new Set(['api', 'usbip', 'traffic', 'netlink'].map((n) => peers.portOf(peer, n, route.key)));
+          if (!allowed.has(body.port)) return sendJson(res, 403, { error: 'forbidden', message: 'туннели открываются только к портам самого приложения' });
+          const port = await this.app.tunnels.open({ targetHost: route.address, targetPort: body.port, allowAddress: remote });
+          return sendJson(res, 200, { ok: true, port });
         }
 
         case 'POST /api/v1/peer/claim': {
@@ -708,7 +727,7 @@ export class ApiServer {
           return sendJson(res, 200, r);
         }
         case '/api/v1/attach':
-          return sendJson(res, 200, await this.app.attachTarget(body.nodeId, body.target, { force: Boolean(body.force), mode: body.mode === 'bridge' ? 'bridge' : 'exclusive' }));
+          return sendJson(res, 200, await this.app.attachTarget(body.nodeId, body.target, { force: Boolean(body.force), mode: body.mode === 'bridge' ? 'bridge' : 'exclusive', routeKey: body.routeKey ? String(body.routeKey) : null }));
         case '/api/v1/detach': {
           const r = await this.app.attach.detach(body.id);
           this.app.onStateChanged();

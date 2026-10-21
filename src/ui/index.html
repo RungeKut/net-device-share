@@ -142,6 +142,19 @@
   </form>
 </dialog>
 
+<!-- Выбор сети для подключения к узлу, видимому из нескольких сетей -->
+<dialog id="routeDialog">
+  <form method="dialog" class="dlg">
+    <h2>Через какую сеть подключаться?</h2>
+    <p id="routeTarget" class="dlg-note"></p>
+    <div id="routeList" class="route-list"></div>
+    <div class="dlg-actions">
+      <button class="btn" value="cancel" type="submit">Отмена</button>
+      <button class="btn primary" value="go" type="submit">Подключиться</button>
+    </div>
+  </form>
+</dialog>
+
 <!-- Отправка запроса держателю -->
 <dialog id="askDialog">
   <form method="dialog" class="dlg">

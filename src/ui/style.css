@@ -599,3 +599,9 @@ a.node-name:hover { border-bottom-style: solid; }
 
 /* Ряд кнопок под полем в настройках */
 .row-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin: 6px 0; }
+
+/* Окно выбора сети для подключения к узлу из нескольких сетей */
+.route-list { display: flex; flex-direction: column; gap: 8px; margin: 10px 0; }
+.route-opt { display: flex; gap: 10px; align-items: flex-start; padding: 8px 10px; border: 1px solid var(--line, #d6dbe3); border-radius: 8px; cursor: pointer; }
+.route-opt:has(input:checked) { border-color: var(--accent, #2563eb); }
+.route-opt input { margin-top: 3px; }

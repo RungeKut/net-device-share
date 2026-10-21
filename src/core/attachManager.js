@@ -34,8 +34,13 @@ export class AttachManager extends EventEmitter {
    *   подписывать вызов надо тем ключом, который примет именно он.
    * @param {import('./netShare.js').NetShare} [o.net] — сетевые карты
    */
-  constructor({ backend, config, share, keyFor, net = null, peerByAddress = null }) {
+  constructor({ backend, config, share, keyFor, net = null, peerByAddress = null, resolvePort = null }) {
     super();
+    /**
+     * (узел, маршрут, порт владельца) → куда подключаться. Прямо или туннелем
+     * через шлюз — решает маршрут, выбранный человеком при занятии.
+     */
+    this.resolvePort = resolvePort;
     /** (адрес) → известный узел. Нужен, чтобы узнать «чужое» подключение: чьё оно. */
     this.peerByAddress = peerByAddress;
     this.backend = backend;
@@ -172,6 +177,9 @@ export class AttachManager extends EventEmitter {
       usbipPort: t.usbipPort || this.config.get('usbipPort'),
       target: t.target,
       kind: t.kind || 'device',
+      // Маршрут до владельца и туннель ли это: порты данных надо переводить в туннельные.
+      routeKey: t.routeKey || null,
+      tunnel: Boolean(t.tunnel),
       // bridge — подключение в общий мост карты: карта остаётся доступной другим.
       mode: bridgeMode ? 'bridge' : 'exclusive',
       title: t.title,
@@ -220,6 +228,11 @@ export class AttachManager extends EventEmitter {
         throw new Error('у владельца версия приложения без подключения в мост — обновите его, и кнопка заработает');
       }
       rec.usbipPort = grant.usbipPort || rec.usbipPort;
+      if (rec.tunnel && this.resolvePort && !rec.self) {
+        const data = await this.resolvePort(rec.nodeId, rec.routeKey, rec.usbipPort);
+        rec.host = data.host;
+        rec.usbipPort = data.port;
+      }
       rec.leaseMs = grant.leaseMs;
 
       // Подключаем по очереди. Устройства без проброса просто числятся
@@ -314,11 +327,17 @@ export class AttachManager extends EventEmitter {
     if (!req) throw new Error('запрос не найден');
 
     const isOurs = req.ownerNodeId === this.config.get('nodeId');
+    // Владелец мог рассказать о себе адрес из своей сети, до которого нам не
+    // дотянуться: если мы знаем его как узел, идём по его маршруту (при
+    // необходимости — туннелем), а не по присланному адресу.
+    const ep = !isOurs && this.resolvePort
+      ? await this.resolvePort(req.ownerNodeId, null, req.ownerApiPort).catch(() => null)
+      : null;
     const answer = isOurs
       ? await this.share.answerRequest(requestId, this.config.get('nodeId'), accept)
       : await rpc({
-        host: req.ownerHost,
-        port: req.ownerApiPort,
+        host: ep?.host || req.ownerHost,
+        port: ep?.port || req.ownerApiPort,
         path: '/api/v1/peer/request-answer',
         method: 'POST',
         body: { requestId, accept: Boolean(accept) },
@@ -355,10 +374,13 @@ export class AttachManager extends EventEmitter {
 
     const key = `${rec.id}|${part.deviceId}`;
     const owner = String(rec.nodeName || '').replace(/\s*\(этот компьютер\)$/, '');
+    const ep = rec.tunnel && this.resolvePort && !rec.self
+      ? await this.resolvePort(rec.nodeId, rec.routeKey, link.port)
+      : { host: rec.host, port: link.port };
     const res = await this.net.borrow({
       key,
-      host: rec.host,
-      port: link.port,
+      host: ep.host,
+      port: ep.port,
       token: link.token,
       label: `${part.title || part.key} на ${owner}`,
       ip: link.ip || null,

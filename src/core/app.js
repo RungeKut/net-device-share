@@ -24,6 +24,7 @@ import { DEVICE_TYPES, RESERVATION_NOTE, typeInfo } from '../devices/types.js';
 import { rpc } from '../net/rpc.js';
 import { Realms } from '../net/realms.js';
 import { TrafficProxy } from '../net/trafficProxy.js';
+import { TunnelServer } from '../net/tunnels.js';
 import { NetShare } from './netShare.js';
 import { DriverShare } from './driverShare.js';
 import { readVersion } from './paths.js';
@@ -184,6 +185,11 @@ export class App extends EventEmitter {
       keyFor: (nodeId) => this.keyForNode(nodeId),
       net: this.net,
       // Подключение, которое пережило перезапуск, привязываем к владельцу по адресу.
+      resolvePort: async (nodeId, routeKey, port) => {
+        const peer = this.peers.get(nodeId);
+        if (!peer) throw new Error('узел-владелец не найден в сети');
+        return this.peers.endpoint(peer, port, routeKey);
+      },
       peerByAddress: (address) => this.peers?.list().find((p) => p.online && p.address === address) || null,
     });
     this.peers = new PeerRegistry({
@@ -194,6 +200,7 @@ export class App extends EventEmitter {
       announceIntervalMs: this.config.get('announceIntervalMs'),
       gossipIntervalMs: this.config.get('gossipIntervalMs'),
       remotePollIntervalMs: this.config.get('remotePollIntervalMs'),
+      networkOf: (ip) => this.networkOf(ip),
     });
     this.directory = new DirectoryService({
       peers: this.peers,
@@ -202,6 +209,7 @@ export class App extends EventEmitter {
       intervalMs: () => this.config.get('gossipIntervalMs'),
       defaultPort: () => this.config.get('apiPort'),
       selfEntry: () => this._selfEntry(),
+      networks: () => this.networks,
     });
 
     this.share.on('changed', () => this.onStateChanged());
@@ -238,6 +246,7 @@ export class App extends EventEmitter {
     await this.attach.start();
     this.peers.start();
 
+    this.tunnels = new TunnelServer();
     this.api = new ApiServer(this);
     await this.api.start();
 
@@ -247,6 +256,9 @@ export class App extends EventEmitter {
       port: this.config.get('discoveryPort'),
       apiPort: this.config.get('apiPort'),
       usbipPort: this.config.get('usbipPort'),
+      trafficPort: this.config.get('trafficPort'),
+      netLinkPort: this.config.get('netLinkPort'),
+      dirFor: (net) => this.directory.hashFor(net.cidr),
       realms: this.realms,
       multicastAddress: this.config.get('multicastAddress'),
       announceIntervalMs: this.config.get('announceIntervalMs'),
@@ -285,6 +297,11 @@ export class App extends EventEmitter {
   isInWorkingNetwork(ip) {
     if (!this.networks.length) return true;
     return this.networks.some((n) => ipInCidr(ip, n.cidr));
+  }
+
+  /** CIDR нашей сети, в которой лежит адрес (или null, если ни в одной). */
+  networkOf(ip) {
+    return this.networks.find((n) => ipInCidr(ip, n.cidr))?.cidr || null;
   }
 
   /** Наш адрес в той сети, где находится собеседник: куда ему к нам обращаться. */
@@ -408,6 +425,8 @@ export class App extends EventEmitter {
       address: this.network.address,
       apiPort: this.config.get('apiPort'),
       usbipPort: this.config.get('usbipPort'),
+      trafficPort: this.config.get('trafficPort'),
+      netLinkPort: this.config.get('netLinkPort'),
       network: this.network.cidr,
       platform: process.platform,
       version: this.version,
@@ -512,8 +531,24 @@ export class App extends EventEmitter {
   }
 
   /** Занять цель. force — право владельца забрать своё без спроса. */
-  async attachTarget(nodeId, target, { force = false, mode = 'exclusive' } = {}) {
+  async attachTarget(nodeId, target, { force = false, mode = 'exclusive', routeKey = null } = {}) {
     const info = this._targetInfo(nodeId, target);
+
+    // Узел виден из нескольких сетей: подключаемся по выбранному маршруту, а
+    // если до него напрямую не дотянуться — туннелем через шлюз.
+    if (nodeId !== this.config.get('nodeId')) {
+      const peer = this.peers.get(nodeId);
+      const route = (routeKey && peer.routes.get(routeKey)) || this.peers.primaryRoute(peer);
+      if (routeKey && !peer.routes.get(routeKey)) throw new Error('выбранный маршрут до узла уже недоступен — обновите список');
+      if (route) {
+        const ep = await this.peers.endpoint(peer, route.apiPort || peer.apiPort, route.key);
+        info.routeKey = route.key;
+        info.tunnel = ep.tunnel;
+        info.host = ep.host;
+        info.apiPort = ep.port;
+        info.usbipPort = route.usbipPort || peer.usbipPort;
+      }
+    }
 
     const needsClient = info.devices.some((d) => d.hasTransport && d.type !== 'net');
     if (needsClient && !this.backendInfo.client) {
@@ -559,8 +594,7 @@ export class App extends EventEmitter {
       const peer = this.peers.get(rec.nodeId);
       if (!peer) throw new Error('владелец карты сейчас не в сети');
       r = await rpc({
-        host: peer.address,
-        port: peer.apiPort,
+        ...(await this.peers.endpoint(peer, peer.apiPort)),
         path: '/api/v1/peer/net-ip',
         method: 'POST',
         body: { target: deviceId, ip },
@@ -587,8 +621,7 @@ export class App extends EventEmitter {
     let received;
     try {
       received = await rpc({
-        host: peer.address,
-        port: peer.apiPort,
+        ...(await this.peers.endpoint(peer, peer.apiPort)),
         path: '/api/v1/peer/driver-package',
         method: 'POST',
         body: { target: part.deviceId },
@@ -649,8 +682,7 @@ export class App extends EventEmitter {
     if (!peer) throw new Error('узел-владелец не найден в сети');
 
     const res = await rpc({
-      host: peer.address,
-      port: peer.apiPort,
+      ...(await this.peers.endpoint(peer, peer.apiPort)),
       path: '/api/v1/peer/request',
       method: 'POST',
       body: { target, requesterName: this.config.get('name'), message },
@@ -692,8 +724,7 @@ export class App extends EventEmitter {
     }
     try {
       await rpc({
-        host: peer.address,
-        port: peer.apiPort,
+        ...(await this.peers.endpoint(peer, peer.apiPort)),
         path: '/api/v1/peer/notify-request',
         method: 'POST',
         body: { request: req, owner: { nodeId: selfId, host: this.addressFor(peer.address), apiPort: this.config.get('apiPort') } },
@@ -775,8 +806,7 @@ export class App extends EventEmitter {
     if (!peer || !peer.online) return;
     try {
       await rpc({
-        host: peer.address,
-        port: peer.apiPort,
+        ...(await this.peers.endpoint(peer, peer.apiPort)),
         path: '/api/v1/peer/revoked',
         method: 'POST',
         body: { target, reason },
@@ -1102,6 +1132,8 @@ export class App extends EventEmitter {
     for (const peer of this.peers.list()) {
       owners.push({
         ...peer,
+        // Адреса узла в разных сетях: см. cluster/peers.js, «Маршруты».
+        routes: this.peers.routesOf(peer),
         self: false,
         devices: peer.devices || [],
         groups: (peer.groups || []).filter((g) => g.shared !== false),
@@ -1207,6 +1239,8 @@ export class App extends EventEmitter {
         origin: p.origin,
         network: p.network || null,
         viaName: p.viaName || null,
+        routes: this.peers.routesOf(p),
+        gateway: (p.nets || 1) > 1,
         // Из какой сети узел. Когда сетей несколько, без подписи в списке
         // не разобрать, почему одно устройство занимается, а другое нет.
         realm: p.realm || null,
@@ -1265,6 +1299,8 @@ export class App extends EventEmitter {
       ownerId: owner.nodeId,
       ownerName: owner.name,
       ownerAddress: owner.address,
+      ownerRoutes: owner.routes || [],
+      ownerGateway: (owner.nets || 1) > 1,
       ownerOnline: owner.online !== false,
       ownerSelf: owner.nodeId === selfId,
       claim: d.claim || null,
@@ -1308,6 +1344,8 @@ export class App extends EventEmitter {
       ownerId: owner.nodeId,
       ownerName: owner.name,
       ownerAddress: owner.address,
+      ownerRoutes: owner.routes || [],
+      ownerGateway: (owner.nets || 1) > 1,
       ownerOnline: owner.online !== false,
       ownerSelf: owner.nodeId === selfId,
       claim: g.claim || null,
@@ -1326,6 +1364,7 @@ export class App extends EventEmitter {
     if (this.stopping) return;
     this.stopping = true;
     clearInterval(this.networkWatch);
+    this.tunnels?.stop();
     log.info('завершение работы…');
 
     // Порядок важен: сначала вернуть чужое владельцам, потом перестать

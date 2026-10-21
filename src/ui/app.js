@@ -19,6 +19,7 @@ let bannerDismissed = false;
 let shownRequestIds = new Set();
 let currentRequest = null;
 let askContext = null;
+let routeContext = null;
 let driverToken = null;
 let titleFlashTimer = null;
 
@@ -512,6 +513,22 @@ function adapterIpText(ip, applied) {
   return `настройки как у карты владельца — ${ipText(ip)}`;
 }
 
+/** Значок узла, стоящего в нескольких сетях: он может пересказывать каталог и пропускать соединения. */
+function gatewayMark(e) {
+  return e.ownerGateway
+    ? ' <span class="pill plain" title="Этот узел стоит в нескольких сетях и работает шлюзом: пересказывает каталог и при необходимости пропускает соединения из одной сети в другую">🌉 шлюз</span>'
+    : '';
+}
+
+/** Адрес владельца; если узел виден из нескольких сетей — все адреса с пометкой сети и способа доступа. */
+function ownerAddresses(e) {
+  const routes = e.ownerRoutes || [];
+  if (routes.length < 2) return `(${esc(e.ownerAddress)})`;
+  const how = (r) => (r.via ? `через «${esc(r.via.name || '?')}»${r.mode === 'tunnel' ? ', туннель' : r.mode === 'direct' ? ', напрямую' : ''}` : 'напрямую');
+  return '(' + routes.map((r) => `<span title="${esc(how(r).replace(/<[^>]+>/g, ''))}"><span class="mono">${esc(r.address)}</span> `
+    + `<span class="muted">${esc(r.network || '')} · ${how(r)}</span></span>`).join(' · ') + ')';
+}
+
 function deviceCard(d, { insideGroup = false } = {}) {
   const cls = !d.ownerOnline ? 'offline' : d.busyByMe ? 'mine' : d.busy ? 'busy' : 'free';
   const meta = deviceMeta(d);
@@ -530,7 +547,7 @@ function deviceCard(d, { insideGroup = false } = {}) {
         </div>
         ${d.purpose ? `<div class="purpose">${esc(d.purpose)}</div>` : ''}
         <div class="card-meta">
-          ${insideGroup ? '' : `<span>владелец: <b>${esc(d.ownerName)}</b> (${esc(d.ownerAddress)})${remoteMark(d.ownerId)}</span>`}
+          ${insideGroup ? '' : `<span>владелец: <b>${esc(d.ownerName)}</b>${gatewayMark(d)} ${ownerAddresses(d)}${remoteMark(d.ownerId)}</span>`}
           <span>${esc(d.typeTitle)}: <span class="mono">${esc(d.subtitle)}</span></span>
           ${meta.map((b) => `<span>${b}</span>`).join('')}
           ${d.connectedSince ? `<span>подключено: ${esc(since(d.connectedSince))} (${esc(at(d.connectedSince))})</span>` : ''}
@@ -565,7 +582,7 @@ function groupCard(g) {
           </div>
           ${g.purpose ? `<div class="purpose">${esc(g.purpose)}</div>` : ''}
           <div class="card-meta">
-            <span>владелец: <b>${esc(g.ownerName)}</b> (${esc(g.ownerAddress)})${remoteMark(g.ownerId)}</span>
+            <span>владелец: <b>${esc(g.ownerName)}</b>${gatewayMark(g)} ${ownerAddresses(g)}${remoteMark(g.ownerId)}</span>
             <span>занимается целиком</span>
           </div>
         </div>
@@ -955,14 +972,14 @@ document.addEventListener('click', (ev) => {
   if (t.dataset.attach) {
     const [nodeId, target] = t.dataset.attach.split('|');
     const reserve = t.dataset.reserve === '1';
-    action(t, () => post('/api/v1/attach', { nodeId, target }),
+    chooseRoute(nodeId, target, (routeKey) => action(t, () => post('/api/v1/attach', { nodeId, target, routeKey }),
       reserve
         ? 'Забронировано. В системе устройство не появится: подключайтесь к нему физически'
-        : 'Занято');
+        : 'Занято'));
   } else if (t.dataset.join) {
     const [nodeId, target] = splitLast(t.dataset.join);
-    action(t, () => post('/api/v1/attach', { nodeId, target, mode: 'bridge' }),
-      'Подключено в мост: адаптер появится в «Сетевых подключениях»');
+    chooseRoute(nodeId, target, (routeKey) => action(t, () => post('/api/v1/attach', { nodeId, target, mode: 'bridge', routeKey }),
+      'Подключено в мост: адаптер появится в «Сетевых подключениях»'));
   } else if (t.dataset.take) {
     const [nodeId, target] = t.dataset.take.split('|');
     if (confirm('Забрать устройство себе? Тот, кто с ним работает, потеряет соединение без предупреждения.')) {
@@ -1068,6 +1085,13 @@ $('#requestDialog').addEventListener('close', async () => {
 });
 
 // --- диалог «попросить» (мы проситель) ---
+$('#routeDialog').addEventListener('close', () => {
+  const go = routeContext;
+  routeContext = null;
+  if ($('#routeDialog').returnValue !== 'go' || !go) return;
+  go(document.querySelector('#routeList input[name="route"]:checked')?.value || null);
+});
+
 $('#askDialog').addEventListener('close', async () => {
   if ($('#askDialog').returnValue !== 'send' || !askContext) return;
   const { nodeId, target } = askContext;
@@ -1647,6 +1671,38 @@ function silentHolderPill(claim) {
  * разделителям нельзя: устройство — только последний кусок. (Раньше деление по
  * всем давало вместо занятия один идентификатор узла: «занятие не найдено».)
  */
+/** Запись каталога по владельцу и цели — и устройство, и группа, и участник группы. */
+function findEntry(nodeId, target) {
+  for (const e of state?.catalog || []) {
+    if (e.ownerId === nodeId && e.target === target) return e;
+    for (const m of e.members || []) if (m.ownerId === nodeId && m.target === target) return m;
+  }
+  return null;
+}
+
+/**
+ * Узел виден из нескольких сетей — спрашиваем, через какую подключаться.
+ * Если сеть одна, действие выполняется сразу.
+ *
+ * @param {(routeKey: string|null) => void} go
+ */
+function chooseRoute(nodeId, target, go) {
+  const entry = findEntry(nodeId, target);
+  const routes = entry?.ownerRoutes || [];
+  if (routes.length < 2) { go(null); return; }
+
+  $('#routeTarget').textContent = `Узел «${entry.ownerName}» виден из нескольких сетей. Выберите, через какую выполнить подключение.`;
+  $('#routeList').innerHTML = routes.map((r, i) => {
+    const how = r.via
+      ? `через шлюз «${esc(r.via.name || '?')}»${r.mode === 'tunnel' ? ' — туннель (прямого маршрута нет)' : r.mode === 'direct' ? ' — маршрут есть, идём напрямую' : ' — способ ещё проверяется'}`
+      : 'напрямую в вашей сети';
+    return `<label class="route-opt"><input type="radio" name="route" value="${esc(r.key)}" ${i === 0 ? 'checked' : ''}>
+      <span><b class="mono">${esc(r.address)}</b> <span class="muted">${esc(r.network || '')}</span><br><span class="muted">${how}</span></span></label>`;
+  }).join('');
+  routeContext = go;
+  $('#routeDialog').showModal();
+}
+
 function splitLast(value) {
   const cut = String(value).lastIndexOf('|');
   return [String(value).slice(0, cut), String(value).slice(cut + 1)];

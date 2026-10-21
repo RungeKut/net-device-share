@@ -258,7 +258,14 @@ export class Discovery extends EventEmitter {
    */
   _send(base) {
     if (!this.socket) return;
-    this._sendEach(this.opts.realms.announcing(), (leg) => ({ ...base, network: leg.net.cidr }));
+    // Отпечаток каталога у каждой сети свой: соседям в сети A надо знать, что
+    // у нас есть узлы из сети B, а соседям в B о самих себе рассказывать нечего.
+    const perLeg = base.type === MSG.ANNOUNCE && this.opts.dirFor;
+    this._sendEach(this.opts.realms.announcing(), (leg) => ({
+      ...base,
+      network: leg.net.cidr,
+      ...(perLeg ? { dir: this.opts.dirFor(leg.net) } : {}),
+    }));
   }
 
   _reschedule(delay) {
@@ -333,6 +340,10 @@ export class Discovery extends EventEmitter {
       next: this.interval,
       apiPort: this.opts.apiPort,
       usbipPort: this.opts.usbipPort,
+      trafficPort: this.opts.trafficPort,
+      netLinkPort: this.opts.netLinkPort,
+      // Сколько у узла сетей: больше одной — он может быть шлюзом между ними.
+      nets: this._nets().length,
       platform: process.platform,
       version: snapshot.version,
       startedAt: snapshot.startedAt,

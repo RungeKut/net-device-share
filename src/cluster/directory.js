@@ -143,15 +143,25 @@ export class DirectoryService extends EventEmitter {
     this.pullTimers.clear();
   }
 
-  /** Отпечаток каталога: соседи по нему понимают, что у нас есть новое. */
+  /**
+   * Отпечаток каталога для соседей одной сети: узлы из обмена с seed-адресами
+   * плюс слышные нам в других наших сетях. Соседи по нему понимают, что у нас
+   * есть новое. Один интерфейс — рассказывать из других сетей нечего, и
+   * отпечаток прежний.
+   */
+  hashFor(cidr) {
+    const seeds = this.peers.bridged().map((p) => `${p.nodeId}@${p.stateHash || '-'}`).sort().join(';');
+    const gateway = cidr ? this.peers.gatewayShape(cidr) : '';
+    if (!seeds && !gateway) return null;
+    return crypto.createHash('sha1').update(`${seeds}#${gateway}`).digest('hex').slice(0, 12);
+  }
+
+  /** Общий отпечаток по всем нашим сетям: меняется — пора объявляться заново. */
   hash() {
-    const shared = this.peers.bridged();
-    if (!shared.length) return null;
-    const shape = shared
-      .map((p) => `${p.nodeId}@${p.stateHash || '-'}`)
-      .sort()
-      .join(';');
-    return crypto.createHash('sha1').update(shape).digest('hex').slice(0, 12);
+    const nets = this.opts.networks?.() || [];
+    if (!nets.length) return this.hashFor(null);
+    const per = nets.map((n) => this.hashFor(n.cidr)).filter(Boolean);
+    return per.length ? crypto.createHash('sha1').update(per.join(',')).digest('hex').slice(0, 12) : null;
   }
 
   /**
@@ -162,7 +172,7 @@ export class DirectoryService extends EventEmitter {
    * «Лаборатории» об узлах «Цеха» значило бы склеить обратно то, что ключи
    * разделяют.
    */
-  payload(realm) {
+  payload(realm, forNetwork = null) {
     const self = this.opts.selfEntry();
     return {
       nodeId: self.nodeId,
@@ -170,7 +180,7 @@ export class DirectoryService extends EventEmitter {
       network: self.network,
       realm,
       ts: Date.now(),
-      peers: [self, ...this.peers.directoryEntries(realm)],
+      peers: [self, ...this.peers.directoryEntries(realm, { forNetwork })],
     };
   }
 
@@ -211,6 +221,9 @@ export class DirectoryService extends EventEmitter {
         realm: peer.realm,
         viaNodeId: peer.nodeId,
         viaName: peer.name,
+        // Рассказчик же и шлюз: если до пересказанного узла напрямую не добраться,
+        // соединение пойдёт туннелем через него.
+        via: { nodeId: peer.nodeId, name: peer.name, address: peer.address, apiPort: peer.apiPort },
       });
       this.pulled.set(nodeId, peer.dir);
       if (added) log.info(`от соседа "${peer.name}" получены узлы из других сетей: ${added}`);
@@ -330,6 +343,7 @@ export class DirectoryService extends EventEmitter {
         realm: circle.realm,
         viaNodeId: res?.nodeId || null,
         viaName: res?.name || raw,
+        via: res?.nodeId ? { nodeId: res.nodeId, name: res.name || raw, address: host, apiPort: port } : null,
       });
 
       this.seedState.set(raw, {

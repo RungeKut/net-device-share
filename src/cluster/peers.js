@@ -16,6 +16,12 @@
 // Ровно один пересказ — этого достаточно, чтобы связать два сегмента, и
 // этого мало, чтобы устроить лавину.
 //
+// МАРШРУТЫ. Узел, видимый из нескольких сетей, — одна запись, а адреса у неё
+// несколько (peer.routes): услышан напрямую в нашей сети, пересказан шлюзом из
+// другой, пересказан мостом по обмену каталогом. Маршрут, о котором рассказал
+// другой узел, помнит рассказчика (via): если напрямую до узла не дотянуться,
+// соединение идёт через туннель на этом рассказчике (net/tunnels.js).
+//
 // Адрес узла всегда его собственный, кем бы он ни был рассказан. Поэтому
 // и состояние, и занятие, и данные USB/IP идут к владельцу напрямую:
 // мост участвует только в знакомстве и не оказывается в тракте данных.
@@ -23,11 +29,19 @@
 import { EventEmitter } from 'node:events';
 import { logger } from '../log.js';
 import { rpc } from '../net/rpc.js';
+import crypto from 'node:crypto';
 
 const log = logger('peers');
 
 /** Узлы, о которых мы рассказываем другим. Пересказ пересказа исключён. */
 const SHAREABLE = new Set(['local', 'seed']);
+
+/** Сколько живёт маршрут без подтверждения, в таймаутах узла. */
+const ROUTE_TTL_FACTOR = 3;
+
+/** Порты по умолчанию — для узлов прежних версий, которые о них не объявляют. */
+const DEFAULT_TRAFFIC_PORT = 47813;
+const DEFAULT_NETLINK_PORT = 47814;
 
 export class PeerRegistry extends EventEmitter {
   constructor(opts) {
@@ -41,6 +55,8 @@ export class PeerRegistry extends EventEmitter {
     this.inflight = new Set();
     this.pinging = new Set();
     this.stopped = false;
+    /** @type {Map<string, {host: string, port: number, until: number}>} открытые туннели через шлюзы */
+    this.tunnelCache = new Map();
   }
 
   start() {
@@ -106,16 +122,26 @@ export class PeerRegistry extends EventEmitter {
    * один хеш, и полный список едет, только когда хеш разошёлся.
    */
   async _pollRemote() {
-    const remote = [...this.peers.values()].filter((p) => p.origin !== 'local');
+    const remote = [...this.peers.values()].filter((p) => p.origin !== 'local'
+      || [...p.routes.values()].some((r) => r.kind !== 'direct'));
     if (!remote.length) return;
 
     await Promise.all(remote.map(async (peer) => {
       if (this.pinging.has(peer.nodeId)) return;
       this.pinging.add(peer.nodeId);
       try {
+        // Запасные маршруты (пересказанные адреса узла, который мы слышим и
+        // напрямую) проверяем отдельно: от них зависит, что показать в окне выбора.
+        for (const r of [...peer.routes.values()]) {
+          if (r.key !== peer.routeKey && r.kind !== 'direct') await this.probeRoute(peer, r);
+        }
+        if (peer.origin === 'local') return;
+        const main = this.primaryRoute(peer);
+        if (main && main.kind !== 'direct' && !main.mode) await this.probeRoute(peer, main);
+        const ep = await this.endpoint(peer, peer.apiPort);
         const pong = await rpc({
-          host: peer.address,
-          port: peer.apiPort,
+          host: ep.host,
+          port: ep.port,
           path: '/api/v1/peer/ping',
           key: this.opts.realms.keyFor(peer.realm),
           nodeId: this.opts.nodeId,
@@ -131,11 +157,16 @@ export class PeerRegistry extends EventEmitter {
           this.emit('changed');
         }
         peer.reachError = null;
+        if (main) { main.lastSeen = Date.now(); if (!main.mode) main.mode = ep.tunnel ? 'tunnel' : 'direct'; }
         if (pong?.stateHash && pong.stateHash !== peer.stateHash) {
           await this.refreshPeerState(peer, pong.stateHash);
         }
       } catch (e) {
         peer.reachError = e.message;
+        // Прямой маршрут, который перестал отвечать, пробуем заново: возможно,
+        // теперь остался только туннель через шлюз.
+        const main = this.primaryRoute(peer);
+        if (main && main.via && main.kind !== 'direct') main.mode = null;
         log.debug(`узел "${peer.name}" (${peer.address}) не ответил: ${e.message}`);
       } finally {
         this.pinging.delete(peer.nodeId);
@@ -170,6 +201,9 @@ export class PeerRegistry extends EventEmitter {
       via: null,
       viaName: null,
       network: null,
+      /** @type {Map<string, object>} ключ → маршрут (адрес в какой-то из сетей) */
+      routes: new Map(),
+      routeKey: null,
       // Круг доверия, в котором узел услышан. По нему выбирается ключ
       // для вызовов к нему и понятное название сети в списке.
       realm: null,
@@ -199,6 +233,13 @@ export class PeerRegistry extends EventEmitter {
       address = existing.address;
     }
 
+    this._touchRoute(peer, {
+      kind: 'direct', origin: 'local', address: msg.address,
+      apiPort: msg.apiPort, usbipPort: msg.usbipPort, trafficPort: msg.trafficPort, netLinkPort: msg.netLinkPort,
+      network: msg.network || null, heardOn: this.opts.networkOf?.(msg.address) || null, via: null, mode: 'direct',
+    }, now);
+    peer.routeKey = this._routeKey({ address, via: null });
+
     const renamed = existing && existing.name !== msg.name;
     const moved = existing && existing.address !== address;
     const wasOffline = existing ? !existing.online : false;
@@ -216,6 +257,7 @@ export class PeerRegistry extends EventEmitter {
       apiPort: msg.apiPort,
       usbipPort: msg.usbipPort,
       network: msg.network || peer.network,
+      nets: Number(msg.nets) || 1,
       platform: msg.platform,
       version: msg.version,
       startedAt: msg.startedAt,
@@ -274,7 +316,7 @@ export class PeerRegistry extends EventEmitter {
    * @param {string} [src.viaName]
    * @returns {number} сколько записей реально что-то изменили
    */
-  onDirectory(entries, { origin, realm, viaNodeId = null, viaName = null }) {
+  onDirectory(entries, { origin, realm, viaNodeId = null, viaName = null, via = null }) {
     if (!Array.isArray(entries)) return 0;
     const now = Date.now();
     let touched = 0;
@@ -285,12 +327,26 @@ export class PeerRegistry extends EventEmitter {
 
       const existing = this.peers.get(e.nodeId);
 
-      // Услышанный вживую сосед важнее пересказанного: его данные свежее,
-      // и подменять их чужим рассказом нельзя.
-      if (existing && existing.origin === 'local') continue;
+      // Рассказанный адрес — это ещё один маршрут до узла, а не замена того,
+      // что уже известно. Услышанный вживую сосед важнее пересказанного: его
+      // данные свежее, и подменять их чужим рассказом нельзя.
+      const told = {
+        kind: origin === 'seed' ? 'seed' : 'relay', origin, address: e.address,
+        apiPort: e.apiPort, usbipPort: e.usbipPort, trafficPort: e.trafficPort, netLinkPort: e.netLinkPort,
+        network: e.network || null, heardOn: null, via: via || (viaNodeId ? { nodeId: viaNodeId, name: viaName } : null),
+        mode: null,
+      };
+      if (existing && existing.origin === 'local') {
+        // Тот же адрес, что слышим сами, маршрутом не считается.
+        if (![...existing.routes.values()].some((r) => r.kind === 'direct' && r.address === e.address)) {
+          if (this._touchRoute(existing, told, now)) touched++;
+        }
+        continue;
+      }
       // Пересказ от соседа не должен затирать то, что мы знаем от моста.
       if (existing && existing.origin === 'seed' && origin === 'relay') {
         existing.lastSeen = now;
+        if (this._touchRoute(existing, told, now)) touched++;
         continue;
       }
 
@@ -310,6 +366,8 @@ export class PeerRegistry extends EventEmitter {
         address: e.address,
         apiPort: e.apiPort,
         usbipPort: e.usbipPort,
+        trafficPort: e.trafficPort,
+        netLinkPort: e.netLinkPort,
         network: e.network || null,
         platform: e.platform || null,
         version: e.version || null,
@@ -321,6 +379,8 @@ export class PeerRegistry extends EventEmitter {
         self: false,
       });
       peer.timeoutMs = this._timeoutFor(peer);
+      this._touchRoute(peer, told, now);
+      peer.routeKey = this._routeKey(told);
       this.peers.set(e.nodeId, peer);
 
       if (isNew) {
@@ -345,23 +405,39 @@ export class PeerRegistry extends EventEmitter {
     return touched;
   }
 
-  /** Записи о узлах, которыми мы делимся с другими. Без пересказа пересказа. */
-  directoryEntries(realm) {
+  /**
+   * Записи о узлах, которыми мы делимся с другими. Без пересказа пересказа.
+   *
+   * @param {string} realm
+   * @param {{ forNetwork?: string|null }} [o] — сеть собеседника (CIDR). Узлы, которых
+   *   он и сам слышит в этой сети, ему не пересказываем; об остальных, слышных
+   *   нам в других наших сетях, — рассказываем: так узел с несколькими
+   *   интерфейсами становится шлюзом без всяких настроек.
+   */
+  directoryEntries(realm, { forNetwork = null } = {}) {
     const out = [];
     for (const p of this.peers.values()) {
       if (!SHAREABLE.has(p.origin)) continue;
       if (!p.online) continue;
+      if (forNetwork) {
+        const local = [...p.routes.values()].filter((r) => r.kind === 'direct' && r.heardOn);
+        if (p.origin === 'local' && (!local.length || local.some((r) => r.heardOn === forNetwork))) continue;
+      }
       // Только свой круг доверия. Обмен идёт внутри одной сети, и
       // рассказывать мосту из «Лаборатории» об узлах «Цеха» значило бы
       // склеить обратно то, что ключи разделяют.
       if (p.realm !== realm) continue;
+      const via = forNetwork && p.origin === 'local'
+        ? [...p.routes.values()].find((r) => r.kind === 'direct' && r.heardOn && r.heardOn !== forNetwork) : null;
       out.push({
         nodeId: p.nodeId,
         name: p.name,
-        address: p.address,
-        apiPort: p.apiPort,
-        usbipPort: p.usbipPort,
-        network: p.network,
+        address: via?.address || p.address,
+        apiPort: via?.apiPort || p.apiPort,
+        usbipPort: via?.usbipPort || p.usbipPort,
+        trafficPort: via?.trafficPort ?? p.trafficPort,
+        netLinkPort: via?.netLinkPort ?? p.netLinkPort,
+        network: via?.network || p.network,
         platform: p.platform,
         version: p.version,
         startedAt: p.startedAt,
@@ -430,17 +506,161 @@ export class PeerRegistry extends EventEmitter {
     if (!ip) return false;
     for (const p of this.peers.values()) {
       if (p.address === ip) return true;
+      for (const r of p.routes.values()) if (r.address === ip) return true;
     }
     return false;
+  }
+
+  // ------------------------------------------------------------- маршруты
+
+  _routeKey(r) {
+    return `${r.address}|${r.via?.nodeId || ''}`;
+  }
+
+  /** Добавить или обновить маршрут. @returns {boolean} появился новый или изменился адрес сети. */
+  _touchRoute(peer, route, now = Date.now()) {
+    const key = this._routeKey(route);
+    const old = peer.routes.get(key);
+    const next = { ...(old || {}), ...route, key, lastSeen: now, firstSeen: old?.firstSeen || now };
+    // Способ добраться (напрямую или туннелем) выясняет проба, а не рассказ.
+    if (old && route.mode === null) next.mode = old.mode;
+    peer.routes.set(key, next);
+    return !old;
+  }
+
+  /** Маршрут, по которому сейчас разговариваем с узлом. */
+  primaryRoute(peer) {
+    return peer.routes.get(peer.routeKey) || [...peer.routes.values()][0] || null;
+  }
+
+  /** Маршруты для интерфейса: свежие, с понятными пометками. */
+  routesOf(peer) {
+    const ttl = (peer.timeoutMs || this.opts.peerTimeoutMs) * ROUTE_TTL_FACTOR;
+    const now = Date.now();
+    const out = [];
+    for (const r of peer.routes.values()) {
+      if (now - r.lastSeen > ttl) continue;
+      out.push({
+        key: r.key,
+        address: r.address,
+        network: r.network || r.heardOn || null,
+        kind: r.kind,
+        via: r.via ? { nodeId: r.via.nodeId, name: r.via.name || null } : null,
+        // direct — адрес доступен нам напрямую, tunnel — только через шлюз, null — ещё не проверяли.
+        mode: r.mode ?? null,
+        primary: r.key === peer.routeKey,
+      });
+    }
+    return out.sort((a, b) => Number(b.primary) - Number(a.primary) || String(a.address).localeCompare(String(b.address)));
+  }
+
+  /** Убрать маршруты, которые давно никто не подтверждал. */
+  _expireRoutes(peer, now) {
+    const ttl = (peer.timeoutMs || this.opts.peerTimeoutMs) * ROUTE_TTL_FACTOR;
+    for (const [key, r] of peer.routes) {
+      if (now - r.lastSeen > ttl && key !== peer.routeKey) peer.routes.delete(key);
+    }
+  }
+
+  /**
+   * Куда подключаться для этого порта узла: прямо или туннелем через шлюз.
+   *
+   * @param {object} peer
+   * @param {number} port — порт узла (его собственный, не туннельный)
+   * @param {string} [routeKey] — выбранный маршрут (по умолчанию основной)
+   * @returns {Promise<{ host: string, port: number, tunnel: boolean }>}
+   */
+  async endpoint(peer, port, routeKey = peer.routeKey) {
+    const r = peer.routes.get(routeKey) || this.primaryRoute(peer);
+    if (!r) return { host: peer.address, port, tunnel: false };
+    if (r.mode === 'tunnel' && r.via) {
+      const t = await this._openTunnel(peer, r, port);
+      return { host: t.host, port: t.port, tunnel: true };
+    }
+    return { host: r.address, port, tunnel: false };
+  }
+
+  /** Порт узла по имени: свой у каждого маршрута, с запасными значениями для старых версий. */
+  portOf(peer, name, routeKey = peer.routeKey) {
+    const r = peer.routes.get(routeKey) || this.primaryRoute(peer) || {};
+    const own = { api: 'apiPort', usbip: 'usbipPort', traffic: 'trafficPort', netlink: 'netLinkPort' }[name];
+    const fallback = { api: peer.apiPort, usbip: peer.usbipPort, traffic: DEFAULT_TRAFFIC_PORT, netlink: DEFAULT_NETLINK_PORT }[name];
+    return r[own] || peer[own] || fallback;
+  }
+
+  async _openTunnel(peer, route, port) {
+    const cacheKey = `${route.via.nodeId}|${route.address}|${port}`;
+    const hit = this.tunnelCache.get(cacheKey);
+    if (hit && hit.until > Date.now()) return hit;
+    const gateway = this.peers.get(route.via.nodeId);
+    const gwHost = gateway?.address || route.via.address;
+    const gwPort = gateway?.apiPort || route.via.apiPort;
+    if (!gwHost || !gwPort) throw new Error(`шлюз «${route.via.name || route.via.nodeId}» неизвестен — туннель не открыть`);
+    const res = await rpc({
+      host: gwHost,
+      port: gwPort,
+      path: '/api/v1/peer/tunnel',
+      method: 'POST',
+      body: { nodeId: peer.nodeId, address: route.address, port },
+      key: this.opts.realms.keyFor(peer.realm),
+      nodeId: this.opts.nodeId,
+      timeoutMs: 6000,
+    });
+    const t = { host: gwHost, port: res.port, until: Date.now() + 5 * 60 * 1000 };
+    this.tunnelCache.set(cacheKey, t);
+    return t;
+  }
+
+  /**
+   * Выяснить, как добираться по маршруту: напрямую или только через шлюз.
+   * Сначала прямой ping (быстрый), потом, если не вышло и есть шлюз, — через
+   * туннель. Результат — в route.mode; null — не достучались никак.
+   */
+  async probeRoute(peer, route) {
+    const key = this.opts.realms.keyFor(peer.realm);
+    const ping = (host, port, timeoutMs) => rpc({ host, port, path: '/api/v1/peer/ping', key, nodeId: this.opts.nodeId, timeoutMs });
+    try {
+      await ping(route.address, route.apiPort, 2500);
+      route.mode = 'direct';
+    } catch {
+      route.mode = null;
+      if (route.via) {
+        try {
+          const t = await this._openTunnel(peer, route, route.apiPort);
+          await ping(t.host, t.port, 4000);
+          route.mode = 'tunnel';
+        } catch (e) {
+          route.probeError = e.message;
+        }
+      }
+    }
+    if (route.mode) route.lastSeen = Date.now();
+    return route.mode;
+  }
+
+  /**
+   * Отпечаток того, что мы расскажем собеседнику в сети forNetwork: слышные
+   * нам в других сетях узлы. Меняется — соседи заберут каталог заново.
+   */
+  gatewayShape(forNetwork) {
+    const parts = [];
+    for (const p of this.peers.values()) {
+      if (p.origin !== 'local' || !p.online) continue;
+      const local = [...p.routes.values()].filter((r) => r.kind === 'direct' && r.heardOn);
+      if (!local.length || local.some((r) => r.heardOn === forNetwork)) continue;
+      parts.push(`${p.nodeId}@${p.stateHash || '-'}@${local[0].address}`);
+    }
+    return parts.sort().join(';');
   }
 
   async refreshPeerState(peer, expectedHash) {
     if (this.inflight.has(peer.nodeId)) return;
     this.inflight.add(peer.nodeId);
     try {
+      const ep = await this.endpoint(peer, peer.apiPort);
       const state = await rpc({
-        host: peer.address,
-        port: peer.apiPort,
+        host: ep.host,
+        port: ep.port,
         path: '/api/v1/peer/state',
         key: this.opts.realms.keyFor(peer.realm),
         nodeId: this.opts.nodeId,
@@ -477,6 +697,7 @@ export class PeerRegistry extends EventEmitter {
     let changed = false;
 
     for (const [id, peer] of this.peers) {
+      this._expireRoutes(peer, now);
       const silence = now - peer.lastSeen;
       const timeout = peer.timeoutMs || this.opts.peerTimeoutMs;
       if (peer.online && silence > timeout) {
