@@ -3,10 +3,13 @@
 // зависший узел не должен блокировать работу всей сети.
 
 import http from 'node:http';
-import { sign } from './protocol.js';
+import { sign, signRequest } from './protocol.js';
 
 export const AUTH_HEADER = 'x-nds-auth';
 export const NODE_HEADER = 'x-nds-node';
+/** Подпись v2 (метод, путь, отправитель, время) и метка времени к ней. */
+export const AUTH2_HEADER = 'x-nds-auth2';
+export const TS_HEADER = 'x-nds-ts';
 
 export class RpcError extends Error {
   constructor(message, { status = 0, code = 'rpc_error', body = null } = {}) {
@@ -31,6 +34,7 @@ export class RpcError extends Error {
  */
 export function rpc({ host, port, path, method = 'GET', body = null, key = '', nodeId = '', timeoutMs = 5000 }) {
   const payload = body === null ? '' : JSON.stringify(body);
+  const ts = String(Date.now());
 
   return new Promise((resolve, reject) => {
     const req = http.request(
@@ -44,6 +48,9 @@ export function rpc({ host, port, path, method = 'GET', body = null, key = '', n
           'content-length': Buffer.byteLength(payload),
           [AUTH_HEADER]: sign(payload, key),
           [NODE_HEADER]: nodeId,
+          // Старые узлы знают только x-nds-auth; новые проверяют v2.
+          [AUTH2_HEADER]: signRequest({ ts, method, path, nodeId, body: payload }, key),
+          [TS_HEADER]: ts,
         },
         timeout: timeoutMs,
       },

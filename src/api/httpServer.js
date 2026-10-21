@@ -26,7 +26,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { logger, recentLogs, onLogRecord } from '../log.js';
-import { AUTH_HEADER, NODE_HEADER } from '../net/rpc.js';
+import { AUTH_HEADER, AUTH2_HEADER, TS_HEADER, NODE_HEADER } from '../net/rpc.js';
 import { ipInCidr, normalizeIp, listNetworks } from '../net/interfaces.js';
 import { baseDir } from '../core/paths.js';
 import { renderMetrics } from '../core/metrics.js';
@@ -355,7 +355,15 @@ export class ApiServer {
     // Какому нашему кругу принадлежит вызывающий. Ключевые круги пробуются
     // первыми: открытый принимает любую подпись и иначе перехватывал бы
     // вызовы из всех чужих ключевых сетей.
-    const circle = realms.match(raw, req.headers[AUTH_HEADER] || '');
+    const circle = realms.matchRequest({
+      payload: raw,
+      signature: req.headers[AUTH_HEADER] || '',
+      signature2: req.headers[AUTH2_HEADER] || '',
+      ts: req.headers[TS_HEADER],
+      method: req.method,
+      path: req.url,
+      nodeId: req.headers[NODE_HEADER] || '',
+    });
     if (!circle) {
       log.warn(`отклонён вызов ${route} с неверной подписью (${remote})`);
       return sendJson(res, 401, { error: 'bad_signature', message: 'неверная подпись — не совпадает общий ключ' });

@@ -89,6 +89,32 @@ export function sign(payload, key) {
   return crypto.createHmac('sha256', key).update(payload).digest('hex');
 }
 
+/**
+ * Подпись HTTP-вызова между узлами (v2): кроме тела покрывает метод, путь,
+ * отправителя и время. Подпись одного тела позволяла взять перехваченный
+ * вызов и повторить его с чужим x-nds-node или на другом пути.
+ */
+export function signRequest({ ts, method, path, nodeId, body }, key) {
+  if (!key) return '';
+  return sign(`${ts}
+${method}
+${path}
+${nodeId}
+${body}`, key);
+}
+
+/** Окно свежести подписи: часы узлов расходятся, поэтому запас щедрый. */
+export const REQUEST_SKEW_MS = 10 * 60 * 1000;
+
+export function verifyRequest(req, signature, key) {
+  if (!key) return true;
+  const ts = Number(req.ts);
+  if (!Number.isFinite(ts) || Math.abs(Date.now() - ts) > REQUEST_SKEW_MS) return false;
+  const expected = signRequest(req, key);
+  if (!signature || signature.length !== expected.length) return false;
+  return crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(signature));
+}
+
 export function verify(payload, signature, key) {
   if (!key) return true; // аутентификация выключена
   const expected = sign(payload, key);

@@ -23,7 +23,7 @@
 // бы сообщения из всех чужих ключевых сетей. Ключевые круги пробуются
 // первыми, а открытый принимает только то, что подписи вовсе не несёт.
 
-import { realmOf, verify } from './protocol.js';
+import { realmOf, verify, verifyRequest } from './protocol.js';
 
 export const OPEN_REALM = 'open';
 
@@ -138,6 +138,24 @@ export class Realms {
     }
     if (signature) return null; // подпись есть, но ни один ключ не подошёл
     return this.serving().find((r) => r.open) || null;
+  }
+
+  /**
+   * Как match, но для HTTP-вызова: если пришла подпись v2 — проверяется она
+   * (метод, путь, отправитель, время). Только со старой подписью вызов
+   * принимается, пока не включён «строгий режим» (strictSignatures): им
+   * отключают совместимость, когда во всей сети узлы уже новые.
+   */
+  matchRequest({ payload, signature, signature2, ts, method, path, nodeId }) {
+    if (signature2) {
+      const req = { ts, method, path, nodeId, body: payload };
+      for (const r of this.keyed()) {
+        if (verifyRequest(req, signature2, r.key)) return r;
+      }
+      return null;
+    }
+    if (signature && this.config.get('strictSignatures') === true) return null;
+    return this.match(payload, signature);
   }
 
   /** Для интерфейса: чем мы сейчас являемся, без самих ключей. */
