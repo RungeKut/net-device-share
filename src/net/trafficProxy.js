@@ -45,11 +45,13 @@ export class TrafficProxy extends EventEmitter {
    *   здесь работает список: пускаем только по адресам узлов, о которых нам
    *   рассказали, а не всех, до кого есть маршрут.
    */
-  constructor({ listenPort, targetPort, cidr, isKnownPeer = null }) {
+  constructor({ listenPort, targetPort, cidr, isLocal = null, isKnownPeer = null }) {
     super();
     this.listenPort = listenPort;
     this.targetPort = targetPort;
     this.cidr = cidr;
+    // Своих сетей у узла может быть несколько: тогда «рядом» решает вызывающий.
+    this.isLocal = isLocal;
     this.isKnownPeer = isKnownPeer;
     this.server = null;
     /** @type {Map<string, object>} deviceId → счётчики */
@@ -130,7 +132,8 @@ export class TrafficProxy extends EventEmitter {
 
   _onClient(client) {
     const from = normalizeIp(client.remoteAddress || '');
-    const near = !this.cidr || ipInCidr(from, this.cidr) || from === '127.0.0.1' || from === '::1';
+    const near = this.isLocal ? this.isLocal(from) || from === '127.0.0.1' || from === '::1'
+      : !this.cidr || ipInCidr(from, this.cidr) || from === '127.0.0.1' || from === '::1';
     if (!near && !this.isKnownPeer?.(from)) {
       log.warn(`соединение с ${from} вне рабочей сети отклонено`);
       client.destroy();

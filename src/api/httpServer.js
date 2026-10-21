@@ -238,8 +238,7 @@ export class ApiServer {
         return sendJson(res, 401, { error: 'unauthorized', message: 'нужен токен метрик: заголовок Authorization: Bearer <токен>' });
       }
     } else {
-      const cidr = this.app.network?.cidr;
-      const local = isLoopback(remote) || !cidr || ipInCidr(remote, cidr);
+      const local = isLoopback(remote) || this.app.isInWorkingNetwork(remote);
       if (!local) {
         return sendJson(res, 403, {
           error: 'forbidden',
@@ -330,9 +329,8 @@ export class ApiServer {
   }
 
   async _handlePeer(req, res, route, remote) {
-    const cidr = this.app.network?.cidr;
     const realms = this.app.realms;
-    const local = isLoopback(remote) || !cidr || ipInCidr(remote, cidr);
+    const local = isLoopback(remote) || this.app.isInWorkingNetwork(remote);
 
     // Вызов из другой сети принимается по тем же правилам, что и из своей:
     // кого мы обслуживаем, решают круги доверия. Открытый круг («без ключа»)

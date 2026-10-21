@@ -9,7 +9,7 @@
 import crypto from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { logger } from '../log.js';
-import { resolveNetwork, listNetworks } from '../net/interfaces.js';
+import { resolveNetworks, listNetworks, ipInCidr } from '../net/interfaces.js';
 import { Discovery } from '../net/discovery.js';
 import { PeerRegistry } from '../cluster/peers.js';
 import { DirectoryService, parseSeed } from '../cluster/directory.js';
@@ -33,6 +33,9 @@ import { NetManager } from './netManager.js';
 const log = logger('app');
 
 export const VERSION = readVersion();
+
+/** Как часто проверять, не поменялся ли набор сетевых интерфейсов (кабель, DHCP, новый адаптер). */
+const NETWORK_WATCH_MS = 30000;
 
 const ANNOUNCE_TRANSPORTS = new Set(['both', 'multicast', 'broadcast']);
 
@@ -66,6 +69,8 @@ export class App extends EventEmitter {
     this.realms = new Realms(config);
     this.version = VERSION;
     this.startedAt = Date.now();
+    /** Все сети узла (в автовыборе — каждая настоящая карта); network — основная из них. */
+    this.networks = [];
     this.network = null;
     this.backend = null;
     this.backendInfo = null;
@@ -86,12 +91,13 @@ export class App extends EventEmitter {
   }
 
   async start() {
-    this.network = resolveNetwork(this.config.get('network'));
+    this.networks = resolveNetworks(this.config.get('network'));
+    this.network = this.networks[0] || null;
     if (!this.network) {
       throw new Error('не найден подходящий сетевой интерфейс IPv4 — проверьте подключение к сети');
     }
     if (this.config.get('network') === 'auto') {
-      log.info(`рабочая сеть выбрана автоматически: ${this.network.cidr} (${this.network.iface})`);
+      log.info(`рабочие сети выбраны автоматически: ${this.networks.map((n) => `${n.cidr} (${n.iface})`).join(', ')}`);
     }
 
     this.backend = await createBackend(this.config.get('backend'), {
@@ -108,14 +114,14 @@ export class App extends EventEmitter {
     // отдать, а какую только забронировать, решается при каждом опросе.
     this.net = new NetShare({
       config: this.config,
-      workingIface: () => this.network?.iface || null,
+      workingIface: () => this.networks.map((n) => n.iface),
     });
     // Коммутаторы и настройка адаптеров. Создаётся до запуска проброса:
     // тот должен знать, не собран ли мост коммутатором.
     this.netManager = new NetManager({
       config: this.config,
       net: this.net,
-      workingIface: () => this.network?.iface || null,
+      workingIface: () => this.networks.map((n) => n.iface),
       devices: () => new Map((this.share?.listAll() || []).filter((d) => d.type === 'net').map((d) => [d.title, d])),
     });
     await this.net.start();
@@ -237,7 +243,7 @@ export class App extends EventEmitter {
 
     this.discovery = new Discovery({
       nodeId: this.config.get('nodeId'),
-      network: this.network,
+      networks: this.networks,
       port: this.config.get('discoveryPort'),
       apiPort: this.config.get('apiPort'),
       usbipPort: this.config.get('usbipPort'),
@@ -267,8 +273,46 @@ export class App extends EventEmitter {
     this.updater.on('changed', () => this.api?.pushState());
     this.updater.start();
 
-    log.info(`узел "${this.config.get('name')}" готов; сеть ${this.network.cidr}, адрес ${this.network.address}`);
+    log.info(`узел "${this.config.get('name')}" готов; ${this.networks.map((n) => `сеть ${n.cidr}, адрес ${n.address}`).join('; ')}`);
+    this.networkWatch = setInterval(() => this._watchNetworks().catch((e) => log.warn(`проверка сетей: ${e.message}`)), NETWORK_WATCH_MS);
+    this.networkWatch.unref?.();
     return this;
+  }
+
+  // -------------------------------------------------------------- сети узла
+
+  /** Принадлежит ли адрес одной из наших сетей (то, что раньше было «в рабочей подсети»). */
+  isInWorkingNetwork(ip) {
+    if (!this.networks.length) return true;
+    return this.networks.some((n) => ipInCidr(ip, n.cidr));
+  }
+
+  /** Наш адрес в той сети, где находится собеседник: куда ему к нам обращаться. */
+  addressFor(peerAddress) {
+    return (this.networks.find((n) => ipInCidr(peerAddress, n.cidr)) || this.network).address;
+  }
+
+  _setNetworks(nets) {
+    this.networks = nets;
+    this.network = nets[0];
+    log.info(`рабочие сети: ${nets.map((n) => `${n.cidr} (${n.iface}, ${n.address})`).join(', ')}`);
+  }
+
+  /**
+   * Набор интерфейсов изменился (воткнули кабель, DHCP выдал другой адрес,
+   * появился адаптер): объявляемся в новых сетях и перестаём в ушедших.
+   * Если сетей не осталось, держим прежние: отключённый кабель не должен
+   * ронять узел, а при возвращении сети всё заработает само.
+   */
+  async _watchNetworks() {
+    if (this.stopping || !this.discovery) return;
+    const now = resolveNetworks(this.config.get('network'));
+    if (!now.length) return;
+    const sig = (list) => list.map((n) => `${n.iface}|${n.address}/${n.prefix}`).sort().join(';');
+    if (sig(now) === sig(this.networks)) return;
+    this._setNetworks(now);
+    await this.discovery.setNetworks(this.networks);
+    this.onStateChanged();
   }
 
   /**
@@ -652,7 +696,7 @@ export class App extends EventEmitter {
         port: peer.apiPort,
         path: '/api/v1/peer/notify-request',
         method: 'POST',
-        body: { request: req, owner: { nodeId: selfId, host: this.network.address, apiPort: this.config.get('apiPort') } },
+        body: { request: req, owner: { nodeId: selfId, host: this.addressFor(peer.address), apiPort: this.config.get('apiPort') } },
         key: this.realms.keyFor(peer.realm),
         nodeId: selfId,
         timeoutMs: 5000,
@@ -684,6 +728,7 @@ export class App extends EventEmitter {
       listenPort: this.config.get('trafficPort'),
       targetPort: this.config.get('usbipPort'),
       cidr: this.network.cidr,
+      isLocal: (ip) => this.isInWorkingNetwork(ip),
       // Узлы из других сетей приходят сюда со своих адресов — в рабочую
       // подсеть они не попадают. Пускаем ровно тех, о ком нам рассказали.
       isKnownPeer: (ip) => Boolean(this.peers?.hasAddress(ip)),
@@ -833,16 +878,13 @@ export class App extends EventEmitter {
       .some((k) => clean[k] !== undefined && clean[k] !== before[k]);
 
     if (clean.network !== undefined && clean.network !== before.network) {
-      const net = resolveNetwork(clean.network);
-      if (!net) {
+      const nets = resolveNetworks(clean.network);
+      if (!nets.length) {
         this.config.set({ network: before.network });
         throw new Error(`сеть ${clean.network} недоступна на этом компьютере`);
       }
-      log.info(`рабочая сеть меняется на ${net.cidr} (${net.iface})`);
-      this.network = net;
-      await this.discovery.stop();
-      this.discovery.opts.network = net;
-      await this.discovery.start();
+      this._setNetworks(nets);
+      await this.discovery.setNetworks(this.networks);
     }
 
     // Темп анонсов меняется на лету: интервал читается при каждом анонсе.
@@ -1112,6 +1154,8 @@ export class App extends EventEmitter {
         address: this.network.address,
         iface: this.network.iface,
         network: this.network.cidr,
+        // Все сети узла: в автовыборе он объявляется в каждой настоящей.
+        networks: this.networks.map((n) => ({ cidr: n.cidr, iface: n.iface, address: n.address })),
         apiPort: this.config.get('apiPort'),
         usbipPort: this.config.get('usbipPort'),
         discoveryPort: this.config.get('discoveryPort'),
@@ -1281,6 +1325,7 @@ export class App extends EventEmitter {
   async shutdown() {
     if (this.stopping) return;
     this.stopping = true;
+    clearInterval(this.networkWatch);
     log.info('завершение работы…');
 
     // Порядок важен: сначала вернуть чужое владельцам, потом перестать

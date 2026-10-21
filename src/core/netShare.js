@@ -209,7 +209,7 @@ export class NetShare extends EventEmitter {
     if (!this.supported) return 'проброс сетевых карт пока есть только на Windows';
     if (!m.hardware) return 'это программный адаптер — пробрасывается только настоящая сетевая карта';
     if (m.wireless) return 'Wi-Fi не пропускает кадры с чужими MAC-адресами — пробросить его мостом нельзя';
-    if (dev.title && dev.title === this.workingIface()) {
+    if (dev.title && [].concat(this.workingIface() || []).includes(dev.title)) {
       return 'через эту карту работает само приложение: отдав её, компьютер потеряет связь с остальными узлами';
     }
     if (!driverFilesPresent()) return 'нет файлов драйвера TAP (installers/windows/tap-windows6-9.27.0)';
@@ -762,7 +762,7 @@ export class NetShare extends EventEmitter {
     if (this.lends.has(dev.deviceId)) {
       throw errWith('forwarded', 'карта проброшена к вам: её адрес задаётся на вашем адаптере, а не у владельца');
     }
-    if (dev.title === this.workingIface()) {
+    if ([].concat(this.workingIface() || []).includes(dev.title)) {
       throw errWith('forbidden', 'через эту карту работает приложение владельца — менять её настройки по сети нельзя');
     }
     if (!this.elevated) throw errWith('need_admin', 'приложение владельца запущено без прав администратора — настройки карты оно не меняет');

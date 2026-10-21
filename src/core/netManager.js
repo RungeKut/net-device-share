@@ -372,7 +372,7 @@ export class NetManager extends EventEmitter {
       }
     }
     if (a.wireless) return `«${a.name}» — Wi-Fi: он не пропускает кадры с чужими MAC, в мост его включать нельзя`;
-    if (a.name === this.workingIface()) {
+    if ([].concat(this.workingIface() || []).includes(a.name)) {
       return `через «${a.name}» работает само приложение: в мосту она на время потеряет адрес, и связь с узлами оборвётся`;
     }
     const dev = this.devices().get(a.name);
@@ -429,7 +429,7 @@ export class NetManager extends EventEmitter {
     const why = {};
 
     if (a.bridged) why.ip = 'в мосту: адрес задаётся у моста';
-    else if (a.name === ctx.working) why.ip = 'через эту карту работает приложение — меняйте на месте';
+    else if ([].concat(ctx.working || []).includes(a.name)) why.ip = 'через эту карту работает приложение — меняйте на месте';
     else if (role === 'uplink' || role === 'lend') why.ip = 'служебный адаптер моста';
     else if (a.bridge && a.tcpip === false) why.ip = 'IP на мосту выключен';
     else can.ip = true;
@@ -439,7 +439,7 @@ export class NetManager extends EventEmitter {
     why.manage = role === 'uplink' ? 'служебный адаптер коммутатора: он живёт и удаляется вместе с коммутатором'
       : role === 'lend' ? 'служебный адаптер проброса: он удалится при освобождении карты'
         : role === 'borrow' ? 'адаптер занятой вами карты: он удалится при освобождении'
-          : a.name === ctx.working ? 'через эту карту работает приложение: отключить её или сменить ей адрес — оборвать связь и с узлами, и с этой страницей; меняйте её на месте, в свойствах Windows'
+          : [].concat(ctx.working || []).includes(a.name) ? 'через эту карту работает приложение: отключить её или сменить ей адрес — оборвать связь и с узлами, и с этой страницей; меняйте её на месте, в свойствах Windows'
             : dev?.claim || dev?.preparing ? `карта занята${dev.claim?.holderName ? ` («${dev.claim.holderName}»)` : ''} — сначала её освобождают`
               : null;
     if (why.manage) return { can, why };
@@ -907,7 +907,7 @@ export class NetManager extends EventEmitter {
       if (a.bridged) {
         throw errWith('forbidden', `«${a.name}» в мосту: её собственный адрес не действует — настройте адаптер моста «${this._bridgeName()}»`);
       }
-      if (a.name === this.workingIface()) {
+      if ([].concat(this.workingIface() || []).includes(a.name)) {
         throw errWith('forbidden', `через «${a.name}» работает приложение: новый адрес оборвёт связь и с узлами, и с этой страницей. Меняйте его на месте, в свойствах Windows`);
       }
       if (a.bridge && a.tcpip === false) {
@@ -1058,7 +1058,7 @@ export class NetManager extends EventEmitter {
         role,
         // Чужой TAP, подключённый к коммутатору: создан не приложением.
         adopted: Boolean(rec?.adopted),
-        working: a.name === working,
+        working: [].concat(working || []).includes(a.name),
         switchId: rec?.switchId || (a.bridged && bridgeRec ? bridgeRec.id : null),
         category: a.profile?.category || null,
         wantCategory: rec?.role === 'vnic' ? (rec.category || (rec.adopted ? null : 'Private')) : borrow?.category || null,

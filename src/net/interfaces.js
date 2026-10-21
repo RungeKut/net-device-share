@@ -57,6 +57,31 @@ export function isVirtualInterface({ iface, mac }) {
   return VIRTUAL_NAME.test(iface || '') || VIRTUAL_MAC.test(mac || '');
 }
 
+/**
+ * Сети, в которых узел работает.
+ *
+ * Явный CIDR — одна эта сеть, как и раньше. Автовыбор — все настоящие
+ * интерфейсы с приватным адресом: узел объявляется в каждой, и соседи
+ * находятся там, где они есть, а не только в сети «первой карты». Две карты
+ * в одной подсети дают одну сеть. Если настоящих нет, берём то, что выберет
+ * resolveNetwork, — лучше хоть какая-то сеть, чем никакой.
+ *
+ * @returns {object[]} первый элемент — основная сеть (её адрес узел показывает о себе)
+ */
+export function resolveNetworks(cidr) {
+  if (cidr && cidr !== 'auto') {
+    const one = resolveNetwork(cidr);
+    return one ? [one] : [];
+  }
+  const seen = new Set();
+  const real = listNetworks()
+    .filter((n) => isPrivate(n.address) && !isVirtualInterface(n))
+    .filter((n) => !seen.has(n.cidr) && seen.add(n.cidr));
+  if (real.length) return real;
+  const one = resolveNetwork('auto');
+  return one ? [one] : [];
+}
+
 export function maskToPrefix(mask) {
   const parts = String(mask).split('.').map(Number);
   if (parts.length !== 4 || parts.some((p) => Number.isNaN(p))) return null;

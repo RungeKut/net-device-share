@@ -187,8 +187,20 @@ export class PeerRegistry extends EventEmitter {
     const now = Date.now();
     const peer = existing || this._blank(msg.nodeId, 'local');
 
+    // Узел, слышный сразу в двух наших сетях, присылает один анонс с каждого
+    // адреса. Прежний адрес сохраняем, пока он жив: иначе запись прыгала бы
+    // между двумя адресами на каждом пакете, и каждый прыжок — лишний запрос
+    // состояния. Сменить адрес стоит, только когда прежний замолчал.
+    const seen = peer.seenAt || (peer.seenAt = {});
+    seen[msg.address] = now;
+    let address = msg.address;
+    if (existing && existing.origin === 'local' && existing.address !== msg.address
+      && now - (seen[existing.address] || 0) < this._timeoutFor(existing, msg.next)) {
+      address = existing.address;
+    }
+
     const renamed = existing && existing.name !== msg.name;
-    const moved = existing && existing.address !== msg.address;
+    const moved = existing && existing.address !== address;
     const wasOffline = existing ? !existing.online : false;
     // Узел, который раньше был известен только по каталогу, теперь слышен
     // напрямую: он ближе, чем мы думали, и это главный источник.
@@ -200,7 +212,7 @@ export class PeerRegistry extends EventEmitter {
       viaName: null,
       realm: msg.realm,
       name: msg.name,
-      address: msg.address,
+      address,
       apiPort: msg.apiPort,
       usbipPort: msg.usbipPort,
       network: msg.network || peer.network,

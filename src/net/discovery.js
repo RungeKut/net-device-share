@@ -2,6 +2,12 @@
 // Broadcast нужен потому, что в части корпоративных сетей и на Wi-Fi-точках
 // multicast режется, и без него узлы просто не увидят друг друга.
 //
+// НЕСКОЛЬКО СЕТЕЙ. Узел объявляется и слушает на каждом из переданных
+// интерфейсов (opts.networks): приём — один сокет на 0.0.0.0 со вступлением в
+// группу на каждом интерфейсе, отправка — свой сокет у каждого интерфейса,
+// чтобы пакет ушёл именно в ту сеть. Адрес соседа берётся из источника
+// пакета, поэтому «в какой сети его услышали» определяется само.
+//
 // Оба канала не выходят за пределы подсети: broadcast не маршрутизируется
 // вовсе, multicast — только там, где включена маршрутизация multicast, а в
 // корпоративных сетях её обычно нет. Узлы из других сегментов приходят не
@@ -35,12 +41,15 @@ const MIN_GAP_MS = 500;
 export class Discovery extends EventEmitter {
   /**
    * @param {object} opts
-   * @param {import('./interfaces.js').listNetworks} opts.network — выбранный интерфейс
+   * @param {object[]} opts.networks — интерфейсы, на которых работаем
+   *   (элементы listNetworks()); для совместимости принимается и одиночный opts.network
    */
   constructor(opts) {
     super();
     this.opts = opts;
     this.socket = null;
+    /** @type {Map<string, object>} адрес интерфейса → отправитель */
+    this.legs = new Map();
     this.timer = null;
     this.seq = 0;
     this.stopped = false;
@@ -78,38 +87,15 @@ export class Discovery extends EventEmitter {
       });
     });
 
-    const localAddr = this.opts.network.address;
-    const transport = this.opts.announceTransport || 'both';
-
-    if (transport === 'broadcast') {
-      this.multicastOk = false;
+    this.transport = this.opts.announceTransport || 'both';
+    if (this.transport === 'broadcast') {
       log.info('multicast выключен настройкой — анонсы идут только broadcast');
-    } else {
-      try {
-        sock.setMulticastTTL(2);           // хватает на LAN + один маршрутизатор
-        sock.setMulticastLoopback(false);  // свои же пакеты нам не нужны
-        sock.setMulticastInterface(localAddr);
-        sock.addMembership(this.opts.multicastAddress, localAddr);
-        this.multicastOk = true;
-        log.info(`multicast ${this.opts.multicastAddress}:${port} на ${localAddr} (${this.opts.network.iface})`);
-      } catch (e) {
-        this.multicastOk = false;
-        log.warn('multicast недоступен, работаем только через broadcast:', e.message);
-      }
+    } else if (this.transport === 'multicast') {
+      log.info('broadcast выключен настройкой — анонсы идут только multicast');
     }
-
-    if (transport === 'multicast') {
-      this.broadcastAddr = null;
-      if (this.multicastOk) log.info('broadcast выключен настройкой — анонсы идут только multicast');
-      else log.error('broadcast выключен настройкой, а multicast недоступен — узел не объявит о себе');
-    } else {
-      try {
-        sock.setBroadcast(true);
-        this.broadcastAddr = broadcastAddress(localAddr, this.opts.network.prefix);
-      } catch (e) {
-        this.broadcastAddr = null;
-        log.warn('broadcast недоступен:', e.message);
-      }
+    await this._syncLegs();
+    if (![...this.legs.values()].some((l) => l.multicastOk || l.broadcastAddr)) {
+      log.error('ни multicast, ни broadcast не доступны — узел не объявит о себе');
     }
 
     this.interval = this.opts.announceIntervalMs;
@@ -121,11 +107,11 @@ export class Discovery extends EventEmitter {
   _onMessage(buf, rinfo) {
     const from = normalizeIp(rinfo.address);
 
-    // Жёсткая привязка к рабочей сети: пакеты извне выбранной подсети
-    // не рассматриваем вообще. Ослаблять эту проверку нельзя — подделать
-    // UDP-пакет проще, чем установить TCP-соединение, а узлы из других
-    // сегментов и так приходят не сюда, а через обмен каталогом.
-    if (!ipInCidr(from, this.opts.network.cidr)) {
+    // Жёсткая привязка к рабочим сетям: пакеты извне подсетей наших
+    // интерфейсов не рассматриваем вообще. Ослаблять эту проверку нельзя —
+    // подделать UDP-пакет проще, чем установить TCP-соединение, а узлы из
+    // других сегментов и так приходят не сюда, а через обмен каталогом.
+    if (!this._nets().some((n) => ipInCidr(from, n.cidr))) {
       log.trace('пакет вне рабочей сети от', from);
       return;
     }
@@ -160,36 +146,119 @@ export class Discovery extends EventEmitter {
     }
   }
 
-  _targets() {
-    const targets = [];
-    if (this.multicastOk) targets.push(this.opts.multicastAddress);
-    if (this.broadcastAddr) targets.push(this.broadcastAddr);
-    return targets;
+  _nets() {
+    return this.opts.networks || (this.opts.network ? [this.opts.network] : []);
   }
 
   /**
-   * Отправка в каждый круг доверия, в котором мы объявляем о себе.
+   * Привести отправителей в соответствие со списком интерфейсов: для новых
+   * открыть сокет и вступить в группу, для ушедших — закрыть. Вызывается при
+   * старте и когда меняется набор сетей (воткнули кабель, появился адаптер).
+   */
+  async _syncLegs() {
+    const want = new Map(this._nets().map((n) => [n.address, n]));
+    for (const [addr, leg] of [...this.legs]) {
+      if (want.has(addr)) continue;
+      this.legs.delete(addr);
+      try { this.socket?.dropMembership(this.opts.multicastAddress, addr); } catch { /* уже нет */ }
+      await new Promise((res) => { try { leg.sock.close(() => res()); } catch { res(); } });
+      log.info(`интерфейс ${leg.net.iface} (${addr}) больше не используется для обнаружения`);
+    }
+    for (const [addr, net] of want) {
+      if (this.legs.has(addr)) continue;
+      const leg = await this._openLeg(net);
+      if (leg) this.legs.set(addr, leg);
+    }
+  }
+
+  async _openLeg(net) {
+    const { port } = this.opts;
+    const leg = { net, sock: null, multicastOk: false, broadcastAddr: null };
+    try {
+      leg.sock = dgram.createSocket({ type: 'udp4', reuseAddr: true });
+      leg.sock.on('error', (e) => log.warn(`отправка через ${net.iface}: ${e.message}`));
+      await new Promise((resolve, reject) => {
+        leg.sock.once('error', reject);
+        leg.sock.bind(0, net.address, () => { leg.sock.removeListener('error', reject); resolve(); });
+      });
+    } catch (e) {
+      log.warn(`интерфейс ${net.iface} (${net.address}) для обнаружения не открылся: ${e.message}`);
+      try { leg.sock?.close(); } catch { /* не открыт */ }
+      return null;
+    }
+
+    if (this.transport !== 'broadcast') {
+      try {
+        leg.sock.setMulticastTTL(2);           // хватает на LAN + один маршрутизатор
+        leg.sock.setMulticastLoopback(false);  // свои же пакеты нам не нужны
+        leg.sock.setMulticastInterface(net.address);
+        this.socket.addMembership(this.opts.multicastAddress, net.address);
+        leg.multicastOk = true;
+      } catch (e) {
+        log.warn(`multicast на ${net.iface} недоступен, работаем только через broadcast: ${e.message}`);
+      }
+    }
+    if (this.transport !== 'multicast') {
+      try {
+        leg.sock.setBroadcast(true);
+        leg.broadcastAddr = broadcastAddress(net.address, net.prefix);
+      } catch (e) {
+        log.warn(`broadcast на ${net.iface} недоступен: ${e.message}`);
+      }
+    }
+    log.info(`обнаружение на ${net.iface}: ${net.address}/${net.prefix}`
+      + `${leg.multicastOk ? `, multicast ${this.opts.multicastAddress}:${port}` : ''}${leg.broadcastAddr ? `, broadcast ${leg.broadcastAddr}` : ''}`);
+    return leg;
+  }
+
+  /**
+   * Набор сетей поменялся: перенастроить отправителей и тут же объявиться
+   * в новых. Сам приёмный сокет остаётся — он слушает все интерфейсы.
+   */
+  async setNetworks(networks) {
+    this.opts.networks = networks;
+    await this._syncLegs();
+    if (this.legs.size) this.refresh();
+  }
+
+  _targets(leg) {
+    const targets = [];
+    if (leg.multicastOk) targets.push(this.opts.multicastAddress);
+    if (leg.broadcastAddr) targets.push(leg.broadcastAddr);
+    return targets;
+  }
+
+  /** Отправить пакет во все сети из всех кругов: base.realm и подпись подставляются здесь. */
+  _sendEach(circles, makeBase) {
+    for (const leg of this.legs.values()) {
+      const targets = this._targets(leg);
+      if (!targets.length) continue;
+      for (const r of circles) {
+        const buf = encodeDatagram({ ...makeBase(leg), realm: r.realm }, r.key);
+        for (const addr of targets) {
+          leg.sock.send(buf, 0, buf.length, this.opts.port, addr, (err) => {
+            if (err) log.debug(`отправка на ${addr} (${leg.net.iface}) не удалась: ${err.message}`);
+          });
+        }
+      }
+    }
+  }
+
+  /**
+   * Отправка в каждый круг доверия, в котором мы объявляем о себе, и в
+   * каждую нашу сеть.
    *
    * Подпись в пакете одна, а кругов несколько, поэтому и пакетов столько же:
    * узел с ключом «Цех» обязан принять наш анонс, и узел с ключом
    * «Лаборатория» тоже, а один пакет удовлетворить обоим не может.
    *
-   * Цена прямая: трафик умножается на число кругов. Поэтому замедление
-   * анонсов в покое (см. выше) с несколькими сетями важнее, чем с одной.
+   * Цена прямая: трафик умножается на число кругов и на число сетей.
+   * Поэтому замедление анонсов в покое (см. выше) важнее с несколькими
+   * сетями, чем с одной.
    */
   _send(base) {
     if (!this.socket) return;
-    const targets = this._targets();
-    if (!targets.length) return;
-
-    for (const r of this.opts.realms.announcing()) {
-      const buf = encodeDatagram({ ...base, realm: r.realm }, r.key);
-      for (const addr of targets) {
-        this.socket.send(buf, 0, buf.length, this.opts.port, addr, (err) => {
-          if (err) log.debug(`отправка на ${addr} не удалась: ${err.message}`);
-        });
-      }
-    }
+    this._sendEach(this.opts.realms.announcing(), (leg) => ({ ...base, network: leg.net.cidr }));
   }
 
   _reschedule(delay) {
@@ -264,7 +333,6 @@ export class Discovery extends EventEmitter {
       next: this.interval,
       apiPort: this.opts.apiPort,
       usbipPort: this.opts.usbipPort,
-      network: this.opts.network.cidr,
       platform: process.platform,
       version: snapshot.version,
       startedAt: snapshot.startedAt,
@@ -308,18 +376,8 @@ export class Discovery extends EventEmitter {
    */
   farewell(circles) {
     if (!this.socket || !circles?.length) return;
-    for (const r of circles) {
-      const buf = encodeDatagram(
-        { proto: PROTO, type: MSG.BYE, nodeId: this.opts.nodeId, realm: r.realm, ts: Date.now() },
-        r.key,
-      );
-      for (const addr of this._targets()) {
-        this.socket.send(buf, 0, buf.length, this.opts.port, addr, (err) => {
-          if (err) log.debug(`прощание в круге ${r.realm} не ушло: ${err.message}`);
-        });
-      }
-      log.debug(`прощание отправлено в круг ${r.realm}`);
-    }
+    this._sendEach(circles, () => ({ proto: PROTO, type: MSG.BYE, nodeId: this.opts.nodeId, ts: Date.now() }));
+    for (const r of circles) log.debug(`прощание отправлено в круг ${r.realm}`);
   }
 
   query() {
@@ -337,13 +395,15 @@ export class Discovery extends EventEmitter {
       baseIntervalMs: this.opts.announceIntervalMs,
       idleIntervalMs: this.idleInterval,
       backoff: this.opts.announceBackoff !== false,
-      multicast: Boolean(this.multicastOk),
-      broadcast: Boolean(this.broadcastAddr),
+      multicast: [...this.legs.values()].some((l) => l.multicastOk),
+      broadcast: [...this.legs.values()].some((l) => l.broadcastAddr),
+      interfaces: [...this.legs.values()].map((l) => ({ iface: l.net.iface, address: l.net.address, network: l.net.cidr })),
       sent: this.sent,
       // Пакетов на один анонс: кругов доверия × каналов. Полезно видеть,
       // потому что число кругов умножает широковещательный трафик.
       realms: this.opts.realms.announcing().length,
-      perAnnounce: this.opts.realms.announcing().length * this._targets().length,
+      perAnnounce: this.opts.realms.announcing().length
+        * [...this.legs.values()].reduce((n, l) => n + this._targets(l).length, 0),
     };
   }
 
@@ -360,21 +420,27 @@ export class Discovery extends EventEmitter {
       // Прощаться нужно в каждом круге, где мы объявлялись: иначе соседи из
       // остальных будут ещё минуту показывать узел, которого уже нет.
       const sends = [];
-      for (const r of this.opts.realms.announcing()) {
-        const buf = encodeDatagram(
-          { proto: PROTO, type: MSG.BYE, nodeId: this.opts.nodeId, realm: r.realm, ts: Date.now() },
-          r.key,
-        );
-        for (const a of this._targets()) {
-          sends.push(new Promise((res) => {
-            this.socket.send(buf, 0, buf.length, this.opts.port, a, () => res());
-          }));
+      for (const leg of this.legs.values()) {
+        for (const r of this.opts.realms.announcing()) {
+          const buf = encodeDatagram(
+            { proto: PROTO, type: MSG.BYE, nodeId: this.opts.nodeId, realm: r.realm, ts: Date.now() },
+            r.key,
+          );
+          for (const a of this._targets(leg)) {
+            sends.push(new Promise((res) => {
+              leg.sock.send(buf, 0, buf.length, this.opts.port, a, () => res());
+            }));
+          }
         }
       }
       await Promise.all(sends);
     } catch { /* сеть уже могла отвалиться — не мешаем завершению */ }
 
     this.stopped = true;
+    for (const leg of this.legs.values()) {
+      await new Promise((res) => { try { leg.sock.close(() => res()); } catch { res(); } });
+    }
+    this.legs.clear();
     await new Promise((res) => this.socket.close(() => res()));
     this.socket = null;
   }

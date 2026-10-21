@@ -189,7 +189,9 @@ function render() {
 
 function renderHeader() {
   const s = state.self;
-  $('#selfLine').textContent = `${s.name} · ${s.address} · сеть ${s.network} (${s.iface})`;
+  $('#selfLine').textContent = s.networks?.length > 1
+    ? `${s.name} · ${s.networks.map((n) => `${n.address} (${n.cidr}, ${n.iface})`).join(' · ')}`
+    : `${s.name} · ${s.address} · сеть ${s.network} (${s.iface})`;
   if (!titleFlashTimer) document.title = `${s.name} — Net Device Share`;
 
   const server = $('#capServer');
