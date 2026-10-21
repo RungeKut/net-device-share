@@ -28,6 +28,7 @@ import crypto from 'node:crypto';
 import readline from 'node:readline/promises';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { stampVersion } from './lib/version.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const args = process.argv.slice(2);
@@ -72,6 +73,7 @@ async function confirm(question) {
 
 // ============================================================================ проверки
 
+stampVersion(ROOT);
 const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
 const version = pkg.version;
 if (!/^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/.test(version)) die(`странная версия в package.json: ${version}`);
@@ -82,7 +84,8 @@ const exe = path.join(ROOT, 'dist', 'installer', exeName);
 step(`Релиз ${tag}`);
 
 // Рабочее дерево: релиз собирается из коммита, а не из «того, что лежит на диске».
-const dirty = git('status', '--porcelain');
+// package.json правит сама сборка (версия из git) — это не «незакоммиченное».
+const dirty = git('status', '--porcelain').split(/\r?\n/).filter((l) => l && !/ package\.json$/.test(l)).join('\n');
 if (dirty && !flag('allow-dirty')) {
   die(`в рабочем каталоге есть незакоммиченное:\n${dirty}\nЗакоммитьте (релиз собирается из коммита) или добавьте --allow-dirty.`);
 }

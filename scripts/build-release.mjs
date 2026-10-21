@@ -72,6 +72,7 @@ const noZip = process.argv.includes('--no-zip');
 const keyId = process.env.NDS_SIGNING_KEY_ID || 'k1';
 const keyFile = process.env.NDS_SIGNING_KEY || path.join(os.homedir(), '.net-device-share-signing', `${keyId}.pem`);
 const withUpdates = !process.argv.includes('--legacy-layout') && fs.existsSync(keyFile);
+stampVersion(ROOT);
 const pkg = JSON.parse(await fsp.readFile(path.join(ROOT, 'package.json'), 'utf8'));
 const name = `${pkg.name}-${pkg.version}-win-x64`;
 const OUT = path.join(DIST, name);

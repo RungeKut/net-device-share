@@ -20,6 +20,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { buildRelease, packBundle, verifyManifest, verifyPayload } from '../launcher/lib/release.js';
 import { TRUSTED_KEYS } from '../launcher/lib/keys.js';
+import { stampVersion } from './lib/version.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -92,6 +93,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     process.exit(1);
   }
 
+  if (!opt('version', undefined)) stampVersion(ROOT);
   const result = buildAndSign({
     version: opt('version', undefined),
     channel,
