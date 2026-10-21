@@ -48,7 +48,7 @@ import { logger } from '../log.js';
 import { LinkServer, LinkClient } from '../net/tapLink.js';
 import { keepRelay, plugRelay } from '../net/relayKeeper.js';
 import { scanSubnet, suggestNextIp } from '../net/netScan.js';
-import { listTaps, createTap, renameAdapter, driverFilesPresent, friendlyName } from '../net/tapAdapters.js';
+import { listTaps, createTap, removeTap, renameAdapter, driverFilesPresent, friendlyName } from '../net/tapAdapters.js';
 import { bridge, unbridge, bridgeMembers, bridgeAdapter, setBridgeIp, withBridgeLock } from '../net/bridge.js';
 import {
   readIpConfig, applyIpConfig, resetIpConfig, validateIpConfig, BORROWED_METRIC,
@@ -123,6 +123,9 @@ export class NetShare extends EventEmitter {
     this.borrows = new Map();
     /** GUID адаптеров, которые сейчас в работе, — чтобы не выдать один дважды. */
     this.busyTaps = new Set();
+    /** guid → когда адаптер стал свободным: по этому сроку простаивающие удаляются. */
+    this.idleSince = new Map();
+    this.reapTimer = null;
     this.meters = new Map();
     /** deviceId → { at, address, prefixLength, hosts: [{ip, mac}] } — фоновое сканирование сети карты. */
     this.scans = new Map();
@@ -165,6 +168,13 @@ export class NetShare extends EventEmitter {
 
     this.tickTimer = setInterval(() => this._tick(), 1000);
     this.tickTimer.unref?.();
+    // Адаптеры, оставшиеся свободными с прошлых запусков (и от версий, которые
+    // их не удаляли), получают срок простоя с этой минуты.
+    for (const r of this._records()) {
+      if (['server', 'client'].includes(r.role)) this.idleSince.set(r.guid, Date.now());
+    }
+    this.reapTimer = setInterval(() => this._reapTaps().catch((e) => log.warn(`уборка TAP-адаптеров: ${e.message}`)), 30000);
+    this.reapTimer.unref?.();
 
     this._recover();
     return this;
@@ -261,6 +271,7 @@ export class NetShare extends EventEmitter {
     const chosen = free.find((r) => prefer && r.last === prefer) || free.find((r) => !r.last) || free[0];
     if (chosen) {
       this.busyTaps.add(chosen.guid);
+      this.idleSince.delete(chosen.guid);
       return { ...byGuid.get(chosen.guid) };
     }
 
@@ -274,8 +285,45 @@ export class NetShare extends EventEmitter {
     return tap;
   }
 
+  /**
+   * Удалить TAP-адаптеры, простоявшие свободными дольше tapIdleMs. Иначе они
+   * копились бы в «Сетевых подключениях» после каждого занятия. Роли vnic и
+   * uplink принадлежат коммутаторам и здесь не трогаются.
+   */
+  _removeTap(guid) {
+    return removeTap(guid);
+  }
+
+  async _reapTaps() {
+    const limit = Number(this.config.get('tapIdleMs'));
+    if (!this.elevated || !(limit > 0)) return;
+    const now = Date.now();
+    for (const r of this._records()) {
+      if (!['server', 'client'].includes(r.role)) continue;
+      if (this.busyTaps.has(r.guid)) continue;
+      const since = this.idleSince.get(r.guid);
+      if (since === undefined) { this.idleSince.set(r.guid, now); continue; }
+      if (now - since < limit) continue;
+
+      // На время удаления адаптер считается занятым: выбрать его заново нельзя.
+      this.busyTaps.add(r.guid);
+      try {
+        await this._removeTap(r.guid);
+        this.config.set({ tapAdapters: this._records().filter((x) => x.guid !== r.guid) });
+        this.idleSince.delete(r.guid);
+        log.info(`свободный TAP-адаптер ${r.guid} удалён (простой больше ${Math.round(limit / 1000)} с)`);
+      } catch (e) {
+        log.warn(`TAP-адаптер ${r.guid} не удалён: ${e.message}`);
+        this.idleSince.set(r.guid, now);   // повторим не раньше чем через срок простоя
+      } finally {
+        this.busyTaps.delete(r.guid);
+      }
+    }
+  }
+
   _releaseTap(guid, last) {
     this.busyTaps.delete(guid);
+    this.idleSince.set(guid, Date.now());
     if (last === undefined) return;
     this.config.set({
       tapAdapters: this._records().map((r) => (r.guid === guid ? { ...r, last } : r)),
@@ -1078,6 +1126,7 @@ export class NetShare extends EventEmitter {
    */
   async stop() {
     clearInterval(this.tickTimer);
+    clearInterval(this.reapTimer);
     for (const b of [...this.borrows.values()]) await this._stopBorrow(b).catch(() => {});
     for (const l of [...this.lends.values()]) {
       this._cancelTeardownTimer(l.deviceId);
