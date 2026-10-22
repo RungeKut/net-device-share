@@ -3,7 +3,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { ipInPrefix } from '../src/net/ipConfig.js';
+import { ipInPrefix, validNeighborPair } from '../src/net/ipConfig.js';
 
 test('адрес в подключаемой подсети: базовый адрес сети может быть любым адресом этой сети', () => {
   // Совет владельца — его собственный адрес, а не адрес сети: хостовые биты гасятся.
@@ -28,4 +28,12 @@ test('мусор не признаётся попаданием', () => {
   assert.equal(ipInPrefix('10.0.6.1', '10.0.6.1/33'), false);
   assert.equal(ipInPrefix('10.0.6.1', '10.0.6.1/0'), false, 'подключаемая сеть всегда с маской');
   assert.equal(ipInPrefix('::1', '10.0.6.154/24'), false);
+});
+
+test('закрепляется только пара из сканера: адрес и MAC в его формате', () => {
+  assert.equal(validNeighborPair({ ip: '10.0.6.134', mac: '00-e0-33-01-a4-d9' }), true, 'формат сканера — через дефис');
+  assert.equal(validNeighborPair({ ip: '10.0.6.1', mac: '00:e0:33:01:a4:d9' }), false, 'двоеточия не от сканера');
+  assert.equal(validNeighborPair({ ip: '10.0.6.1', mac: 'нет' }), false);
+  assert.equal(validNeighborPair({ ip: '300.0.6.1', mac: '00-e0-33-01-a4-d9' }), false);
+  assert.equal(validNeighborPair(null), false);
 });

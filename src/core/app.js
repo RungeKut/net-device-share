@@ -588,7 +588,7 @@ export class App extends EventEmitter {
     const part = rec.parts.find((p) => p.deviceId === deviceId && p.type === 'net');
     if (!part) throw new Error('в этом занятии нет такой сетевой карты');
     if (part.netKey) {
-      const r = await this.net.setBorrowIp(part.netKey, ip, { category });
+      const r = await this.net.setBorrowIp(part.netKey, ip, { category, neighbors: part.neighbors });
       this.attach.setPartIp(attachmentId, deviceId, { ip: r.ip, ipApplied: r.ipApplied });
       return r;
     }

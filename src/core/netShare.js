@@ -51,7 +51,8 @@ import { scanSubnet, suggestNextIp } from '../net/netScan.js';
 import { listTaps, createTap, removeTap, renameAdapter, driverFilesPresent, friendlyName } from '../net/tapAdapters.js';
 import { bridge, unbridge, bridgeMembers, bridgeAdapter, setBridgeIp, withBridgeLock } from '../net/bridge.js';
 import {
-  readIpConfig, applyIpConfig, resetIpConfig, validateIpConfig, flushNeighborCache, BORROWED_METRIC,
+  readIpConfig, applyIpConfig, resetIpConfig, validateIpConfig, flushNeighborCache,
+  pinNeighbors, validNeighborPair, BORROWED_METRIC,
 } from '../net/ipConfig.js';
 import { garpFrame, macBytes, VSwitch, SocketPort } from '../net/vswitch.js';
 import { isElevated } from './installer.js';
@@ -608,6 +609,7 @@ export class NetShare extends EventEmitter {
       port: this.config.get('netLinkPort'), token: session.token, mode: 'bridge',
       ip: advice.dhcp ? { dhcp: true, addresses: [], gateways: [], dns: [] } : null,
       ipNote: advice.note, suggest: advice.suggest, usedIps: advice.used,
+      neighbors: advice.neighbors || null,
     };
   }
 
@@ -644,7 +646,10 @@ export class NetShare extends EventEmitter {
     const suggest = next ? { address: next, prefixLength: own.prefixLength, gateways: cfg.gateways || [], dns: cfg.dns || [] } : null;
     const note = `В этой сети у владельца статический адрес ${own.address}/${own.prefixLength}, DHCP, скорее всего, нет. `
       + (next ? `Задайте адаптеру свободный адрес — например, ${next}.` : 'Свободный адрес в подсети не нашёлся — задайте его вручную.');
-    return { dhcp: false, note, suggest, used };
+    // Пары IP→MAC из сканера: держатель закрепит их статическими записями
+    // ARP, и гонка «кто быстрее ответил» за спорный адрес ему не страшна.
+    const neighbors = (scan?.hosts || []).filter((h) => h.ip && h.mac);
+    return { dhcp: false, note, suggest, used, neighbors };
   }
 
   // -------------------------------------- сканирование занятых адресов в сети
@@ -901,7 +906,7 @@ export class NetShare extends EventEmitter {
    * @param {(stage: string) => void} [o.onStage] — ход дела для интерфейса
    * @returns {Promise<{ name: string, guid: string, ip: object|null, ipApplied: object }>}
    */
-  async borrow({ key, host, port, token, label, ip = null, onStage = () => {} }) {
+  async borrow({ key, host, port, token, label, ip = null, neighbors = null, onStage = () => {} }) {
     const blocker = this.borrowBlocker();
     if (blocker) throw errWith('unavailable', blocker);
     if (this.borrows.has(key)) await this.giveBack(key);
@@ -909,6 +914,7 @@ export class NetShare extends EventEmitter {
     const b = {
       key, tap: null, relay: null, client: null, stopped: false, label,
       ip, ipApplied: null, category: 'Private', announced: new Set(), watch: null,
+      neighbors: Array.isArray(neighbors) ? neighbors.filter(validNeighborPair) : [],
     };
     this.borrows.set(key, b);
     try {
@@ -942,6 +948,13 @@ export class NetShare extends EventEmitter {
         // Прошлые подключения могли оставить адаптеру чужие MAC-привычки:
         // чистый кэш — заново спросить у сети, кто есть кто.
         if (this.elevated) await flushNeighborCache(tap.guid, ip).catch(() => {});
+        // Сканер владельца знает пары IP→MAC его сети: закрепляем их
+        // статически — спорный адрес достаётся прибору, а не тому, кто
+        // быстрее ответил.
+        if (this.elevated && b.neighbors.length) {
+          const pinned = await pinNeighbors(tap.guid, b.neighbors);
+          if (pinned.ok && pinned.pinned) log.info(`закреплено статических соседей: ${pinned.pinned}`);
+        }
       }
       this._watchAddresses(b);
       b.watch = setInterval(() => this._watchAddresses(b), ADDRESS_WATCH_MS);
@@ -1006,7 +1019,7 @@ export class NetShare extends EventEmitter {
    * Держатель меняет настройки своего адаптера — того, что стоит за чужой
    * картой. При освобождении адаптер очищается, как и после переноса.
    */
-  async setBorrowIp(key, cfg, { category } = {}) {
+  async setBorrowIp(key, cfg, { category, neighbors = null } = {}) {
     const b = this.borrows.get(key);
     if (!b?.tap) throw errWith('not_found', 'адаптер этого занятия не найден');
     if (!this.elevated) throw errWith('need_admin', 'приложение запущено без прав администратора — задайте адрес в свойствах адаптера Windows');
@@ -1015,6 +1028,8 @@ export class NetShare extends EventEmitter {
     if (!r.ok) throw new Error(`настройки не применены: ${r.error}`);
     // Сменился адрес — прежние ответы сети о чужих MAC ни к чему.
     await flushNeighborCache(b.tap.guid, clean).catch(() => {});
+    if (Array.isArray(neighbors)) b.neighbors = neighbors.filter(validNeighborPair);
+    if (b.neighbors.length) await pinNeighbors(b.tap.guid, b.neighbors).catch(() => {});
     b.ip = clean;
     b.ipApplied = { ok: true, own: true };
     if (category === 'Private' || category === 'Public') b.category = category;

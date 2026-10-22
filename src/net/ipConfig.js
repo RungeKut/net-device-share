@@ -109,6 +109,50 @@ const validIp = (s) => IPV4.test(s) && s.split('.').every((p) => Number(p) <= 25
 /** Живые состояния записи соседа: постоянные (broadcast, multicast) не чистим. */
 const LIVE_NEIGHBOR_STATES = 'Reachable,Probe,Stale,Delay,Deep';
 
+/** MAC в формате сканера (00-e0-33-01-a4-d9). */
+const validMac = (s) => /^([0-9a-f]{2}-){5}[0-9a-f]{2}$/i.test(String(s || ''));
+
+/** Парa «IP→MAC», пригодная для закрепления. */
+export function validNeighborPair(p) {
+  return Boolean(p) && validIp(p.ip) && validMac(p.mac);
+}
+
+/**
+ * Закрепить статические записи соседей (ARP) на адаптере: адрес владельца
+ * сети и его MAC из сканера становятся Permanent. Постоянную запись ответы
+ * чужих машин не перезаписывают — гонка «кто быстрее ответил на ARP» за
+ * спорный адрес перестаёт зависеть от везения. Записи живут на адаптере
+ * занятия; замена прибора с новым MAC требует переподключения.
+ *
+ * @param {string} guid — адаптер, на котором закреплять
+ * @param {{ip: string, mac: string}[]} neighbors — пары из сканера владельца
+ */
+export async function pinNeighbors(guid, neighbors = []) {
+  const g = `{${String(guid).replace(/[{}]/g, '')}}`;
+  const pairs = (Array.isArray(neighbors) ? neighbors : []).filter(validNeighborPair);
+  if (!pairs.length) return { ok: true, pinned: 0 };
+  try {
+    const found = await psJson(`Get-NetAdapter | Where-Object { $_.InterfaceGuid -eq ${psQuote(g)} } | Select-Object ifIndex | ConvertTo-Json -Compress`);
+    const idx = Number(found[0]?.ifIndex);
+    if (!Number.isInteger(idx) || idx <= 0) return { ok: false, error: 'адаптер не найден' };
+    let pinned = 0;
+    // Порциями: Remove+New на каждую пару; New на существующую запись —
+    // обновляет, но ошибки гасим: закрепление лучше неудачного занятия.
+    for (let i = 0; i < pairs.length; i += 50) {
+      const cmd = pairs.slice(i, i + 50).map((p) =>
+        `Remove-NetNeighbor -InterfaceIndex ${idx} -IPAddress '${p.ip}' -Confirm:$false -ErrorAction SilentlyContinue; `
+        + `New-NetNeighbor -InterfaceIndex ${idx} -IPAddress '${p.ip}' -LinkLayerAddress '${p.mac}' -State Permanent -ErrorAction SilentlyContinue`
+      ).join('; ') + "; 'ok' | ConvertTo-Json -Compress";
+      await psJson(cmd);
+      pinned += Math.min(50, pairs.length - i);
+    }
+    return { ok: true, pinned };
+  } catch (e) {
+    log.debug(`статические соседи адаптера ${g} не закреплены: ${e.message}`);
+    return { ok: false, error: e.message };
+  }
+}
+
 /**
  * Попадает ли IPv4-адрес в префикс вида «a.b.c.d/nn». Базовый адрес может
  * быть любым адресом сети — хостовые биты гасятся маской.

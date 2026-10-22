@@ -202,6 +202,8 @@ export class AttachManager extends EventEmitter {
         // Свободный адрес, который предложил владелец (мост в сети со статикой).
         suggest: null,
         usedIps: null,
+        // Пары IP→MAC сети владельца из его сканера: закрепляются статически.
+        neighbors: null,
         error: null,
       })),
       since: Date.now(),
@@ -384,6 +386,7 @@ export class AttachManager extends EventEmitter {
       token: link.token,
       label: `${part.title || part.key} на ${owner}`,
       ip: link.ip || null,
+      neighbors: link.neighbors || null,
       onStage: (s) => this._stage(rec, s),
     });
     part.netKey = key;
@@ -393,6 +396,7 @@ export class AttachManager extends EventEmitter {
     part.ipNote = link.ipNote || null;
     part.suggest = link.suggest || null;
     part.usedIps = link.usedIps || null;
+    part.neighbors = link.neighbors || null;
   }
 
   /** Держатель поменял настройки IP карты — запомнить, что теперь на ней. */
