@@ -1,0 +1,26 @@
+# Файловые инварианты и тесты на каждый push и пулреквест.
+#
+# Windows обязателен: тесты пускают powershell.exe и cscript.exe, читают
+# вывод в cp866 и опираются на пути Windows — на Linux-раннере они не имеют
+# смысла. Node 22: шаблоны в аргументах --test надёжно раскрываются (в npm
+# test файлы перечислены явно, но тест-раннер новее — тоже не лишний).
+name: ci
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Файловые инварианты
+        run: npm run check
+      - name: Тесты
+        run: npm test

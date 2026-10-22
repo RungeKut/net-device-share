@@ -139,6 +139,24 @@ if (fs.existsSync(manifestPath)) {
   }
 }
 
+// --- npm test: список тестов полный и без лишнего ---
+//
+// Скрипт тестов перечисляет файлы явно, потому что шаблон test/*.test.mjs
+// на Node 20 не раскрывается (glob в аргументах --test появился в Node 21):
+// прогон молча тестирует ноль файлов и выходит с кодом успеха. Цена явного
+// списка — забыть вписать новый файл, поэтому полноту проверяем здесь.
+{
+  const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
+  const listed = new Set((pkg.scripts.test || '').split(/\s+/).filter((w) => w.endsWith('.test.mjs')));
+  const onDisk = walk(path.join(ROOT, 'test'), '.test.mjs').map(rel);
+  for (const f of onDisk) {
+    check(`npm test: ${f} перечислен`, listed.has(f), 'файл есть на диске, но в npm test не входит — запускаться не будет');
+  }
+  for (const f of listed) {
+    check(`npm test: ${f} существует`, onDisk.includes(f), 'перечислен в npm test, но файла нет — прогон упадёт');
+  }
+}
+
 // --- итог ---
 if (problems.length) {
   process.stderr.write(`\nНайдены нарушения (${problems.length}):\n`);
