@@ -10,6 +10,7 @@
 | [00_rules/compact.md](00_rules/compact.md) | готовимся к компакту |
 | [00_rules/git.md](00_rules/git.md) | коммит, push, ветки, релиз |
 | [00_rules/code-style.md](00_rules/code-style.md) | пишешь код; правило комментариев |
+| [REVIEW.md](REVIEW.md) | код-ревью: чек-лист-дерево; пополняется граблями из практики |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | монолит: устройство, принятые решения, где что менять |
 | [PROTOCOL.md](PROTOCOL.md) | монолит: протокол NDS/1, формат пакетов и вызовов |
 | [UPDATE.md](UPDATE.md) | монолит: самообновление, подпись, установщик, откат версии |
