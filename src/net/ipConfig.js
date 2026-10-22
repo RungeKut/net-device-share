@@ -106,6 +106,22 @@ export async function readIpConfig(guid) {
 const IPV4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/;
 const validIp = (s) => IPV4.test(s) && s.split('.').every((p) => Number(p) <= 255);
 
+/** Живые состояния записи соседа: постоянные (broadcast, multicast) не чистим. */
+const LIVE_NEIGHBOR_STATES = 'Reachable,Probe,Stale,Delay,Deep';
+
+/**
+ * Попадает ли IPv4-адрес в префикс вида «a.b.c.d/nn». Базовый адрес может
+ * быть любым адресом сети — хостовые биты гасятся маской.
+ */
+export function ipInPrefix(ip, prefix) {
+  const m = /^(\d{1,3}(\.\d{1,3}){3})\/(\d{1,2})$/.exec(String(prefix || ''));
+  if (!m || !validIp(ip)) return false;
+  const pl = Number(m[3]);
+  if (pl < 1 || pl > 32) return false;
+  const mask = pl === 0 ? 0 : (0xFFFFFFFF << (32 - pl)) >>> 0;
+  return ((ipToLong(ip) ^ ipToLong(m[1])) & mask) === 0;
+}
+
 export function prefixToMask(prefix) {
   const bits = prefix === 0 ? 0 : (0xFFFFFFFF << (32 - prefix)) >>> 0;
   return [24, 16, 8, 0].map((s) => (bits >>> s) & 255).join('.');
@@ -220,20 +236,48 @@ export function resetIpConfig(guid) {
 }
 
 /**
- * Стереть динамические записи соседей (ARP) подключаемого адаптера.
+ * Стереть динамические записи соседей (ARP) подключаемого адаптера — и записи
+ * подключаемой подсети на всех остальных адаптерах.
  *
- * Кэш живёт на своём интерфейсе, рабочую сеть компьютера это не задевает.
- * Постоянные записи (broadcast, multicast) остаются: чистятся только живые
- * состояния. После замены прибора или переподключения Windows иначе помнит
- * старый MAC адреса до получаса, и трафик уходит прежнему хозяину адреса.
+ * Кэш живёт на каждом интерфейсе отдельно. Пока адаптер настраивается,
+ * маршрут самой широкой маской (например, офисная /21, в которую попадает
+ * и подсеть стенда /24) успевает завести записи на настоящей карте: они
+ * живут до получаса и уводят трафик тому, кто ответил раньше, — в рабочей
+ * сети может быть машина с тем же адресом, что и прибор. Чистый кэш —
+ * заново спросить у сети, кто есть кто: более узкий маршрут приведёт запрос
+ * в подключаемую подсеть. Рабочую сеть за пределами этой подсети правка не
+ * задевает; постоянные записи (broadcast, multicast) остаются.
  */
-export async function flushNeighborCache(guid) {
+export async function flushNeighborCache(guid, cfg = null) {
   const g = `{${String(guid).replace(/[{}]/g, '')}}`;
   try {
     const found = await psJson(`Get-NetAdapter | Where-Object { $_.InterfaceGuid -eq ${psQuote(g)} } | Select-Object ifIndex | ConvertTo-Json -Compress`);
     const idx = Number(found[0]?.ifIndex);
     if (!Number.isInteger(idx) || idx <= 0) return { ok: false, error: 'адаптер не найден' };
-    await psJson(`Remove-NetNeighbor -InterfaceIndex ${idx} -State Reachable,Probe,Stale,Delay,Deep -Confirm:$false -ErrorAction SilentlyContinue; 'ok' | ConvertTo-Json -Compress`);
+
+    // Подключаемый адаптер: всё живое — его записи и есть записи этой сети.
+    await psJson(`Remove-NetNeighbor -InterfaceIndex ${idx} -State ${LIVE_NEIGHBOR_STATES} -Confirm:$false -ErrorAction SilentlyContinue; 'ok' | ConvertTo-Json -Compress`);
+
+    // Тот же диапазон адресов на других адаптерах: маршрут к подсети уже
+    // указывает на подключаемый интерфейс, а оставшийся там сосед из прежней
+    // жизни перекрывает его кэшем.
+    const prefixes = (cfg?.addresses || [])
+      .filter((a) => validIp(a.address) && Number.isInteger(a.prefixLength) && a.prefixLength >= 1 && a.prefixLength <= 32)
+      .map((a) => `${a.address}/${a.prefixLength}`);
+    if (prefixes.length) {
+      const all = await psJson(`Get-NetNeighbor -State ${LIVE_NEIGHBOR_STATES} | Select-Object InterfaceIndex,IPAddress | ConvertTo-Json -Compress`);
+      const strangers = (Array.isArray(all) ? all : [all])
+        .filter((n) => n && Number(n.InterfaceIndex) !== idx && prefixes.some((p) => ipInPrefix(n.IPAddress, p)));
+      // Порциями, чтобы команда не упёрлась в длину: сканирование подсети
+      // создаёт записи сотнями.
+      for (let i = 0; i < strangers.length; i += 100) {
+        const cmd = strangers.slice(i, i + 100)
+          .map((n) => `Remove-NetNeighbor -InterfaceIndex ${Number(n.InterfaceIndex)} -IPAddress '${n.IPAddress}' -Confirm:$false -ErrorAction SilentlyContinue`)
+          .join('; ') + "; 'ok' | ConvertTo-Json -Compress";
+        await psJson(cmd);
+      }
+      if (strangers.length) log.debug(`кэш соседей: стёрто ${strangers.length} записей подключаемой подсети на других адаптерах`);
+    }
     return { ok: true };
   } catch (e) {
     log.debug(`кэш соседей адаптера ${g} не очищен: ${e.message}`);

@@ -940,8 +940,8 @@ export class NetShare extends EventEmitter {
           ? await applyIpConfig(tap.guid, ip, { metric: BORROWED_METRIC })
           : { ok: false, error: 'нет прав администратора — задайте адрес вручную' };
         // Прошлые подключения могли оставить адаптеру чужие MAC-привычки:
-        // чистый кэш соседей — заново спросить у сети, кто есть кто.
-        if (this.elevated) await flushNeighborCache(tap.guid).catch(() => {});
+        // чистый кэш — заново спросить у сети, кто есть кто.
+        if (this.elevated) await flushNeighborCache(tap.guid, ip).catch(() => {});
       }
       this._watchAddresses(b);
       b.watch = setInterval(() => this._watchAddresses(b), ADDRESS_WATCH_MS);
@@ -1014,7 +1014,7 @@ export class NetShare extends EventEmitter {
     const r = await applyIpConfig(b.tap.guid, clean, { metric: BORROWED_METRIC });
     if (!r.ok) throw new Error(`настройки не применены: ${r.error}`);
     // Сменился адрес — прежние ответы сети о чужих MAC ни к чему.
-    await flushNeighborCache(b.tap.guid).catch(() => {});
+    await flushNeighborCache(b.tap.guid, clean).catch(() => {});
     b.ip = clean;
     b.ipApplied = { ok: true, own: true };
     if (category === 'Private' || category === 'Public') b.category = category;

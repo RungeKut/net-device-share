@@ -1,6 +1,6 @@
 {
   "name": "net-device-share",
-  "version": "2.2.26",
+  "version": "2.2.35",
   "description": "Совместный доступ к USB, COM, LPT и сетевым интерфейсам по сети: каталог, группы, учёт занятости и запросы",
   "type": "module",
   "main": "src/main.js",
@@ -19,7 +19,7 @@
     "build:installer": "node scripts/build-installer.mjs",
     "build:grafana": "node scripts/build-grafana-dashboard.mjs",
     "keygen": "node scripts/release-keygen.mjs",
-    "test": "node --test test/adopt-orphan.test.mjs test/auto-network.test.mjs test/bridge-join.test.mjs test/discovery-exclude.test.mjs test/driver-share.test.mjs test/gateway.test.mjs test/metrics.test.mjs test/multi-network.test.mjs test/net-scan.test.mjs test/net-traffic.test.mjs test/offline-holder.test.mjs test/open-circle-across.test.mjs test/peers-traffic.test.mjs test/release-race.test.mjs test/signature-v2.test.mjs test/tap-reaper.test.mjs test/ui-ids.test.mjs test/vswitch-macs.test.mjs test/update/e2e.test.mjs test/update/evaluate-restart.test.mjs test/update/lib.test.mjs test/update/reports.test.mjs test/update/seeder-policy.test.mjs test/update/supervisor.test.mjs",
+    "test": "node --test test/adopt-orphan.test.mjs test/auto-network.test.mjs test/bridge-join.test.mjs test/discovery-exclude.test.mjs test/driver-share.test.mjs test/gateway.test.mjs test/ip-prefix.test.mjs test/metrics.test.mjs test/multi-network.test.mjs test/net-scan.test.mjs test/net-traffic.test.mjs test/offline-holder.test.mjs test/open-circle-across.test.mjs test/peers-traffic.test.mjs test/release-race.test.mjs test/signature-v2.test.mjs test/tap-reaper.test.mjs test/ui-ids.test.mjs test/vswitch-macs.test.mjs test/update/e2e.test.mjs test/update/evaluate-restart.test.mjs test/update/lib.test.mjs test/update/reports.test.mjs test/update/seeder-policy.test.mjs test/update/supervisor.test.mjs",
     "check": "node scripts/check-files.mjs",
     "fetch-installers": "node scripts/fetch-installers.mjs"
   },
