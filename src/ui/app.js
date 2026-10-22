@@ -1010,8 +1010,10 @@ document.addEventListener('click', (ev) => {
         : 'Занято'));
   } else if (t.dataset.join) {
     const [nodeId, target] = splitLast(t.dataset.join);
-    chooseRoute(nodeId, target, (routeKey) => action(t, () => post('/api/v1/attach', { nodeId, target, mode: 'bridge', routeKey }),
-      'Подключено в мост: адаптер появится в «Сетевых подключениях»'));
+    chooseRoute(nodeId, target, (routeKey) => action(t, async () => {
+      const r = await post('/api/v1/attach', { nodeId, target, mode: 'bridge', routeKey });
+      offerBridgeIp(r);
+    }, 'Подключено в мост: адаптер появится в «Сетевых подключениях»'));
   } else if (t.dataset.take) {
     const [nodeId, target] = t.dataset.take.split('|');
     if (confirm('Забрать устройство себе? Тот, кто с ним работает, потеряет соединение без предупреждения.')) {
@@ -1142,6 +1144,68 @@ $('#routeDialog').addEventListener('close', () => {
   routeContext = null;
   if ($('#routeDialog').returnValue !== 'go' || !go) return;
   go(document.querySelector('#routeList input[name="route"]:checked')?.value || null);
+});
+
+// --- диалог адреса после подключения в общий мост ---
+let bridgeIpContext = null;
+
+/** Часть занятия, которой стоит предложить адрес: мост, адаптер есть, адреса ещё нет. */
+function bridgeIpPartOf(r) {
+  return (r?.parts || []).find((p) => p.adapter && !p.ip && p.suggest) || null;
+}
+
+/**
+ * Сразу после подключения в мост предложить адрес из совета владельца:
+ * окно подтверждения с правкой адреса, применение — только по «Да».
+ * Молчит, когда предлагать нечего: в сети владельца DHCP или адаптер уже
+ * настроен (адрес остаётся от прошлого подключения).
+ */
+function offerBridgeIp(r) {
+  const part = bridgeIpPartOf(r);
+  if (!part) return;
+  const s = part.suggest;
+  bridgeIpContext = { attachmentId: r.id, deviceId: part.deviceId, suggest: s };
+  $('#bridgeIpNote').textContent =
+    `В сети карты у владельца DHCP, скорее всего, нет. Предлагаем свободный адрес `
+    + `для вашего адаптера «${part.adapter}» — иначе приборы той сети не увидят этот компьютер.`;
+  $('#bridgeIpInput').value = s.address || '';
+  const extra = [
+    s.prefixLength != null ? `маска /${s.prefixLength}` : null,
+    (s.gateways || []).length ? `шлюз ${s.gateways.join(', ')}` : null,
+    (s.dns || []).length ? `DNS ${s.dns.join(', ')}` : null,
+  ].filter(Boolean).join(', ');
+  $('#bridgeIpExtra').textContent = extra ? `Остальное подставится из сети владельца: ${extra}.` : '';
+  $('#bridgeIpDialog').showModal();
+}
+
+$('#bridgeIpDialog').addEventListener('close', async () => {
+  const dlg = $('#bridgeIpDialog');
+  const ctx = bridgeIpContext;
+  bridgeIpContext = null;
+  if (!ctx || dlg.returnValue !== 'apply') return;
+  const address = $('#bridgeIpInput').value.trim();
+  // Лёгкая проверка на месте: полный разбор всё равно делает сервер.
+  if (!/^(\d{1,3})(\.\d{1,3}){3}$/.test(address)) {
+    toast(`«${address || 'пусто'}» не похоже на IPv4-адрес — задайте его позже кнопкой «Настройки IP»`, 'err');
+    return;
+  }
+  const s = ctx.suggest;
+  try {
+    await post('/api/v1/net/held/ip', {
+      attachmentId: ctx.attachmentId,
+      deviceId: ctx.deviceId,
+      category: 'Private',
+      ip: {
+        dhcp: false,
+        addresses: [{ address, prefixLength: s.prefixLength }],
+        gateways: s.gateways || [],
+        dns: s.dns || [],
+      },
+    });
+    toast(`Адрес ${address} задан адаптеру`, 'ok');
+  } catch (e) {
+    toast(e.message, 'err');
+  }
 });
 
 $('#askDialog').addEventListener('close', async () => {

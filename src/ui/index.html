@@ -171,6 +171,23 @@
   </form>
 </dialog>
 
+<!-- Предлагаемый адрес сразу после подключения карты в общий мост -->
+<dialog id="bridgeIpDialog">
+  <form method="dialog" class="dlg">
+    <h2>Задать адрес адаптеру?</h2>
+    <p id="bridgeIpNote" class="dlg-note"></p>
+    <label class="field">
+      <span>Адрес адаптера <em class="muted">(можно изменить)</em></span>
+      <input type="text" id="bridgeIpInput" placeholder="например, 192.168.1.51" autocomplete="off" spellcheck="false">
+    </label>
+    <p id="bridgeIpExtra" class="dlg-note"></p>
+    <div class="dlg-actions">
+      <button class="btn" value="skip" type="submit">Нет, оставить без адреса</button>
+      <button class="btn primary" value="apply" type="submit">Да, задать</button>
+    </div>
+  </form>
+</dialog>
+
 <!-- Копирование драйвера с компьютера владельца -->
 <dialog id="driverDialog">
   <div class="dlg">

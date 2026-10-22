@@ -20,6 +20,7 @@ function grab(name) {
 }
 
 const splitLast = new Function(`${grab('splitLast')}; return splitLast;`)();
+const bridgeIpPartOf = new Function(`${grab('bridgeIpPartOf')}; return bridgeIpPartOf;`)();
 
 test('кнопка «Копировать драйвер»: идентификатор занятия содержит «|», устройство — последний кусок', () => {
   const attachmentId = attachKey('c4d96879-cf14-4be5-adfa-087024eb0ac6', 'usb:1-1');
@@ -27,6 +28,18 @@ test('кнопка «Копировать драйвер»: идентифика
   assert.deepEqual(splitLast(value), [attachmentId, 'usb:1-1']);
   // старое поведение — делить по всем «|» — теряло занятие:
   assert.notEqual(value.split('|')[0], attachmentId);
+});
+
+test('диалог адреса моста: предлагается карта с адаптером без адреса, но с советом', () => {
+  const part = { deviceId: 'net:e1', adapter: 'NDS мост — Ethernet 2', ip: null, suggest: { address: '192.168.1.51' } };
+  assert.equal(bridgeIpPartOf({ id: 'a1', parts: [part] }), part, 'мост без адреса — окно открывается');
+  // DHCP (адрес уже приехал) или настроен раньше — предлагать нечего:
+  assert.equal(bridgeIpPartOf({ id: 'a1', parts: [{ ...part, ip: { dhcp: true } }] }), null);
+  // бронь и USB-части без адаптера и совета — тоже:
+  assert.equal(bridgeIpPartOf({ id: 'a1', parts: [{ ...part, adapter: null, suggest: null }] }), null);
+  // ответ без частей (занятие не сетевое) не роняет интерфейс:
+  assert.equal(bridgeIpPartOf({ id: 'a1', parts: [] }), null);
+  assert.equal(bridgeIpPartOf(null), null);
 });
 
 test('то же для «Настроек IP» занятой карты', () => {
