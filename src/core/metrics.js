@@ -198,6 +198,7 @@ export function renderMetrics(app) {
     // Для своего узла опубликованы только отмеченные; для чужих список уже опубликованный.
     const shared = devices.filter((d) => d.shared !== false);
     const busy = devices.filter((d) => d.claim);
+    const joiners = devices.flatMap((d) => (d.joins || []).map((j) => ({ ...j, device: d })));
     r.gauge('nds_node_devices', 'Устройства узла: published — опубликованные, all — все, что у него есть (для чужих узлов они совпадают).',
       { ...nl, scope: 'published' }, shared.length);
     r.gauge('nds_node_devices', 'Устройства узла: published — опубликованные, all — все, что у него есть (для чужих узлов они совпадают).',
@@ -209,7 +210,10 @@ export function renderMetrics(app) {
         { ...nl, type }, devices.filter((d) => d.type === type).length);
     }
     r.gauge('nds_node_groups', 'Опубликованные группы устройств узла.', nl, o.groups.filter((g) => g.shared !== false).length);
-    r.gauge('nds_node_holders', 'Сколько разных узлов держат устройства этого узла.', nl, new Set(busy.map((d) => d.claim.holderId)).size);
+    // Держатель — и занявший устройство, и подключённый к карте в общий мост:
+    // оба работают с устройствами узла.
+    r.gauge('nds_node_holders', 'Сколько разных узлов держат устройства этого узла (занявшие и подключённые в общий мост).',
+      nl, new Set([...busy.map((d) => d.claim.holderId), ...joiners.map((j) => j.holderId)]).size);
 
     // Трафик узла как владельца: сумма по его устройствам.
     let inRate = 0; let outRate = 0; let inTotal = 0; let outTotal = 0; let hasTraffic = false;
@@ -272,6 +276,31 @@ export function renderMetrics(app) {
           h.outTotal += d.traffic.totalOut || 0;
         }
         holders.set(c.holderId, h);
+      }
+
+      // Подключённые к карте в общий мост: карта не «занята», но узлы в ней
+      // работают, и у каждого своя скорость (joins[].traffic).
+      for (const j of d.joins || []) {
+        const jl = { ...dl, holder_id: j.holderId, holder: j.holderName };
+        r.gauge('nds_device_join_info', 'Узел, подключённый к карте в общий мост. Всегда 1.', jl, 1);
+        r.gauge('nds_device_join_age_seconds', 'Сколько секунд узел подключён к карте в общем мосту.', jl, secondsSince(j.since, now));
+        const h = holders.get(j.holderId) || { id: j.holderId, name: j.holderName, devices: 0, inRate: 0, outRate: 0, inTotal: 0, outTotal: 0 };
+        h.devices++;
+        if (j.traffic) {
+          r.gauge('nds_device_join_traffic_bytes_per_minute', 'Личный трафик держателя моста за последнюю минуту, байт (in — от держателя в сеть карты, out — обратно).',
+            { ...jl, direction: 'in' }, j.traffic.bytesInPerMinute);
+          r.gauge('nds_device_join_traffic_bytes_per_minute', 'Личный трафик держателя моста за последнюю минуту, байт (in — от держателя в сеть карты, out — обратно).',
+            { ...jl, direction: 'out' }, j.traffic.bytesOutPerMinute);
+          r.gauge('nds_device_join_traffic_session_bytes', 'Личный трафик держателя моста за подключение, байт.',
+            { ...jl, direction: 'in' }, j.traffic.totalIn);
+          r.gauge('nds_device_join_traffic_session_bytes', 'Личный трафик держателя моста за подключение, байт.',
+            { ...jl, direction: 'out' }, j.traffic.totalOut);
+          h.inRate += j.traffic.bytesInPerMinute || 0;
+          h.outRate += j.traffic.bytesOutPerMinute || 0;
+          h.inTotal += j.traffic.totalIn || 0;
+          h.outTotal += j.traffic.totalOut || 0;
+        }
+        holders.set(j.holderId, h);
       }
 
       if (d.traffic) {

@@ -1992,6 +1992,132 @@
     },
     {
       "type": "timeseries",
+      "title": "Личный трафик держателей общего моста",
+      "description": "Скорость каждого подключённого к карте в общий мост — общая по карте её не видна.",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (holder) (nds_device_join_traffic_bytes_per_minute{instance=\"$instance\"}) / 60",
+          "legendFormat": "{{holder}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "Bps",
+          "min": 0,
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "id": 28,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 78
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Узлов в общих мостах",
+      "description": "Сколько подключений к картам в общем мосту видит наблюдатель.",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "count(nds_device_join_info{instance=\"$instance\"}) or vector(0)",
+          "legendFormat": "подключений к мостам",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "min": 0,
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "id": 29,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 78
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      }
+    },
+    {
+      "type": "timeseries",
       "title": "Подключения этого узла к чужим устройствам",
       "description": "Сколько целей узел-наблюдатель занимает сам.",
       "targets": [
@@ -2041,12 +2167,12 @@
           "sort": "desc"
         }
       },
-      "id": 28,
+      "id": 30,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 78
+        "y": 86
       },
       "datasource": {
         "type": "prometheus",
@@ -2184,12 +2310,12 @@
         },
         "sortBy": []
       },
-      "id": 29,
+      "id": 31,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 78
+        "y": 86
       },
       "datasource": {
         "type": "prometheus",
@@ -2201,12 +2327,12 @@
       "title": "Обновления",
       "collapsed": false,
       "panels": [],
-      "id": 30,
+      "id": 32,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 86
+        "y": 94
       }
     },
     {
@@ -2260,12 +2386,12 @@
           "sort": "none"
         }
       },
-      "id": 31,
+      "id": 33,
       "gridPos": {
         "h": 8,
         "w": 6,
         "x": 0,
-        "y": 87
+        "y": 95
       },
       "datasource": {
         "type": "prometheus",
@@ -2535,12 +2661,12 @@
         },
         "sortBy": []
       },
-      "id": 32,
+      "id": 34,
       "gridPos": {
         "h": 8,
         "w": 18,
         "x": 6,
-        "y": 87
+        "y": 95
       },
       "datasource": {
         "type": "prometheus",
@@ -2552,12 +2678,12 @@
       "title": "Узел-наблюдатель (процесс)",
       "collapsed": false,
       "panels": [],
-      "id": 33,
+      "id": 35,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 95
+        "y": 103
       }
     },
     {
@@ -2611,12 +2737,12 @@
           "sort": "desc"
         }
       },
-      "id": 34,
+      "id": 36,
       "gridPos": {
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 96
+        "y": 104
       },
       "datasource": {
         "type": "prometheus",
@@ -2684,12 +2810,12 @@
           "sort": "desc"
         }
       },
-      "id": 35,
+      "id": 37,
       "gridPos": {
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 96
+        "y": 104
       },
       "datasource": {
         "type": "prometheus",
@@ -2747,12 +2873,12 @@
           "sort": "desc"
         }
       },
-      "id": 36,
+      "id": 38,
       "gridPos": {
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 96
+        "y": 104
       },
       "datasource": {
         "type": "prometheus",

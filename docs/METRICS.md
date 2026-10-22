@@ -70,8 +70,8 @@ Grafana → Dashboards → **New → Import → Upload JSON file**, источн
 Разделы: **Сеть** (узлов, устройств, загрузка, трафик), **Узлы** (таблица со статистикой
 по каждому узлу, доступность, занятость, трафик, аптайм, давность ответа, типы устройств),
 **Устройства** (занятые, кем, трафик, держатель молчит, ошибки), **Клиенты** (кто сколько
-держит и гонит), **Обновления** (версии по сети, состояние самообновления), **Узел-наблюдатель**
-(процессор, память, время сбора).
+держит и гонит, личная скорость подключённых к общим мостам), **Обновления** (версии по
+сети, состояние самообновления), **Узел-наблюдатель** (процессор, память, время сбора).
 
 Дашборд собирается скриптом `node scripts/build-grafana-dashboard.mjs`; тест проверяет,
 что каждая метрика из его запросов действительно отдаётся приложением. Не править JSON
@@ -91,7 +91,7 @@ Grafana → Dashboards → **New → Import → Upload JSON file**, источн
 | `nds_node_devices{scope}` | устройства узла: `published` — опубликованные, `all` — все |
 | `nds_node_devices_busy`, `nds_node_devices_free` | занято и свободно |
 | `nds_node_devices_by_type{type}` | по типам: usb, com, lpt, net |
-| `nds_node_groups`, `nds_node_holders` | опубликованные группы; сколько разных узлов держат его устройства |
+| `nds_node_groups`, `nds_node_holders` | опубликованные группы; сколько разных узлов держат его устройства (занявшие и подключённые в общий мост) |
 | `nds_node_traffic_bytes_per_minute{direction}` | трафик его устройств за минуту, байт |
 | `nds_node_traffic_session_bytes{direction}` | трафик его устройств за текущие занятия |
 | `nds_node_local_devices_shared` | только у узла-наблюдателя: сколько локальных устройств опубликовано |
@@ -129,15 +129,21 @@ Grafana → Dashboards → **New → Import → Upload JSON file**, источн
 | `nds_device_claim_info` | + `holder_id`, `holder`, `mode` | кто занял (`remote` — чужой узел, `local` — сам владелец) |
 | `nds_device_claim_age_seconds` | | сколько занято |
 | `nds_device_holder_silent_seconds` | | сколько держатель не продлевал аренду |
+| `nds_device_join_info` | + `holder_id`, `holder` | узел, подключённый к карте в общий мост, всегда 1 |
+| `nds_device_join_age_seconds` | | сколько узел подключён к мосту |
+| `nds_device_join_traffic_bytes_per_minute`, `nds_device_join_traffic_session_bytes` | + `direction` | личный трафик держателя моста: общий по карте этого не показывает |
 | `nds_device_traffic_bytes_per_minute`, `nds_device_traffic_session_bytes` | + `direction` (`in` — к устройству, `out` — от него) | трафик за минуту и за занятие |
 | `nds_device_traffic_last_activity_age_seconds`, `nds_device_connections` | | давность обмена, число подключений |
 
 **Группы:** `nds_group_members`, `nds_group_busy`, `nds_group_shared` (метки `owner_id`,
 `owner`, `group_id`, `group`).
 
-**Клиенты (держатели)** — кто сколько устройств держит и гонит:
+**Клиенты (держатели)** — кто сколько устройств держит и гонит: занявшие устройства
+и подключённые к картам в общий мост считаются вместе.
 `nds_holder_devices`, `nds_holder_traffic_bytes_per_minute{direction}`,
 `nds_holder_traffic_session_bytes{direction}` (метки `holder_id`, `holder`).
+Личный трафик держателя моста отдельно от общей скорости карты —
+`nds_device_join_traffic_bytes_per_minute{direction}` в разделе «Устройства».
 
 **Подключения узла-наблюдателя к чужим устройствам:** `nds_attachment_state{state}`,
 `nds_attachment_age_seconds`, `nds_attachment_heartbeat_age_seconds` (метки `owner_id`,

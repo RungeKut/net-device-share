@@ -254,6 +254,13 @@ timeseries('Трафик устройств по держателям', [
   target(`sum by (holder) (nds_holder_traffic_bytes_per_minute{${I}}) / 60`, '{{holder}}'),
 ], { w: 16, x: 8, unit: 'Bps', min: 0 });
 y += 8;
+timeseries('Личный трафик держателей общего моста', [
+  target(`sum by (holder) (nds_device_join_traffic_bytes_per_minute{${I}}) / 60`, '{{holder}}'),
+], { w: 12, x: 0, unit: 'Bps', min: 0, desc: 'Скорость каждого подключённого к карте в общий мост — общая по карте её не видна.' });
+timeseries('Узлов в общих мостах', [
+  target(`count(nds_device_join_info{${I}}) or vector(0)`, 'подключений к мостам'),
+], { w: 12, x: 12, min: 0, desc: 'Сколько подключений к картам в общем мосту видит наблюдатель.' });
+y += 8;
 timeseries('Подключения этого узла к чужим устройствам', [
   target(`nds_attachments_attached{${I}}`, 'занято целей'),
 ], { w: 12, x: 0, min: 0, desc: 'Сколько целей узел-наблюдатель занимает сам.' });

@@ -86,7 +86,8 @@ function fakeApp() {
       listAll: () => [
         dev('1-1', { claim: busyClaim('piano', 'PIANO-PC'), traffic: traffic(1000, 500, 90000, 40000) }),
         dev('1-2', { shared: false }),
-        { ...dev('1-3'), type: 'net', deviceId: 'net:Ethernet', title: 'Ethernet' },
+        { ...dev('1-3'), type: 'net', deviceId: 'net:Ethernet', title: 'Ethernet',
+          joins: [{ holderId: 'lab', holderName: 'ЛАБОРАТОРИЯ', since: NOW - 30000, traffic: traffic(300, 100, 5000, 2000) }] },
       ],
       listGroups: () => [{ id: 'g1', name: 'Стенд', members: ['usb:1-1'], shared: true, claim: null }],
     },
@@ -144,14 +145,14 @@ test('статистика по узлам: каждый узел сети, вк
   assert.equal(one(samples, 'nds_nodes', { state: 'online' }), 2);
   assert.equal(one(samples, 'nds_nodes', { state: 'offline' }), 1);
 
-  // этот узел: 3 локальных устройства (2 отмечены «опубликовать»), одно занято, один держатель
+  // этот узел: 3 локальных устройства (2 отмечены «опубликовать»), одно занято, держателей двое — занявший и мост
   assert.equal(one(samples, 'nds_node_up', { node_id: 'me' }), 1);
   assert.equal(one(samples, 'nds_node_last_seen_age_seconds', { node_id: 'me' }), 0);
   assert.equal(one(samples, 'nds_node_devices', { node_id: 'me', scope: 'all' }), 3);
   assert.equal(one(samples, 'nds_node_devices_busy', { node_id: 'me' }), 1);
   assert.equal(one(samples, 'nds_node_devices_by_type', { node_id: 'me', type: 'usb' }), 2);
   assert.equal(one(samples, 'nds_node_devices_by_type', { node_id: 'me', type: 'net' }), 1);
-  assert.equal(one(samples, 'nds_node_holders', { node_id: 'me' }), 1);
+  assert.equal(one(samples, 'nds_node_holders', { node_id: 'me' }), 2, 'занявший и подключённый в мост');
   assert.equal(one(samples, 'nds_node_groups', { node_id: 'me' }), 1);
   assert.equal(one(samples, 'nds_node_local_devices_shared', { node_id: 'me' }), 2);
 
@@ -203,6 +204,23 @@ test('занявшие (клиенты): сколько устройств де�
   assert.equal(one(samples, 'nds_holder_devices', { holder_id: 'me' }), 1);
   assert.equal(one(samples, 'nds_holder_traffic_bytes_per_minute', { holder_id: 'me', direction: 'out' }), 3000);
   assert.equal(one(samples, 'nds_holder_traffic_session_bytes', { holder_id: 'piano', direction: 'in' }), 90000);
+});
+
+test('общий мост: держатели из joins видны с личной скоростью и попадают в клиентов', () => {
+  const { samples } = parseExposition(renderMetrics(fakeApp()));
+  // серия по карте с метками держателя
+  const join = find(samples, 'nds_device_join_info', { device_id: 'net:Ethernet' })[0];
+  assert.equal(join.labels.holder_id, 'lab');
+  assert.equal(join.labels.holder, 'ЛАБОРАТОРИЯ');
+  assert.ok(one(samples, 'nds_device_join_age_seconds', { device_id: 'net:Ethernet', holder_id: 'lab' }) >= 30);
+  assert.equal(one(samples, 'nds_device_join_traffic_bytes_per_minute', { device_id: 'net:Ethernet', holder_id: 'lab', direction: 'in' }), 300);
+  assert.equal(one(samples, 'nds_device_join_traffic_bytes_per_minute', { device_id: 'net:Ethernet', holder_id: 'lab', direction: 'out' }), 100);
+  assert.equal(one(samples, 'nds_device_join_traffic_session_bytes', { device_id: 'net:Ethernet', holder_id: 'lab', direction: 'out' }), 2000);
+  // держатель моста попал в общий пул клиентов наравне с занявшим
+  assert.equal(one(samples, 'nds_holder_devices', { holder_id: 'lab' }), 1);
+  assert.equal(one(samples, 'nds_holder_traffic_bytes_per_minute', { holder_id: 'lab', direction: 'in' }), 300);
+  // карта в мосту не считается занятой
+  assert.equal(one(samples, 'nds_device_busy', { device_id: 'net:Ethernet' }), 0);
 });
 
 test('подключения этого узла, группы, запросы и обновление', () => {
