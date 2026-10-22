@@ -220,6 +220,28 @@ export function resetIpConfig(guid) {
 }
 
 /**
+ * Стереть динамические записи соседей (ARP) подключаемого адаптера.
+ *
+ * Кэш живёт на своём интерфейсе, рабочую сеть компьютера это не задевает.
+ * Постоянные записи (broadcast, multicast) остаются: чистятся только живые
+ * состояния. После замены прибора или переподключения Windows иначе помнит
+ * старый MAC адреса до получаса, и трафик уходит прежнему хозяину адреса.
+ */
+export async function flushNeighborCache(guid) {
+  const g = `{${String(guid).replace(/[{}]/g, '')}}`;
+  try {
+    const found = await psJson(`Get-NetAdapter | Where-Object { $_.InterfaceGuid -eq ${psQuote(g)} } | Select-Object ifIndex | ConvertTo-Json -Compress`);
+    const idx = Number(found[0]?.ifIndex);
+    if (!Number.isInteger(idx) || idx <= 0) return { ok: false, error: 'адаптер не найден' };
+    await psJson(`Remove-NetNeighbor -InterfaceIndex ${idx} -State Reachable,Probe,Stale,Delay,Deep -Confirm:$false -ErrorAction SilentlyContinue; 'ok' | ConvertTo-Json -Compress`);
+    return { ok: true };
+  } catch (e) {
+    log.debug(`кэш соседей адаптера ${g} не очищен: ${e.message}`);
+    return { ok: false, error: e.message };
+  }
+}
+
+/**
  * Проверить и привести к порядку настройки, пришедшие от человека или по
  * сети. Адрес принимается и объектом, и строкой «10.0.0.5/24».
  *

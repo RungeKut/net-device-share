@@ -51,7 +51,7 @@ import { scanSubnet, suggestNextIp } from '../net/netScan.js';
 import { listTaps, createTap, removeTap, renameAdapter, driverFilesPresent, friendlyName } from '../net/tapAdapters.js';
 import { bridge, unbridge, bridgeMembers, bridgeAdapter, setBridgeIp, withBridgeLock } from '../net/bridge.js';
 import {
-  readIpConfig, applyIpConfig, resetIpConfig, validateIpConfig, BORROWED_METRIC,
+  readIpConfig, applyIpConfig, resetIpConfig, validateIpConfig, flushNeighborCache, BORROWED_METRIC,
 } from '../net/ipConfig.js';
 import { garpFrame, macBytes, VSwitch, SocketPort } from '../net/vswitch.js';
 import { isElevated } from './installer.js';
@@ -939,6 +939,9 @@ export class NetShare extends EventEmitter {
         b.ipApplied = this.elevated
           ? await applyIpConfig(tap.guid, ip, { metric: BORROWED_METRIC })
           : { ok: false, error: 'нет прав администратора — задайте адрес вручную' };
+        // Прошлые подключения могли оставить адаптеру чужие MAC-привычки:
+        // чистый кэш соседей — заново спросить у сети, кто есть кто.
+        if (this.elevated) await flushNeighborCache(tap.guid).catch(() => {});
       }
       this._watchAddresses(b);
       b.watch = setInterval(() => this._watchAddresses(b), ADDRESS_WATCH_MS);
@@ -1010,6 +1013,8 @@ export class NetShare extends EventEmitter {
     const clean = validateIpConfig(cfg);
     const r = await applyIpConfig(b.tap.guid, clean, { metric: BORROWED_METRIC });
     if (!r.ok) throw new Error(`настройки не применены: ${r.error}`);
+    // Сменился адрес — прежние ответы сети о чужих MAC ни к чему.
+    await flushNeighborCache(b.tap.guid).catch(() => {});
     b.ip = clean;
     b.ipApplied = { ok: true, own: true };
     if (category === 'Private' || category === 'Public') b.category = category;
