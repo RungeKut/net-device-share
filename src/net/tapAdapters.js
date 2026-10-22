@@ -118,12 +118,17 @@ export async function createTap() {
 }
 
 /** Ждать, пока список адаптеров станет таким, как нужно (до ms). */
-async function waitTaps(pick, ms = 30000, list = listTaps) {
+export async function waitTaps(pick, ms = 30000, list = listTaps) {
   const until = Date.now() + ms;
   while (Date.now() < until) {
     // Разовый сбой PowerShell — не повод бросать ожидание: пробуем ещё.
-    const found = pick(await list().catch(() => null) ?? []);
-    if (found) return found;
+    // Список не получен — «неизвестно»: на пустом массиве проверка удаления
+    // была бы ложным «адаптер исчез», и живой адаптер навсегда выпал бы из учёта.
+    const got = await list().catch(() => null);
+    if (got) {
+      const found = pick(got);
+      if (found) return found;
+    }
     await new Promise((res) => setTimeout(res, 700));
   }
   return null;

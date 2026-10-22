@@ -88,11 +88,19 @@ export class DeviceHub {
     if (this._slowInFlight) return this._slowInFlight;
 
     this._slowInFlight = (async () => {
+      // Сбой опроса — не «устройств нет»: пустой список отозвал бы все аренды
+      // COM/LPT/карт. Для сорвавшегося источника оставляем прошлый результат,
+      // а кеш не считаем свежим — следующий опрос попробует снова.
       const [ports, nets] = await Promise.all([
-        wantPorts ? listPorts().catch((e) => { log.warn('перечисление портов не удалось:', e.message); return []; }) : [],
-        wantNet ? listNetInterfaces().catch((e) => { log.warn('перечисление сетевых интерфейсов не удалось:', e.message); return []; }) : [],
+        wantPorts ? listPorts().catch((e) => { log.warn('перечисление портов не удалось:', e.message); return null; }) : [],
+        wantNet ? listNetInterfaces().catch((e) => { log.warn('перечисление сетевых интерфейсов не удалось:', e.message); return null; }) : [],
       ]);
-      this._slow = { ts: Date.now(), ports, nets };
+      const failed = ports === null || nets === null;
+      this._slow = {
+        ts: failed ? 0 : Date.now(),
+        ports: ports ?? this._slow.ports,
+        nets: nets ?? this._slow.nets,
+      };
       this._slowInFlight = null;
       return this._slow;
     })();

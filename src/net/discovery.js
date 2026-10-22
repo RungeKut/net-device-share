@@ -154,8 +154,18 @@ export class Discovery extends EventEmitter {
    * Привести отправителей в соответствие со списком интерфейсов: для новых
    * открыть сокет и вступить в группу, для ушедших — закрыть. Вызывается при
    * старте и когда меняется набор сетей (воткнули кабель, появился адаптер).
+   *
+   * Вызовы идут в очередь: два параллельных прогона (таймер наблюдения и
+   * смена настроек) на flapping-интерфейсах открывали по сокету на адрес,
+   * и первый из них не закрывался никогда.
    */
-  async _syncLegs() {
+  _syncLegs() {
+    const run = (this._syncing || Promise.resolve()).catch(() => {}).then(() => this._syncLegsNow());
+    this._syncing = run;
+    return run;
+  }
+
+  async _syncLegsNow() {
     const want = new Map(this._nets().map((n) => [n.address, n]));
     for (const [addr, leg] of [...this.legs]) {
       if (want.has(addr)) continue;

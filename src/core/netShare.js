@@ -355,6 +355,36 @@ export class NetShare extends EventEmitter {
     return withBridgeLock(() => (holder?.mode === 'bridge' ? this._lendBridge(dev, holder) : this._lend(dev, holder)));
   }
 
+  /**
+   * Убедиться, что мост свободен для этой карты, и вернуть { members, sw }.
+   * Мост, оставшийся от прошлого занятия с недошедшей разборкой, netLent ещё
+   * помнит — дочищаем его на месте. Иначе карта блокировалась бы отказом
+   * «мост собран не приложением» до перезапуска, хотя мост — наш собственный.
+   */
+  async _ensureBridgeFree(nic) {
+    let members = await bridgeMembers();
+    let sw = this.fabric.switchOfNic(nic);
+    if (members.length && !(sw && members.includes(nic))) {
+      const left = this.config.get('netLent');
+      if (left) {
+        log.warn(`мост остался от карты «${left.nic}» — досматриваем разборку`);
+        if (left.shared) await unbridge([left.tap].filter(Boolean));
+        else {
+          if (left.bridge?.ip) await this._restoreBridgeIp(left.bridge).catch(() => {});
+          await unbridge([left.tap, left.nic].filter(Boolean));
+        }
+        this.config.set({ netLent: null });
+        sw = this.fabric.switchOfNic(nic);
+        members = await bridgeMembers();
+      }
+      if (members.length && !(sw && members.includes(nic))) {
+        throw errWith('bridge_foreign', `на компьютере уже есть сетевой мост (${members.join(', ')}), `
+          + 'собранный не приложением. Мост в Windows один — разберите его в «Сетевых подключениях»');
+      }
+    }
+    return { members, sw };
+  }
+
   async _lend(dev, { holderId, holderAddress = null }) {
     const blocker = this.lendBlocker(dev);
     if (blocker) throw errWith('unavailable', blocker);
@@ -386,7 +416,7 @@ export class NetShare extends EventEmitter {
     const nic = dev.title;
     const lend = {
       deviceId: dev.deviceId, nic, nicMac: dev.meta?.mac || null, tap: null, relay: null, session: null,
-      holderId, token: null, ip: null, ipNote: null, stopped: false, shared: null, bridge: null,
+      holderId, token: null, ip: null, ipNote: null, stopped: false, shared: null, bridge: null, suggested: [],
     };
     this.lends.set(dev.deviceId, lend);
     this._meterBegin(dev.deviceId);
@@ -395,12 +425,7 @@ export class NetShare extends EventEmitter {
       // Предыдущая карта могла ещё не вернуться: без ожидания её мост
       // выглядел бы чужим.
       await this.teardowns;
-      const members = await bridgeMembers();
-      const sw = this.fabric.switchOfNic(nic);
-      if (members.length && !(sw && members.includes(nic))) {
-        throw errWith('bridge_foreign', `на компьютере уже есть сетевой мост (${members.join(', ')}), `
-          + 'собранный не приложением. Мост в Windows один — разберите его в «Сетевых подключениях»');
-      }
+      const { members, sw } = await this._ensureBridgeFree(nic);
       // Карта уже в коммутаторе: мост собран, и на нём живёт сам компьютер.
       // Настройки карты занявшему не отдаём — адрес занят владельцем.
       lend.shared = sw || null;
@@ -504,19 +529,14 @@ export class NetShare extends EventEmitter {
       deviceId: dev.deviceId, nic, nicMac: dev.meta?.mac || null, mode: 'bridge',
       tap: null, relay: null, wire: null, sw: new VSwitch({ id: dev.deviceId, name: nic }), holders: new Map(),
       hostIp: null, hostIpApplied: null, holderId: null, token: null, ip: null, ipNote: null,
-      stopped: false, shared: null, bridge: null, session: null,
+      stopped: false, shared: null, bridge: null, session: null, suggested: [],
     };
     this.lends.set(dev.deviceId, lend);
     this._meterBegin(dev.deviceId);
 
     try {
       await this.teardowns;
-      const members = await bridgeMembers();
-      const sw = this.fabric.switchOfNic(nic);
-      if (members.length && !(sw && members.includes(nic))) {
-        throw errWith('bridge_foreign', `на компьютере уже есть сетевой мост (${members.join(', ')}), `
-          + 'собранный не приложением. Мост в Windows один — разберите его в «Сетевых подключениях»');
-      }
+      const { members, sw } = await this._ensureBridgeFree(nic);
       lend.shared = sw || null;
 
       const guid = dev.meta?.guid || dev.details?.guid;
@@ -575,6 +595,9 @@ export class NetShare extends EventEmitter {
     });
     lend.holders.set(holderId, { holderId, port, session });
     const advice = await this._joinAdvice(lend, dev);
+    // Розданный совет запоминаем: следующий держатель получит следующий адрес,
+    // а не тот же — иначе двое поставят себе один и получите конфликт IP.
+    if (advice.suggest) lend.suggested.push(advice.suggest.address);
     this.emit('changed');
     return {
       port: this.config.get('netLinkPort'), token: session.token, mode: 'bridge',
@@ -610,7 +633,7 @@ export class NetShare extends EventEmitter {
     const ownIps = (cfg.addresses || []).map((a) => a.address);
     const next = suggestNextIp({
       address: own.address, prefixLength: own.prefixLength, used,
-      reserved: [...ownIps, ...(cfg.gateways || []), ...(cfg.dns || [])],
+      reserved: [...ownIps, ...(cfg.gateways || []), ...(cfg.dns || []), ...(lend.suggested || [])],
     });
     const suggest = next ? { address: next, prefixLength: own.prefixLength, gateways: cfg.gateways || [], dns: cfg.dns || [] } : null;
     const note = `В этой сети у владельца статический адрес ${own.address}/${own.prefixLength}, DHCP, скорее всего, нет. `

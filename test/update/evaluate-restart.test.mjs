@@ -164,7 +164,17 @@ test('«Обновить сейчас»: подготовленная верси
 test('«Обновить сейчас» без подготовленной версии: флаг ставится, и перезапуск идёт сразу, как только версия скачана', () => {
   const { u, restarted } = setup({ peers: [], graceSec: 60, busy: true });
   u.updateNowFor = V;
+  u.updateNowAt = Date.now();
   u._evaluateRestart({});
   assert.deepEqual(restarted, [V]);
   assert.equal(u.updateNowFor, null);
+});
+
+test('«Обновить сейчас» устарело: решение живёт ограниченное время, дальше — общая политика', () => {
+  const { u, restarted } = setup({ peers: [], graceSec: 60, busy: true });
+  u.updateNowFor = V;
+  u.updateNowAt = Date.now() - 11 * 60 * 1000;
+  u._evaluateRestart({});
+  assert.deepEqual(restarted, [], 'просроченное «сейчас» не перезапускает в обход занятости');
+  assert.equal(u.updateNowFor, null, 'флаг снят в любом случае');
 });

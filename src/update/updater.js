@@ -35,6 +35,8 @@ const log = logger('update');
 // Темп можно ускорить переменными окружения — для проверок на одной машине.
 const TICK_MS = Number(process.env.NDS_UPDATE_TICK_MS) || 30000;
 const FIRST_TICK_MS = Math.min(10000, TICK_MS);
+/** Сколько живёт «обновить сейчас», если версию скачать не удалось. */
+const UPDATE_NOW_TTL_MS = Number(process.env.NDS_UPDATE_NOW_TTL_MS) || 10 * 60 * 1000;
 const HEALTHY_AFTER_MS = Number(process.env.NDS_UPDATE_HEALTHY_MS) || 45000;
 /** Столько узел из другой сети не считается источником, пока есть шанс найти его в своей подсети. */
 const CROSS_NETWORK_DELAY_MS = 10 * 60 * 1000;
@@ -86,6 +88,8 @@ export class Updater extends EventEmitter {
     this.graceTimer = null;
     /** Версия, которую человек велел поставить сейчас: очередь и занятость не проверяем. */
     this.updateNowFor = null;
+    /** Когда он это велел: решение живёт ограниченное время (UPDATE_NOW_TTL_MS). */
+    this.updateNowAt = 0;
     this.timers = [];
     this.running = app.version;
   }
@@ -144,6 +148,10 @@ export class Updater extends EventEmitter {
   stop() {
     for (const t of this.timers) { clearTimeout(t); clearInterval(t); }
     this.timers = [];
+    // Отложенный «перезапуск через N с» живёт вне this.timers: при остановке
+    // приложения сработавший таймер дёрнул бы сетевые вызовы напоследок.
+    clearTimeout(this.graceTimer);
+    this.graceTimer = null;
   }
 
   /** Сообщить лаунчеру, что пробная версия работает. */
@@ -364,6 +372,10 @@ export class Updater extends EventEmitter {
     if (force) this.retryAt = null;
     if (this.retryAt && Date.now() < this.retryAt) return;
 
+    // Занятость отмечаем до первого ожидания: тик от таймера, «Проверить
+    // сейчас» и «Обновить сейчас» проходят один guard, и без отметки два
+    // из них уходили бы качать одну версию в один каталог одновременно.
+    this.busy = true;
     try {
       await this._pollPeers();
 
@@ -392,7 +404,6 @@ export class Updater extends EventEmitter {
         return;
       }
 
-      this.busy = true;
       this.candidate = { version, sha256: null, from: null };
       const got = await this._acquire(version, st);
       if (got) this._evaluateRestart(this._state());
@@ -637,10 +648,16 @@ export class Updater extends EventEmitter {
     const mode = this._mode();
 
     // «Обновить сейчас»: человек уже решил, ни очередь, ни занятость не проверяем.
+    // Решение не вечно: если версию скачать не вышло, через срок оно снимается —
+    // иначе дней через десять внезапный перезапуск в обход занятости выглядел
+    // бы как поломка, хотя это давно забытое «сейчас».
     if (this.updateNowFor === v) {
       this.updateNowFor = null;
-      this.restartInto(v);
-      return;
+      if (Date.now() - (this.updateNowAt || 0) < UPDATE_NOW_TTL_MS) {
+        this.restartInto(v);
+        return;
+      }
+      log.info(`прошлое «обновить сейчас» для ${v} устарело — перезапуск по общей политике`);
     }
 
     if (mode === 'ask' && this.approved !== v) {
@@ -768,6 +785,7 @@ export class Updater extends EventEmitter {
     const v = this.candidate?.version || this._pickCandidate(this._state());
     if (!v) throw new Error('новой версии у соседей сейчас нет');
     this.updateNowFor = v;
+    this.updateNowAt = Date.now();
     this.tick({ force: true });
     return this.snapshot();
   }

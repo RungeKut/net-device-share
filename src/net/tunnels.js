@@ -29,6 +29,8 @@ export class TunnelServer {
     this.host = host;
     /** @type {Map<string, object>} ключ → туннель */
     this.tunnels = new Map();
+    /** @type {Map<string, Promise<number>>} ключ → открывающийся туннель */
+    this._opening = new Map();
     this.sweepTimer = setInterval(() => this._sweep(), 30000);
     this.sweepTimer.unref?.();
   }
@@ -39,14 +41,24 @@ export class TunnelServer {
    * @param {{ targetHost: string, targetPort: number, allowAddress: string }} o
    * @returns {Promise<number>} порт на этом компьютере
    */
-  async open({ targetHost, targetPort, allowAddress }) {
-    const allow = normalize(allowAddress);
-    const key = `${allow}>${targetHost}:${targetPort}`;
+  async open(o) {
+    const key = `${normalize(o.allowAddress)}>${o.targetHost}:${o.targetPort}`;
     const have = this.tunnels.get(key);
     if (have) {
       have.lastUsed = Date.now();
       return have.port;
     }
+    // Два одновременных запроса одного туннеля делят один слушатель: иначе
+    // каждый открывал свой, а потерянный из карты жил до конца процесса.
+    const opening = this._opening.get(key);
+    if (opening) return opening;
+    const run = this._open(key, o).finally(() => this._opening.delete(key));
+    this._opening.set(key, run);
+    return run;
+  }
+
+  async _open(key, { targetHost, targetPort, allowAddress }) {
+    const allow = normalize(allowAddress);
     if (this.tunnels.size >= this.maxTunnels) {
       this._sweep(true);
       if (this.tunnels.size >= this.maxTunnels) throw new Error('слишком много открытых туннелей');
@@ -115,6 +127,7 @@ export class TunnelServer {
 
   async stop() {
     clearInterval(this.sweepTimer);
+    this._opening.clear();
     for (const t of [...this.tunnels.values()]) this._close(t);
   }
 }

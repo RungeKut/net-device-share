@@ -717,8 +717,14 @@ export class PeerRegistry extends EventEmitter {
         this.peers.delete(id);
         changed = true;
         log.info(`узел "${peer.name}" удалён из списка`);
+        // Шлюза больше нет — кэшированные туннели через него ведут в никуда.
+        for (const [k, t] of this.tunnelCache) {
+          if (t.host === peer.address || t.host === peer.routes?.get(peer.routeKey)?.address) this.tunnelCache.delete(k);
+        }
       }
     }
+    // Просроченные записи кэша туннелей чистим, а не только пропускаем при чтении.
+    for (const [k, t] of this.tunnelCache) if (t.until <= now) this.tunnelCache.delete(k);
     if (changed) this.emit('changed');
   }
 

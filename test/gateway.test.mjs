@@ -105,3 +105,18 @@ test('туннель пропускает только того, кто его �
     target.close();
   }
 });
+
+test('параллельные запросы одного туннеля получают один слушатель', async () => {
+  const target = net.createServer((s) => s.on('data', (d) => s.write(d)));
+  await new Promise((r) => target.listen(0, '127.0.0.1', r));
+  const tunnels = new TunnelServer({ host: '127.0.0.1' });
+  try {
+    const q = { targetHost: '127.0.0.1', targetPort: target.address().port, allowAddress: '::ffff:127.0.0.1' };
+    const ports = await Promise.all([tunnels.open(q), tunnels.open(q)]);
+    assert.equal(ports[0], ports[1], 'один туннель — один порт');
+    assert.equal(tunnels.tunnels.size, 1, 'второй слушатель не потерян в карте');
+  } finally {
+    await tunnels.stop();
+    target.close();
+  }
+});

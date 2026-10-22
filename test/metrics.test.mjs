@@ -347,8 +347,15 @@ test('один узел отдаёт статистику всей сети: с�
   try {
     await Promise.all([ready(a), ready(b)]);
     let samples = [];
-    for (let i = 0; i < 40; i++) {
-      ({ samples } = parseExposition((await get(a, '/metrics')).body));
+    // Под нагрузкой всего прогона /metrics может недолго отвечать не готовым
+    // экспозицией: считаем это «ещё не готово» и опрашиваем дальше, а не падаем.
+    for (let i = 0; i < 80; i++) {
+      const res = await get(a, '/metrics');
+      if (res.status !== 200) {
+        await new Promise((r) => setTimeout(r, 500));
+        continue;
+      }
+      ({ samples } = parseExposition(res.body));
       if (find(samples, 'nds_node_up', { node: 'NODE-B' }).length) break;
       await new Promise((r) => setTimeout(r, 500));
     }

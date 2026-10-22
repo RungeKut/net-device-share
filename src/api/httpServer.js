@@ -448,7 +448,11 @@ export class ApiServer {
             ? [...peer.routes.values()].find((r) => r.address === body.address && (r.kind === 'direct' || r.mode === 'direct'))
             : null;
           if (!route) return sendJson(res, 404, { error: 'not_found', message: 'этот узел нам напрямую недоступен — туннель не открыть' });
-          const allowed = new Set(['api', 'usbip', 'traffic', 'netlink'].map((n) => peers.portOf(peer, n, route.key)));
+          // Порты приезжают из анонсов и каталога: мусор или 0/70000 в белом
+          // списке не нужны, port там — целое 1..65535 (проверено выше).
+          const allowed = new Set(['api', 'usbip', 'traffic', 'netlink']
+            .map((n) => peers.portOf(peer, n, route.key))
+            .filter((p) => Number.isInteger(p) && p >= 1 && p <= 65535));
           if (!allowed.has(body.port)) return sendJson(res, 403, { error: 'forbidden', message: 'туннели открываются только к портам самого приложения' });
           const port = await this.app.tunnels.open({ targetHost: route.address, targetPort: body.port, allowAddress: remote });
           return sendJson(res, 200, { ok: true, port });

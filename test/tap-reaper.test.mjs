@@ -4,6 +4,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { NetShare } from '../src/core/netShare.js';
+import { waitTaps } from '../src/net/tapAdapters.js';
 
 function setup(records, { idleMs = 1000 } = {}) {
   const data = { tapAdapters: records, tapIdleMs: idleMs };
@@ -49,4 +50,15 @@ test('сбой удаления не теряет запись и повторя
   await net._reapTaps();
   assert.equal(data.tapAdapters.length, 1);
   assert.ok(Date.now() - net.idleSince.get('S1') < 1000, 'срок отсчитывается заново');
+});
+
+test('сбой чтения списка не считается «адаптер исчез»', async () => {
+  let calls = 0;
+  const found = await waitTaps((list) => (list.some((x) => x.guid === 'g') ? null : true), 1600, async () => {
+    calls++;
+    if (calls < 3) throw new Error('сбой PowerShell');
+    return [{ guid: 'g' }];
+  });
+  assert.equal(found, null, 'пока адаптер виден в списке, «исчезшим» он не считается');
+  assert.ok(calls >= 3, 'сбойные опросы повторяются, а не завершают ожидание');
 });
