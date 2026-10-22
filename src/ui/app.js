@@ -333,12 +333,16 @@ function statusPill(entry) {
   return '<span class="pill free">свободно</span>';
 }
 
-/** Кто сейчас в общем мосту карты. Карта при этом не «занята»: подключаться могут и остальные. */
+/** Кто сейчас в общем мосту карты и с какой скоростью каждый работает. Карта при этом не «занята»: подключаться могут и остальные. */
 function joinPill(entry) {
   const joins = entry.joins || [];
   if (!joins.length) return '';
-  const names = joins.map((j) => j.holderName).join(', ');
-  const title = 'Карта подключена в общий мост: эти узлы работают в сети владельца одновременно. Подключиться может любой ещё.';
+  const names = joins.map((j) => {
+    const total = j.traffic ? (j.traffic.bytesInPerMinute || 0) + (j.traffic.bytesOutPerMinute || 0) : 0;
+    return total ? `${j.holderName} · ${formatRate(total)}` : j.holderName;
+  }).join(', ');
+  const title = 'Карта подключена в общий мост: эти узлы работают в сети владельца одновременно. '
+    + 'Скорость каждого — обмен за последнюю минуту. Подключиться может любой ещё.';
   return `<span class="pill ${entry.joinedByMe ? 'mine' : 'warn'}" title="${esc(title)}">в мосту: ${esc(names)}</span>`;
 }
 

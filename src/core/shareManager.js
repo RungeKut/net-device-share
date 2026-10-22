@@ -613,8 +613,9 @@ export class ShareManager extends EventEmitter {
       expiresAt: Date.now() + lease,
       pendingRequests: this.requestsFor(holderId),
       // Клиент видит скорость своими глазами: владелец измеряет, а ответ
-      // на heartbeat и так приходит каждые десять секунд.
-      traffic: devices.map((d) => ({ deviceId: d.deviceId, ...(this.trafficOf(d.deviceId) || {}) })),
+      // на heartbeat и так приходит каждые десять секунд. В мосту держателю
+      // идёт его личная скорость, а не общая по карте.
+      traffic: devices.map((d) => ({ deviceId: d.deviceId, ...(this.trafficOf(d.deviceId, holderId) || {}) })),
     };
   }
 
@@ -922,7 +923,14 @@ export class ShareManager extends EventEmitter {
       hasTransport: dev.hasTransport,
       shared: Boolean(dev.shared),
       bindState: dev.bindState,
-      joins: [...this._joinsOf(dev.deviceId).values()].map((j) => ({ holderId: j.holderId, holderName: j.holderName, since: j.since })),
+      joins: [...this._joinsOf(dev.deviceId).values()].map((j) => ({
+        holderId: j.holderId,
+        holderName: j.holderName,
+        since: j.since,
+        // Личная скорость держателя моста: общая по карте у владельца и так
+        // видна, а «кто грузит сеть» — только так.
+        traffic: this.trafficOf(dev.deviceId, j.holderId) || null,
+      })),
       claim: claim ? { ...claim, holderSilentMs: claim.mode === CLAIM_MODE.REMOTE ? Date.now() - (claim.renewedAt || claim.since) : 0, leaseMs: this.config.get('claimLeaseMs') } : null,
       reservedFor: reserved && reserved.until > Date.now() ? { ...reserved } : null,
       groupId: group ? group.id : null,

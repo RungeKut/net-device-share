@@ -127,6 +127,8 @@ export class NetShare extends EventEmitter {
     this.idleSince = new Map();
     this.reapTimer = null;
     this.meters = new Map();
+    /** deviceId → Map(holderId → счётчик) — скорость каждого держателя моста отдельно. */
+    this.holderMeters = new Map();
     /** deviceId → { at, address, prefixLength, hosts: [{ip, mac}] } — фоновое сканирование сети карты. */
     this.scans = new Map();
     this.scanning = new Map();
@@ -594,6 +596,9 @@ export class NetShare extends EventEmitter {
       deviceId: lend.deviceId,
     });
     lend.holders.set(holderId, { holderId, port, session });
+    const holders = this.holderMeters.get(lend.deviceId) || new Map();
+    holders.set(holderId, this._newMeter());
+    this.holderMeters.set(lend.deviceId, holders);
     const advice = await this._joinAdvice(lend, dev);
     // Розданный совет запоминаем: следующий держатель получит следующий адрес,
     // а не тот же — иначе двое поставят себе один и получите конфликт IP.
@@ -612,6 +617,7 @@ export class NetShare extends EventEmitter {
     h.session.close();
     h.port.close();
     lend.holders.delete(holderId);
+    this.holderMeters.get(lend.deviceId)?.delete(holderId);
   }
 
   /**
@@ -776,6 +782,7 @@ export class NetShare extends EventEmitter {
     lend.wire?.detach();
     this.lends.delete(lend.deviceId);
     this.meters.delete(lend.deviceId);
+    this.holderMeters.delete(lend.deviceId);
     // Устройства стенда помнят адрес карты за MAC адаптера занявшего.
     // Объявление от имени карты возвращает их к ней сразу, а не через
     // время жизни записи ARP — у приборов это бывает и двадцать минут.
@@ -1091,7 +1098,11 @@ export class NetShare extends EventEmitter {
   // ------------------------------------------------------------- учёт
 
   _meterBegin(deviceId) {
-    this.meters.set(deviceId, {
+    this.meters.set(deviceId, this._newMeter());
+  }
+
+  _newMeter() {
+    return {
       ringIn: new Array(WINDOW_SECONDS).fill(0),
       ringOut: new Array(WINDOW_SECONDS).fill(0),
       slot: 0,
@@ -1101,7 +1112,19 @@ export class NetShare extends EventEmitter {
       seenOut: 0,
       relay: null,
       lastActivity: null,
-    });
+    };
+  }
+
+  /** Один шаг кольцевого счётчика. Возвращает true, если в эту секунду был обмен. */
+  _meterAdd(m, dIn, dOut) {
+    m.slot = (m.slot + 1) % WINDOW_SECONDS;
+    m.ringIn[m.slot] = dIn;
+    m.ringOut[m.slot] = dOut;
+    m.totalIn += dIn;
+    m.totalOut += dOut;
+    if (!dIn && !dOut) return false;
+    m.lastActivity = Date.now();
+    return true;
   }
 
   /**
@@ -1122,29 +1145,45 @@ export class NetShare extends EventEmitter {
       const dOut = relay.fromTap - m.seenOut;
       m.seenIn = relay.toTap;
       m.seenOut = relay.fromTap;
-      m.slot = (m.slot + 1) % WINDOW_SECONDS;
-      m.ringIn[m.slot] = dIn;
-      m.ringOut[m.slot] = dOut;
-      m.totalIn += dIn;
-      m.totalOut += dOut;
-      if (dIn || dOut) { m.lastActivity = Date.now(); active = true; }
+      if (this._meterAdd(m, dIn, dOut)) active = true;
+
+      // Скорость каждого держателя моста — по его порту в коммутаторе:
+      // rx — от держателя в сеть карты, tx — обратно. У целиком отданной
+      // карты личных счётчиков нет: держатель один, общая цифра и есть его.
+      for (const [holderId, hm] of this.holderMeters.get(deviceId) || []) {
+        const p = lend.sw?.statsOf(`holder:${holderId}`);
+        if (!p) continue;
+        const hin = p.rx - hm.seenIn;
+        const hout = p.tx - hm.seenOut;
+        hm.seenIn = p.rx;
+        hm.seenOut = p.tx;
+        if (this._meterAdd(hm, hin, hout)) active = true;
+      }
     }
     if (active) this.emit('traffic');
   }
 
-  statsFor(deviceId) {
-    const m = this.meters.get(deviceId);
-    if (!m) return null;
-    const sum = (ring) => ring.reduce((a, b) => a + b, 0);
+  statsFor(deviceId, holderId = null) {
+    const m = holderId
+      ? this.holderMeters.get(deviceId)?.get(holderId)
+      : this.meters.get(deviceId);
+    if (!m) {
+      // Личного счётчика нет (карта отдана целиком, держатель только что
+      // подключился) — общая цифра карты честнее пустой.
+      return holderId ? this.statsFor(deviceId) : null;
+    }
     const lend = this.lends.get(deviceId);
+    const sum = (ring) => ring.reduce((a, b) => a + b, 0);
     return {
       bytesInPerMinute: sum(m.ringIn),
       bytesOutPerMinute: sum(m.ringOut),
       totalIn: m.totalIn,
       totalOut: m.totalOut,
-      connections: lend?.mode === 'bridge'
-        ? [...lend.holders.values()].filter((h) => h.session.connected()).length
-        : (lend?.session?.connected() ? 1 : 0),
+      connections: holderId
+        ? (lend?.holders.get(holderId)?.session.connected() ? 1 : 0)
+        : lend?.mode === 'bridge'
+          ? [...lend.holders.values()].filter((h) => h.session.connected()).length
+          : (lend?.session?.connected() ? 1 : 0),
       lastActivity: m.lastActivity,
     };
   }

@@ -70,6 +70,15 @@ export class VSwitch extends EventEmitter {
     for (const [mac, at] of this.macs) if (at.port === id) this.macs.delete(mac);
   }
 
+  /**
+   * Счётчики порта: rx — байты, пришедшие от порта в коммутатор,
+   * tx — ушедшие к порту. null — такого порта нет.
+   */
+  statsOf(id) {
+    const p = this.ports.get(id);
+    return p ? { rx: p.rx, tx: p.tx, drops: p.drops } : null;
+  }
+
   _learn(mac, portId, now) {
     // delete + set переносит запись в конец Map: первой вытесняется самая давно не слышанная.
     this.macs.delete(mac);

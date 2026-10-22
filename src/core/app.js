@@ -169,8 +169,8 @@ export class App extends EventEmitter {
       // если нет. Всё остальное приложение об этой подмене не знает.
       dataPort: () => (this.traffic ? this.config.get('trafficPort') : this.config.get('usbipPort')),
       // Скорость сетевой карты считает сам проброс: через счётчик USB/IP
-      // её кадры не идут.
-      trafficOf: (deviceId) => this.net?.statsFor(deviceId) || this.traffic?.statsFor(deviceId) || null,
+      // её кадры не идут. С holderId — личная скорость держателя моста.
+      trafficOf: (deviceId, holderId) => this.net?.statsFor(deviceId, holderId) || this.traffic?.statsFor(deviceId) || null,
       trafficBegin: (deviceId) => this.traffic?.begin(deviceId),
       // Освободили устройство, а клиент молчит - рвём его соединение с usbipd.
       dropData: (deviceId) => this.traffic?.dropDevice(deviceId) || 0,
