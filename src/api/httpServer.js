@@ -57,7 +57,7 @@ const MUTATING = new Set([
   '/api/v1/net/vnic/create', '/api/v1/net/vnic/delete', '/api/v1/net/vnic/update',
   '/api/v1/net/adapter/ip', '/api/v1/net/adapter/category', '/api/v1/net/bridge/ip',
   '/api/v1/net/adapter/update', '/api/v1/net/adapter/delete',
-  '/api/v1/net/held/ip',
+  '/api/v1/net/held/ip', '/api/v1/net/diag',
   '/api/v1/driver/prepare', '/api/v1/driver/install', '/api/v1/driver/cancel',
   '/api/v1/update/check', '/api/v1/update/approve', '/api/v1/update/restart', '/api/v1/update/now', '/api/v1/update/retry',
   '/api/v1/update/rollback',
@@ -791,6 +791,9 @@ export class ApiServer {
           return sendJson(res, 200, await this.app.netManager.setAdapterCategory(body.guid, body.category));
         case '/api/v1/net/bridge/ip':
           return sendJson(res, 200, await this.app.netManager.setBridgeHostIp(Boolean(body.enabled)));
+        case '/api/v1/net/diag':
+          return sendJson(res, 200, await this.app.net.diagnostics());
+
         case '/api/v1/net/held/ip':
           return sendJson(res, 200, await this.app.setHeldIp(body.attachmentId, body.deviceId, body.ip, { category: body.category }));
 

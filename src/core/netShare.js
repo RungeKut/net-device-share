@@ -52,7 +52,7 @@ import { listTaps, createTap, removeTap, renameAdapter, driverFilesPresent, frie
 import { bridge, unbridge, bridgeMembers, bridgeAdapter, setBridgeIp, withBridgeLock } from '../net/bridge.js';
 import {
   readIpConfig, applyIpConfig, resetIpConfig, validateIpConfig, flushNeighborCache,
-  pinNeighbors, validNeighborPair, BORROWED_METRIC,
+  pinNeighbors, validNeighborPair, adapterSnapshot, routeChoice, BORROWED_METRIC,
 } from '../net/ipConfig.js';
 import { garpFrame, macBytes, VSwitch, SocketPort } from '../net/vswitch.js';
 import { isElevated } from './installer.js';
@@ -534,6 +534,7 @@ export class NetShare extends EventEmitter {
       hostIp: null, hostIpApplied: null, holderId: null, token: null, ip: null, ipNote: null,
       stopped: false, shared: null, bridge: null, session: null, suggested: [],
     };
+    lend.sw.enableTrace();
     this.lends.set(dev.deviceId, lend);
     this._meterBegin(dev.deviceId);
 
@@ -954,6 +955,7 @@ export class NetShare extends EventEmitter {
         if (this.elevated && b.neighbors.length) {
           const pinned = await pinNeighbors(tap.guid, b.neighbors);
           if (pinned.ok && pinned.pinned) log.info(`закреплено статических соседей: ${pinned.pinned}`);
+          await this._checkRouting(b);
         }
       }
       this._watchAddresses(b);
@@ -966,6 +968,33 @@ export class NetShare extends EventEmitter {
     } catch (e) {
       await this._stopBorrow(b);
       throw e;
+    }
+  }
+
+  /**
+   * Проверить, куда Windows на самом деле шлёт пакеты к соседям владельца.
+   *
+   * Подсеть адаптера может перекрываться с офисной (маска шире, а в ней — машины
+   * с теми же адресами, что у приборов): тогда для части адресов пакет уходит в
+   * офисную карту, а не в мост, и «мост собран, но до прибора не дойти». Если
+   * такие адреса есть — один раз чистим кэш соседей и закрепляем заново, а что
+   * осталось, запоминаем в b.routeWarn: интерфейс скажет об этом человеку.
+   */
+  async _checkRouting(b) {
+    try {
+      const ips = (b.neighbors || []).map((n) => n.ip);
+      let bad = (await routeChoice(b.tap.guid, ips)).filter((r) => !r.onTap);
+      if (bad.length) {
+        log.warn(`Windows шлёт пакеты к ${bad.length} адресам сети владельца не через «${b.tap.name}»: ${bad.slice(0, 5).map((r) => `${r.ip}→${r.alias}`).join(', ')} — чистим кэш соседей и закрепляем заново`);
+        await flushNeighborCache(b.tap.guid, b.ip).catch(() => {});
+        await pinNeighbors(b.tap.guid, b.neighbors);
+        bad = (await routeChoice(b.tap.guid, bad.map((r) => r.ip))).filter((r) => !r.onTap);
+      }
+      b.routeWarn = bad.map((r) => ({ ip: r.ip, via: r.alias }));
+      if (bad.length) log.warn(`после чистки пакеты к ${bad.map((r) => r.ip).join(', ')} всё ещё идут не через мост (${[...new Set(bad.map((r) => r.alias))].join(', ')}) — см. «Диагностика моста»`);
+    } catch (e) {
+      log.debug(`проверка маршрутов моста: ${e.message}`);
+      b.routeWarn = b.routeWarn || [];
     }
   }
 
@@ -1029,7 +1058,10 @@ export class NetShare extends EventEmitter {
     // Сменился адрес — прежние ответы сети о чужих MAC ни к чему.
     await flushNeighborCache(b.tap.guid, clean).catch(() => {});
     if (Array.isArray(neighbors)) b.neighbors = neighbors.filter(validNeighborPair);
-    if (b.neighbors.length) await pinNeighbors(b.tap.guid, b.neighbors).catch(() => {});
+    if (b.neighbors.length) {
+      await pinNeighbors(b.tap.guid, b.neighbors).catch(() => {});
+      await this._checkRouting(b);
+    }
     b.ip = clean;
     b.ipApplied = { ok: true, own: true };
     if (category === 'Private' || category === 'Public') b.category = category;
@@ -1037,7 +1069,7 @@ export class NetShare extends EventEmitter {
     setTimeout(() => this._watchAddresses(b), 1500).unref?.();
     log.info(`у адаптера «${b.tap.name}» новые настройки IP: ${clean.dhcp ? 'DHCP' : clean.addresses.map((a) => `${a.address}/${a.prefixLength}`).join(', ')}`);
     this.emit('changed');
-    return { ok: true, ip: clean, ipApplied: b.ipApplied };
+    return { ok: true, ip: clean, ipApplied: b.ipApplied, routeWarn: b.routeWarn || [] };
   }
 
   async giveBack(key) {
@@ -1063,6 +1095,39 @@ export class NetShare extends EventEmitter {
     this._releaseTap(b.tap.guid, b.key);
   }
 
+  /**
+   * Диагностика общего моста: что реально происходит у владельца (порты
+   * коммутатора, таблица MAC, трасса ARP/ICMP/SYN) и у держателя (адреса,
+   * маршруты к подсети на всех адаптерах, соседи, выбор интерфейса для адресов
+   * из сканера). Для случая «мост собран, а до прибора не дойти»: всё, что нужно,
+   * чтобы отличить ARP от маршрутизации и от самого прибора, — здесь.
+   */
+  async diagnostics() {
+    const out = { at: new Date().toISOString(), elevated: this.elevated, lends: [], borrows: [] };
+    for (const l of this.lends.values()) {
+      out.lends.push({
+        nic: l.nic, mode: l.mode || 'exclusive', tap: l.tap?.name || null, nicMac: l.nicMac,
+        hostIp: l.hostIp, hostIpApplied: l.hostIpApplied, bridge: l.bridge,
+        holders: [...(l.holders?.keys() || [])],
+        wire: l.relay ? { ready: Boolean(l.relay.ready), toTap: l.relay.toTap, fromTap: l.relay.fromTap } : null,
+        switch: l.sw ? l.sw.diag() : null,
+      });
+    }
+    for (const b of this.borrows.values()) {
+      const entry = {
+        key: b.key, adapter: b.tap?.name || null, connected: Boolean(b.client?.connected),
+        ip: b.ip, ipApplied: b.ipApplied, neighborsFromOwner: b.neighbors?.length || 0,
+      };
+      if (b.tap?.guid) {
+        // Для проверки выбора маршрута берём несколько адресов соседей владельца: по ним видно, куда уйдёт пакет.
+        const probe = (b.neighbors || []).map((n) => n.ip).slice(0, 5);
+        entry.windows = await adapterSnapshot(b.tap.guid, probe).catch((e) => ({ error: e.message }));
+      }
+      out.borrows.push(entry);
+    }
+    return out;
+  }
+
   /** Состояние взятой карты — для интерфейса. */
   borrowState(key) {
     const b = this.borrows.get(key);
@@ -1075,6 +1140,7 @@ export class NetShare extends EventEmitter {
       ip: b.ip,
       ipApplied: b.ipApplied,
       category: b.category,
+      routeWarn: b.routeWarn || [],
     };
   }
 

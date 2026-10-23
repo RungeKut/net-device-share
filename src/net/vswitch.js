@@ -26,6 +26,16 @@ const AGE_MS = 300000;
 
 /** Очередь порта, после которой кадры для него отбрасываются. */
 const PORT_BACKLOG_LIMIT = 1024 * 1024;
+/**
+ * Самый длинный кадр, который пересылаем: с запасом на VLAN-метку и чуть сверх.
+ * Совпадает с пределом резчика потока посредника (tapRelay.MAX_FRAME): всё, что
+ * пропустил он, должен пересылать и коммутатор.
+ */
+const MAX_L2_FRAME = 2048;
+
+/** Сколько последних кадров помнит трасса (см. enableTrace). */
+const TRACE_LIMIT = 300;
+
 /** Предел таблицы адресов: через uplink приходят все MAC соседней сети, без предела таблица росла бы без остановки. */
 const MAX_MACS = 4096;
 
@@ -43,6 +53,69 @@ export class VSwitch extends EventEmitter {
     /** @type {Map<string, { port: string, seen: number }>} MAC → где видели */
     this.macs = new Map();
     this.floods = 0;
+    /** Трасса: последние ARP/ICMP/TCP-SYN кадры. null — выключена. */
+    this.trace = null;
+    /** порт → { вид кадра → сколько } — считается всегда, дёшево. */
+    this.kinds = new Map();
+  }
+
+  /** Включить трассу: по ней видно, что на самом деле ходит между портами. */
+  enableTrace(limit = TRACE_LIMIT) {
+    this.trace = { limit, items: [] };
+  }
+
+  /** Для диагностики: порты, таблица адресов, счётчики видов кадров, трасса. */
+  diag() {
+    const now = Date.now();
+    return {
+      id: this.id,
+      name: this.name,
+      floods: this.floods,
+      ports: [...this.ports.values()].map((p) => ({ id: p.id, label: p.label, rx: p.rx, tx: p.tx, drops: p.drops, kinds: this.kinds.get(p.id) || {} })),
+      macs: [...this.macs].map(([mac, at]) => ({ mac: mac.match(/../g).join('-'), port: at.port, ageSec: Math.round((now - at.seen) / 1000) })),
+      trace: this.trace ? this.trace.items.slice() : null,
+    };
+  }
+
+  /** Что за кадр: ARP-запрос/ответ, ICMP, SYN. Остальное — только в счётчик «other». */
+  _describe(frames, f, len) {
+    if (len < 14) return null;
+    const type = frames.readUInt16BE(f + 12);
+    const ip = (o) => `${frames[o]}.${frames[o + 1]}.${frames[o + 2]}.${frames[o + 3]}`;
+    if (type === 0x0806 && len >= 42) {
+      const op = frames.readUInt16BE(f + 20);
+      const kind = op === 1 ? 'arp-request' : op === 2 ? 'arp-reply' : 'arp';
+      return { kind, text: op === 1 ? `${ip(f + 28)} спрашивает, кто ${ip(f + 38)}` : `${ip(f + 28)} сообщает свой MAC ${frames.toString('hex', f + 22, f + 28).match(/../g).join('-')}` };
+    }
+    if (type === 0x0800 && len >= 34) {
+      const proto = frames[f + 23];
+      const ihl = (frames[f + 14] & 15) * 4;
+      const text = `${ip(f + 26)} → ${ip(f + 30)}`;
+      if (proto === 1 && len >= 14 + ihl + 1) {
+        const t = frames[f + 14 + ihl];
+        return { kind: t === 8 ? 'icmp-echo' : t === 0 ? 'icmp-reply' : 'icmp', text };
+      }
+      if (proto === 6 && len >= 14 + ihl + 14) {
+        const flags = frames[f + 14 + ihl + 13];
+        if ((flags & 0x12) === 0x02) return { kind: 'tcp-syn', text };
+        if ((flags & 0x12) === 0x12) return { kind: 'tcp-synack', text };
+        return { kind: 'tcp', text: null };
+      }
+      return { kind: proto === 17 ? 'udp' : 'ip', text: null };
+    }
+    return { kind: 'other', text: null };
+  }
+
+  _note(port, frames, f, len, now) {
+    const d = this._describe(frames, f, len);
+    if (!d) return;
+    let k = this.kinds.get(port.id);
+    if (!k) this.kinds.set(port.id, (k = {}));
+    k[d.kind] = (k[d.kind] || 0) + 1;
+    if (!this.trace || !d.text) return;
+    const mac = (o) => frames.toString('hex', o, o + 6).match(/../g).join('-');
+    this.trace.items.push({ t: now, port: port.id, dst: mac(f), src: mac(f + 6), kind: d.kind, text: d.text });
+    if (this.trace.items.length > this.trace.limit) this.trace.items.shift();
   }
 
   /**
@@ -107,10 +180,14 @@ export class VSwitch extends EventEmitter {
     for (let i = 0; i + 2 <= frames.length;) {
       const len = frames.readUInt16BE(i);
       const end = i + 2 + len;
-      if (len < 14 || len > 1518 || end > frames.length) break; // обрывок — дальше читать нечего
+      if (end > frames.length) break;             // обрывок — дальше читать нечего
+      // Негодный кадр пропускаем сам, а не бросаем остаток пачки: раньше один
+      // кадр длиннее 1518 (VLAN-метка, джамбо) стирал и все кадры за ним.
+      if (len < 14 || len > MAX_L2_FRAME) { port.drops++; i = end; continue; }
       const chunk = frames.subarray(i, end);
       const f = i + 2;
       port.rx += len;
+      this._note(port, frames, f, len, now);
 
       // Источник: групповой MAC источником не бывает — такие не запоминаем.
       if ((frames[f + 6] & 1) === 0) this._learn(macKey(frames, f + 6), port.id, now);

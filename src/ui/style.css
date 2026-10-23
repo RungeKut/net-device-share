@@ -609,3 +609,5 @@ a.node-name:hover { border-bottom-style: solid; }
 /* Значок пояснения у карты, задействованной в обнаружении, и галочка исключения */
 .info-i { display: inline-block; margin-left: 4px; cursor: help; color: var(--accent); font-weight: 600; }
 .disc-toggle { margin-top: 6px; }
+
+.diag-text { max-height: 55vh; overflow: auto; font: 11.5px/1.35 ui-monospace, Consolas, monospace; background: var(--panel-2, #f4f6f9); padding: 10px; border-radius: 8px; white-space: pre; }

@@ -106,8 +106,18 @@ export async function readIpConfig(guid) {
 const IPV4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/;
 const validIp = (s) => IPV4.test(s) && s.split('.').every((p) => Number(p) <= 255);
 
-/** Живые состояния записи соседа: постоянные (broadcast, multicast) не чистим. */
-const LIVE_NEIGHBOR_STATES = 'Reachable,Probe,Stale,Delay,Deep';
+/**
+ * «Живые» записи соседа — все, кроме Permanent (broadcast, multicast и то, что
+ * закрепили мы сами). Фильтр стоит в конвейере, а не в параметре -State: у
+ * параметра перечисление строгое (раньше в списке стояло несуществующее «Deep» —
+ * команда падала при разборе аргументов целиком, и чистка не делала ничего), а
+ * -State с состоянием без единой записи ещё и считается ошибкой команды.
+ * Только IPv4: ARP — это он, а записи IPv6 (ND) чужие.
+ */
+export const LIVE_NEIGHBORS = "Where-Object { $_.State -ne 'Permanent' }";
+
+/** Записи соседей — только в активном хранилище: иначе они переживут и адаптер, и перезагрузку. */
+const NEIGHBOR_STORE = '-PolicyStore ActiveStore';
 
 /** MAC в формате сканера (00-e0-33-01-a4-d9). */
 const validMac = (s) => /^([0-9a-f]{2}-){5}[0-9a-f]{2}$/i.test(String(s || ''));
@@ -127,6 +137,46 @@ export function validNeighborPair(p) {
  * @param {string} guid — адаптер, на котором закреплять
  * @param {{ip: string, mac: string}[]} neighbors — пары из сканера владельца
  */
+/** Скрипт чистки живых IPv4-записей соседей одного адаптера. */
+export function neighborFlushScript(idx) {
+  return `Get-NetNeighbor -InterfaceIndex ${Number(idx)} -AddressFamily IPv4 ${NEIGHBOR_STORE} -ErrorAction SilentlyContinue | ${LIVE_NEIGHBORS} `
+    + "| Remove-NetNeighbor -Confirm:$false -ErrorAction SilentlyContinue; 'ok' | ConvertTo-Json -Compress";
+}
+
+/** Скрипт закрепления пар IP→MAC на адаптере. */
+export function neighborPinScript(idx, pairs) {
+  return pairs.map((p) =>
+    `Remove-NetNeighbor -InterfaceIndex ${Number(idx)} -IPAddress '${p.ip}' ${NEIGHBOR_STORE} -Confirm:$false -ErrorAction SilentlyContinue; `
+    + `New-NetNeighbor -InterfaceIndex ${Number(idx)} -IPAddress '${p.ip}' -LinkLayerAddress '${p.mac}' -State Permanent ${NEIGHBOR_STORE} -ErrorAction SilentlyContinue | Out-Null`
+  ).join('; ') + "; 'ok' | ConvertTo-Json -Compress";
+}
+
+/**
+ * Через какой адаптер Windows пошлёт пакет к каждому адресу.
+ *
+ * Нужна, чтобы НЕ догадываться, а проверять: подключаемый адаптер получил
+ * маску /24, но в офисной сети (/21) могут жить машины с теми же адресами, что
+ * у приборов, и записи о них на офисной карте — а Windows, судя по живым
+ * случаям, для части адресов шлёт пакет в офисную карту, а не в более узкий
+ * маршрут. По этому ответу видно, для каких именно.
+ *
+ * @returns {Promise<{ ip: string, alias: string|null, onTap: boolean }[]>}
+ */
+export async function routeChoice(guid, ips = []) {
+  const g = `{${String(guid).replace(/[{}]/g, '')}}`;
+  const list = ips.filter(validIp).slice(0, 40);
+  if (!list.length) return [];
+  const found = await psJson(`Get-NetAdapter | Where-Object { $_.InterfaceGuid -eq ${psQuote(g)} } | Select-Object ifIndex | ConvertTo-Json -Compress`);
+  const idx = Number(found[0]?.ifIndex);
+  if (!Number.isInteger(idx) || idx <= 0) return [];
+  const script = `$ips = @(${list.map((x) => `'${x}'`).join(',')}); `
+    + '$out = @($ips | ForEach-Object { $f = Find-NetRoute -RemoteIPAddress $_ -ErrorAction SilentlyContinue | Select-Object -First 1; '
+    + '[pscustomobject]@{ ip = $_; alias = $f.InterfaceAlias; idx = [int]$f.InterfaceIndex } }); '
+    + '$out | ConvertTo-Json -Compress';
+  const rows = await psJson(script, { timeoutMs: 40000, strict: true });
+  return rows.map((r) => ({ ip: r.ip, alias: r.alias || null, onTap: Number(r.idx) === idx }));
+}
+
 export async function pinNeighbors(guid, neighbors = []) {
   const g = `{${String(guid).replace(/[{}]/g, '')}}`;
   const pairs = (Array.isArray(neighbors) ? neighbors : []).filter(validNeighborPair);
@@ -135,20 +185,23 @@ export async function pinNeighbors(guid, neighbors = []) {
     const found = await psJson(`Get-NetAdapter | Where-Object { $_.InterfaceGuid -eq ${psQuote(g)} } | Select-Object ifIndex | ConvertTo-Json -Compress`);
     const idx = Number(found[0]?.ifIndex);
     if (!Number.isInteger(idx) || idx <= 0) return { ok: false, error: 'адаптер не найден' };
-    let pinned = 0;
-    // Порциями: Remove+New на каждую пару; New на существующую запись —
-    // обновляет, но ошибки гасим: закрепление лучше неудачного занятия.
+    // Порциями: Remove+New на каждую пару. Отдельная пара может не пройти
+    // (-ErrorAction SilentlyContinue), поэтому итог считаем по факту — чтением
+    // записей обратно, а не по числу отправленных команд.
     for (let i = 0; i < pairs.length; i += 50) {
-      const cmd = pairs.slice(i, i + 50).map((p) =>
-        `Remove-NetNeighbor -InterfaceIndex ${idx} -IPAddress '${p.ip}' -Confirm:$false -ErrorAction SilentlyContinue; `
-        + `New-NetNeighbor -InterfaceIndex ${idx} -IPAddress '${p.ip}' -LinkLayerAddress '${p.mac}' -State Permanent -ErrorAction SilentlyContinue`
-      ).join('; ') + "; 'ok' | ConvertTo-Json -Compress";
-      await psJson(cmd);
-      pinned += Math.min(50, pairs.length - i);
+      await psJson(neighborPinScript(idx, pairs.slice(i, i + 50)), { strict: true });
     }
-    return { ok: true, pinned };
+    const have = await psJson(
+      `Get-NetNeighbor -InterfaceIndex ${idx} -AddressFamily IPv4 ${NEIGHBOR_STORE} -ErrorAction SilentlyContinue `
+      + "| Where-Object { $_.State -eq 'Permanent' } | Select-Object -Property IPAddress | ConvertTo-Json -Compress",
+      { strict: true },
+    );
+    const set = new Set(have.map((n) => n.IPAddress));
+    const pinned = pairs.filter((p) => set.has(p.ip)).length;
+    if (pinned < pairs.length) log.warn(`статические соседи адаптера ${g}: закреплено ${pinned} из ${pairs.length}`);
+    return { ok: pinned > 0, pinned, total: pairs.length };
   } catch (e) {
-    log.debug(`статические соседи адаптера ${g} не закреплены: ${e.message}`);
+    log.warn(`статические соседи адаптера ${g} не закреплены: ${e.message}`);
     return { ok: false, error: e.message };
   }
 }
@@ -300,7 +353,7 @@ export async function flushNeighborCache(guid, cfg = null) {
     if (!Number.isInteger(idx) || idx <= 0) return { ok: false, error: 'адаптер не найден' };
 
     // Подключаемый адаптер: всё живое — его записи и есть записи этой сети.
-    await psJson(`Remove-NetNeighbor -InterfaceIndex ${idx} -State ${LIVE_NEIGHBOR_STATES} -Confirm:$false -ErrorAction SilentlyContinue; 'ok' | ConvertTo-Json -Compress`);
+    await psJson(neighborFlushScript(idx), { strict: true });
 
     // Тот же диапазон адресов на других адаптерах: маршрут к подсети уже
     // указывает на подключаемый интерфейс, а оставшийся там сосед из прежней
@@ -309,24 +362,59 @@ export async function flushNeighborCache(guid, cfg = null) {
       .filter((a) => validIp(a.address) && Number.isInteger(a.prefixLength) && a.prefixLength >= 1 && a.prefixLength <= 32)
       .map((a) => `${a.address}/${a.prefixLength}`);
     if (prefixes.length) {
-      const all = await psJson(`Get-NetNeighbor -State ${LIVE_NEIGHBOR_STATES} | Select-Object InterfaceIndex,IPAddress | ConvertTo-Json -Compress`);
+      const all = await psJson(`Get-NetNeighbor -AddressFamily IPv4 ${NEIGHBOR_STORE} -ErrorAction SilentlyContinue | ${LIVE_NEIGHBORS} `
+        + '| Select-Object InterfaceIndex,IPAddress | ConvertTo-Json -Compress', { strict: true });
       const strangers = (Array.isArray(all) ? all : [all])
         .filter((n) => n && Number(n.InterfaceIndex) !== idx && prefixes.some((p) => ipInPrefix(n.IPAddress, p)));
       // Порциями, чтобы команда не упёрлась в длину: сканирование подсети
       // создаёт записи сотнями.
       for (let i = 0; i < strangers.length; i += 100) {
         const cmd = strangers.slice(i, i + 100)
-          .map((n) => `Remove-NetNeighbor -InterfaceIndex ${Number(n.InterfaceIndex)} -IPAddress '${n.IPAddress}' -Confirm:$false -ErrorAction SilentlyContinue`)
+          .map((n) => `Remove-NetNeighbor -InterfaceIndex ${Number(n.InterfaceIndex)} -IPAddress '${n.IPAddress}' ${NEIGHBOR_STORE} -Confirm:$false -ErrorAction SilentlyContinue`)
           .join('; ') + "; 'ok' | ConvertTo-Json -Compress";
-        await psJson(cmd);
+        await psJson(cmd, { strict: true });
       }
       if (strangers.length) log.debug(`кэш соседей: стёрто ${strangers.length} записей подключаемой подсети на других адаптерах`);
     }
     return { ok: true };
   } catch (e) {
-    log.debug(`кэш соседей адаптера ${g} не очищен: ${e.message}`);
+    // Громко: «чистка прошла» без чистки (так было с неверным списком состояний)
+    // маскировалась под «мост не работает».
+    log.warn(`кэш соседей адаптера ${g} не очищен: ${e.message}`);
     return { ok: false, error: e.message };
   }
+}
+
+/**
+ * Снимок того, что видит Windows у адаптера: адреса, маршруты к его подсетям на
+ * ВСЕХ адаптерах (кто выигрывает, если подсети пересекаются), соседи (ARP) и —
+ * для нескольких адресов из сканера — через какой интерфейс уйдёт пакет.
+ * Это то, чего не хватало, чтобы понять «мост не работает» без догадок.
+ *
+ * @param {string} guid
+ * @param {string[]} [probeIps] — адреса, для которых проверить выбор маршрута
+ */
+export async function adapterSnapshot(guid, probeIps = []) {
+  const g = `{${String(guid).replace(/[{}]/g, '')}}`;
+  const idRows = await psJson(`Get-NetAdapter | Where-Object { $_.InterfaceGuid -eq ${psQuote(g)} } | Select-Object ifIndex,Name,MacAddress,Status | ConvertTo-Json -Compress`);
+  const a = idRows[0];
+  const idx = Number(a?.ifIndex);
+  if (!Number.isInteger(idx) || idx <= 0) return { error: 'адаптер не найден' };
+  const ips = probeIps.filter(validIp).slice(0, 6);
+  const script = [
+    `$idx = ${idx}`,
+    '$addr = @(Get-NetIPAddress -InterfaceIndex $idx -AddressFamily IPv4 -ErrorAction SilentlyContinue | Select-Object IPAddress,PrefixLength)',
+    "$ifm = @(Get-NetIPInterface -AddressFamily IPv4 -ErrorAction SilentlyContinue | Select-Object InterfaceIndex,InterfaceAlias,InterfaceMetric,Dhcp)",
+    // Маршруты, пересекающиеся с подсетями адаптера: по ним видно, чья маска шире и чей метрик меньше.
+    "$pfx = @($addr | ForEach-Object { $_.IPAddress.Substring(0, $_.IPAddress.LastIndexOf('.')) })",
+    "$routes = @(Get-NetRoute -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $r = $_; $r.DestinationPrefix -ne '255.255.255.255/32' -and (($pfx | Where-Object { $r.DestinationPrefix.StartsWith($_.Substring(0, $_.LastIndexOf('.'))) -or $r.DestinationPrefix -like '0.0.0.0/*' -or $r.DestinationPrefix -like '10.0.0.0/*' }).Count -gt 0) } | Select-Object InterfaceIndex,InterfaceAlias,DestinationPrefix,NextHop,RouteMetric | Select-Object -First 40)",
+    "$nb = @(Get-NetNeighbor -InterfaceIndex $idx -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.State -ne 'Permanent' -or $_.LinkLayerAddress -notlike '01-00-5E*' } | Select-Object IPAddress,LinkLayerAddress,State | Select-Object -First 60)",
+    `$ips = @(${ips.map((x) => `'${x}'`).join(',')})`,
+    "$find = @($ips | ForEach-Object { try { $f = Find-NetRoute -RemoteIPAddress $_ -ErrorAction Stop | Select-Object -First 1; [pscustomobject]@{ ip = $_; alias = $f.InterfaceAlias; nextHop = $f.NextHop; local = $f.IPAddress } } catch { [pscustomobject]@{ ip = $_; error = $_.Exception.Message } } })",
+    '[pscustomobject]@{ addr = $addr; interfaces = $ifm; routes = $routes; neighbors = $nb; routeChoice = $find } | ConvertTo-Json -Compress -Depth 4',
+  ].join('; ');
+  const rows = await psJson(script, { timeoutMs: 40000 });
+  return { name: a.Name, mac: a.MacAddress, status: a.Status, index: idx, ...(rows[0] || {}) };
 }
 
 /**

@@ -38,7 +38,7 @@ const ROLE = {
 };
 
 export function initNet(h) {
-  const { $, esc, post, action, toast, canEdit, getState } = h;
+  const { $, esc, post, action, toast, canEdit, getState, routeWarning } = h;
   let map = null;
   let error = null;
   let loading = false;
@@ -623,7 +623,7 @@ export function initNet(h) {
     }
     toast('Применяется…');
     pending.save(v)
-      .then((r) => { toast(r?.pending ? r.note : 'Настройки применены', 'ok'); load(); })
+      .then((r) => { toast(r?.pending ? r.note : 'Настройки применены', 'ok'); if (r?.routeWarn?.length) routeWarning(r); load(); })
       .catch((e) => toast(e.message, 'err'));
   });
 

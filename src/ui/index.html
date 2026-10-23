@@ -99,6 +99,7 @@
         <button class="btn primary" id="btnNewSwitch" type="button">Создать коммутатор</button>
         <button class="btn" id="btnNewVnic" type="button">Создать виртуальный адаптер</button>
         <button class="btn" id="btnNetRefresh" type="button">Обновить</button>
+        <button class="btn" id="btnNetDiag" type="button" title="Что реально происходит в общем мосту: у владельца — трасса ARP/ICMP по портам, у держателя — адреса, маршруты и соседи">Диагностика моста</button>
       </div>
     </div>
     <p class="hint">Коммутатор соединяет адаптеры этого компьютера как обычный коммутатор — кадрами по MAC.
@@ -140,6 +141,19 @@
     </div>
     <p class="dlg-note">Если не ответить, запрос истечёт сам через несколько минут.</p>
   </form>
+</dialog>
+
+<!-- Диагностика общего моста -->
+<dialog id="diagDialog">
+  <div class="dlg">
+    <h2>Диагностика моста</h2>
+    <p class="dlg-note">Снимок для разбора «мост собран, а до прибора не дойти». Скопируйте и пришлите вместе с журналом.</p>
+    <pre id="diagText" class="diag-text"></pre>
+    <div class="dlg-actions">
+      <button class="btn" id="diagCopy" type="button">Копировать</button>
+      <button class="btn primary" id="diagClose" type="button">Закрыть</button>
+    </div>
+  </div>
 </dialog>
 
 <!-- Выбор сети для подключения к узлу, видимому из нескольких сетей -->

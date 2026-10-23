@@ -1143,6 +1143,24 @@ $('#requestDialog').addEventListener('close', async () => {
 });
 
 // --- диалог «попросить» (мы проситель) ---
+$('#btnNetDiag').addEventListener('click', async (ev) => {
+  const btn = ev.currentTarget;
+  btn.disabled = true;
+  try {
+    const d = await post('/api/v1/net/diag', {});
+    $('#diagText').textContent = JSON.stringify(d, null, 2);
+    $('#diagDialog').showModal();
+  } catch (e) {
+    toast(e.message, 'err');
+  } finally {
+    btn.disabled = false;
+  }
+});
+$('#diagClose').addEventListener('click', () => $('#diagDialog').close());
+$('#diagCopy').addEventListener('click', () => {
+  navigator.clipboard?.writeText($('#diagText').textContent).then(() => toast('Скопировано', 'ok'), () => toast('Не удалось скопировать — выделите текст вручную', 'err'));
+});
+
 $('#routeDialog').addEventListener('close', () => {
   const go = routeContext;
   routeContext = null;
@@ -1195,7 +1213,7 @@ $('#bridgeIpDialog').addEventListener('close', async () => {
   }
   const s = ctx.suggest;
   try {
-    await post('/api/v1/net/held/ip', {
+    const res = await post('/api/v1/net/held/ip', {
       attachmentId: ctx.attachmentId,
       deviceId: ctx.deviceId,
       category: 'Private',
@@ -1207,6 +1225,7 @@ $('#bridgeIpDialog').addEventListener('close', async () => {
       },
     });
     toast(`Адрес ${address} задан адаптеру`, 'ok');
+    routeWarning(res);
   } catch (e) {
     toast(e.message, 'err');
   }
@@ -1608,7 +1627,7 @@ fetch('/api/v1/logs?limit=300')
   .then((d) => { logBuffer = d.records || []; renderLog(); })
   .catch(() => {});
 
-net = initNet({ $, esc, post, action, toast, canEdit, getState: () => state });
+net = initNet({ $, esc, post, action, toast, canEdit, getState: () => state, routeWarning });
 connect();
 ensureNotificationPermission();
 
@@ -1802,6 +1821,19 @@ function silentHolderPill(claim) {
  * разделителям нельзя: устройство — только последний кусок. (Раньше деление по
  * всем давало вместо занятия один идентификатор узла: «занятие не найдено».)
  */
+/**
+ * Windows шлёт пакеты к соседям сети владельца не через мост — например, из-за
+ * совпадающих адресов в офисной сети. Молча это не оставляем: «мост собран, а до
+ * прибора не дойти» выглядит как поломка приложения.
+ */
+function routeWarning(res) {
+  const bad = res?.routeWarn || [];
+  if (!bad.length) return;
+  const list = bad.slice(0, 5).map((b) => `${b.ip} → «${b.via}»`).join(', ');
+  toast(`Внимание: к ${bad.length} адресам этой сети Windows шлёт пакеты не через мост (${list}${bad.length > 5 ? '…' : ''}). `
+    + 'Откройте «Сеть» → «Диагностика моста» и пришлите снимок.', 'err');
+}
+
 /** Запись каталога по владельцу и цели — и устройство, и группа, и участник группы. */
 function findEntry(nodeId, target) {
   for (const e of state?.catalog || []) {
