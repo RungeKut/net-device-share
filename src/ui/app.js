@@ -1634,6 +1634,11 @@ ensureNotificationPermission();
 // Длительности считаются от текущего момента — без этого «занято 3 мин назад»
 // замирало бы между обновлениями состояния.
 setInterval(() => { if (state) render(); }, 10000);
+// Обратный отсчёт обновления тикает каждую секунду, остальное перерисовывать незачем.
+setInterval(() => {
+  const u = state?.update;
+  if (u && (u.trialUntil || u.graceUntil || u.eligibleAt)) renderUpdate();
+}, 1000);
 
 // ------------------------------------------------------ копирование драйвера
 
@@ -1739,6 +1744,22 @@ const UPDATE_PHASES = {
   error: ['Обновление не удалось', 'err'],
 };
 
+/**
+ * Тексты полосы с живым обратным отсчётом. Сервер собирает строки один раз,
+ * поэтому число секунд в них пересчитывается здесь по меткам времени.
+ */
+function liveUpdateText(u) {
+  const left = (at) => Math.max(0, Math.ceil((at - Date.now()) / 1000));
+  const fix = (s) => String(s)
+    .replace(/перезапуск через \d+ с/, (m) => (u.graceUntil ? `перезапуск через ${left(u.graceUntil)} с` : m))
+    .replace(/(очередь: \d+-й, перезапуск примерно через) \d+ с/, (m, head) => (u.eligibleAt ? `${head} ${left(u.eligibleAt)} с` : m));
+  let message = u.message ? fix(u.message) : '';
+  if (u.phase === 'trial' && u.trialUntil) {
+    message = `пробный запуск версии ${u.running}: подтверждение через ${left(u.trialUntil)} с`;
+  }
+  return { message, waiting: (u.waiting || []).map(fix) };
+}
+
 /** Полоса над вкладками: что с обновлением и что с ним можно сделать. */
 function renderUpdate() {
   const bar = $('#updateBar');
@@ -1776,10 +1797,11 @@ function renderUpdate() {
   const failed = (u.failed || []).length
     ? `<p class="banner-hint">Не прошли проверку на этом компьютере: ${u.failed.map((f) => `${esc(f.version)} (${esc(f.reason)})`).join('; ')}.</p>` : '';
 
+  const live = liveUpdateText(u);
   bar.className = `banner ${info[1]}`;
   bar.innerHTML = `<b>${esc(info[0])}${ver ? ` — версия ${esc(ver)}` : ''}</b>
-    ${u.message ? `<p class="banner-hint">${esc(u.message)}</p>` : ''}
-    ${u.phase === 'waiting' && u.waiting?.length ? `<ul>${u.waiting.map((w) => `<li>${esc(w)}</li>`).join('')}</ul>` : ''}
+    ${live.message ? `<p class="banner-hint">${esc(live.message)}</p>` : ''}
+    ${u.phase === 'waiting' && live.waiting.length ? `<ul>${live.waiting.map((w) => `<li>${esc(w)}</li>`).join('')}</ul>` : ''}
     ${running}
     ${btns.length ? `<div class="banner-actions">${btns.join('')}</div>` : ''}${failed}`;
   bar.hidden = false;

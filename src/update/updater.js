@@ -80,6 +80,7 @@ export class Updater extends EventEmitter {
     this.busy = false;
     this.faults = 0;
     this.trial = false;
+    this.trialUntil = null;
     this.rejected = new Map();   // "версия|sha8" → { reason, until }
     this.sourceBackoff = new Map();
     this.firstSeen = new Map();  // версия → когда увидели у соседей
@@ -121,6 +122,7 @@ export class Updater extends EventEmitter {
     // Пробный запуск: лаунчер ждёт от нас сообщения «здоров».
     this.trial = Boolean(st.pending) && st.pending === this.running;
     if (this.trial) {
+      this.trialUntil = Date.now() + HEALTHY_AFTER_MS;
       this.phase = 'trial';
       this.message = `пробный запуск версии ${this.running}: подтверждение через ${Math.round(HEALTHY_AFTER_MS / 1000)} с`;
       log.info(this.message);
@@ -861,6 +863,8 @@ export class Updater extends EventEmitter {
       // Есть что ставить прямо сейчас: версия подготовлена или её можно взять у соседей.
       canUpdateNow: Boolean(this.staged || this.candidate) && this.phase !== 'restarting' && this.phase !== 'trial',
       graceUntil: this.graceUntil,
+      // Окно считает остаток по этим меткам само: строка message собрана один раз.
+      trialUntil: this.trial ? this.trialUntil : null,
       awaitingApproval: this.phase === 'awaiting-approval',
       sharing: held ? { version: held.version, active: this.seeder.activeCount } : null,
       previous: st.previous || null,
