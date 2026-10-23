@@ -1635,10 +1635,15 @@ ensureNotificationPermission();
 // Длительности считаются от текущего момента — без этого «занято 3 мин назад»
 // замирало бы между обновлениями состояния.
 setInterval(() => { if (state) render(); }, 10000);
-// Обратный отсчёт обновления тикает каждую секунду, остальное перерисовывать незачем.
+// Обратный отсчёт обновления тикает каждую секунду. Полоса целиком не
+// перерисовывается: заменённая кнопка теряла клик между нажатием и отпусканием.
 setInterval(() => {
   const u = state?.update;
-  if (u && (u.trialUntil || u.graceUntil || u.eligibleAt)) renderUpdate();
+  if (!u || !(u.trialUntil || u.graceUntil || u.eligibleAt)) return;
+  const live = liveUpdateText(u);
+  const set = (el, text) => { if (el && el.textContent !== text) el.textContent = text; };
+  set($('#updateBar [data-live="msg"]'), live.message);
+  live.waiting.forEach((w, i) => set($(`#updateBar [data-live="w${i}"]`), w));
 }, 1000);
 
 // ------------------------------------------------------ копирование драйвера
@@ -1801,8 +1806,8 @@ function renderUpdate() {
   const live = liveUpdateText(u);
   bar.className = `banner ${info[1]}`;
   bar.innerHTML = `<b>${esc(info[0])}${ver ? ` — версия ${esc(ver)}` : ''}</b>
-    ${live.message ? `<p class="banner-hint">${esc(live.message)}</p>` : ''}
-    ${u.phase === 'waiting' && live.waiting.length ? `<ul>${live.waiting.map((w) => `<li>${esc(w)}</li>`).join('')}</ul>` : ''}
+    ${live.message ? `<p class="banner-hint" data-live="msg">${esc(live.message)}</p>` : ''}
+    ${u.phase === 'waiting' && live.waiting.length ? `<ul>${live.waiting.map((w, i) => `<li data-live="w${i}">${esc(w)}</li>`).join('')}</ul>` : ''}
     ${running}
     ${btns.length ? `<div class="banner-actions">${btns.join('')}</div>` : ''}${failed}`;
   bar.hidden = false;
