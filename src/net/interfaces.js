@@ -61,24 +61,29 @@ export function isVirtualInterface({ iface, mac }) {
  * Сети, в которых узел работает.
  *
  * Явный CIDR — одна эта сеть, как и раньше. Автовыбор — все настоящие
- * интерфейсы с приватным адресом: узел объявляется в каждой, и соседи
+ * интерфейсы с адресом (кроме link-local): узел объявляется в каждой, и соседи
  * находятся там, где они есть, а не только в сети «первой карты». Две карты
  * в одной подсети дают одну сеть. Если настоящих нет, берём то, что выберет
  * resolveNetwork, — лучше хоть какая-то сеть, чем никакой.
  *
  * @returns {object[]} первый элемент — основная сеть (её адрес узел показывает о себе)
  */
-export function resolveNetworks(cidr, { exclude = [] } = {}) {
+export function resolveNetworks(cidr, { exclude = [], nets = listNetworks() } = {}) {
   if (cidr && cidr !== 'auto') {
     const one = resolveNetwork(cidr);
     return one ? [one] : [];
   }
   const seen = new Set();
   const skip = new Set(exclude);
-  const real = listNetworks()
+  // Не только частные адреса: прямой кабель между двумя компьютерами часто
+  // настраивают на любой подсети (200.100.1.0/24), и без неё узел с этой
+  // картой не стал бы шлюзом. Автоадрес 169.254 в сеть не берём — это «DHCP не ответил».
+  const real = nets
     .filter((n) => !skip.has(n.iface))
-    .filter((n) => isPrivate(n.address) && !isVirtualInterface(n))
-    .filter((n) => !seen.has(n.cidr) && seen.add(n.cidr));
+    .filter((n) => !isLinkLocal(n.address) && !isVirtualInterface(n))
+    .filter((n) => !seen.has(n.cidr) && seen.add(n.cidr))
+    // Основной остаётся частная сеть: её адрес узел показывает о себе (sort стабилен).
+    .sort((a, b) => Number(isPrivate(b.address)) - Number(isPrivate(a.address)));
   if (real.length) return real;
   // Исключённые карты не возвращаются и запасным путём: иначе исключение было бы пустым.
   const one = resolveNetwork('auto');
@@ -144,6 +149,10 @@ export function ipInCidr(ip, cidr) {
 export function normalizeIp(ip) {
   if (typeof ip !== 'string') return ip;
   return ip.startsWith('::ffff:') ? ip.slice(7) : ip;
+}
+
+export function isLinkLocal(ip) {
+  return ipInCidr(ip, '169.254.0.0/16') && ipToInt(ip) !== null;
 }
 
 export function isPrivate(ip) {

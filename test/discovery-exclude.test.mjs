@@ -52,3 +52,10 @@ test('decorate: помечает карту, задействованную в �
   assert.equal(excl.meta.discoveryUse, false);
   assert.equal(excl.meta.discoveryExcluded, true);
 });
+
+test('resolveNetworks: непубличная по RFC 1918 подсеть прямого кабеля — тоже сеть, основной остаётся частная; link-local — нет', () => {
+  const mk = (iface, address, mac = 'a0:a3:f0:00:00:01') => ({ iface, address, netmask: '255.255.255.0', prefix: 24, cidr: `${address.replace(/\.\d+$/, '.0')}/24`, mac });
+  const nets = [mk('Ethernet', '200.100.1.1'), mk('Ethernet 2', '10.0.3.46'), mk('Ethernet 3', '169.254.7.7'), mk('VMware Network Adapter VMnet1', '192.168.25.1', '00:50:56:c0:00:01')];
+  const got = resolveNetworks('auto', { nets });
+  assert.deepEqual(got.map((n) => n.iface), ['Ethernet 2', 'Ethernet']);
+});
