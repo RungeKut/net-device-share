@@ -536,7 +536,7 @@ function adapterIpText(ip, applied) {
 
 /** Значок узла, стоящего в нескольких сетях: он может пересказывать каталог и пропускать соединения. */
 function gatewayMark(e) {
-  return e.ownerGateway
+  return e.ownerGateway || e.gateway
     ? ' <span class="pill plain" title="Этот узел стоит в нескольких сетях и работает шлюзом: пересказывает каталог и при необходимости пропускает соединения из одной сети в другую">🌉 шлюз</span>'
     : '';
 }
@@ -916,7 +916,7 @@ function renderPeers() {
   const selfCard = `
     <article class="card mine">
       <div class="card-main">
-        <div class="card-title">${esc(self.name)} <span class="pill mine">этот компьютер</span></div>
+        <div class="card-title">${esc(self.name)} <span class="pill mine">этот компьютер</span>${gatewayMark({ gateway: (self.networks || []).length > 1 })}</div>
         <div class="card-meta">
           <span>адрес: <b>${esc(self.address)}</b></span>
           <span>платформа: ${esc(self.platform)}</span>
@@ -934,7 +934,7 @@ function renderPeers() {
     <article class="card ${p.online ? 'free' : 'offline'}${url ? ' node-link' : ''}"${url ? ` data-node-url="${esc(url)}" title="Открыть интерфейс узла в новой вкладке"` : ''}>
       <div class="card-main">
         <div class="card-title">${url ? `<a class="node-name" href="${esc(url)}" target="_blank" rel="noopener">${esc(p.name)}</a>` : esc(p.name)}
-          <span class="pill ${p.online ? 'free' : 'err'}">${p.online ? 'в сети' : 'не отвечает'}</span>
+          <span class="pill ${p.online ? 'free' : 'err'}">${p.online ? 'в сети' : 'не отвечает'}</span>${gatewayMark(p)}
           ${p.origin && p.origin !== 'local' ? `<span class="pill remote" title="${esc(remoteHint(p))}">другая сеть</span>` : ''}
           ${p.realmLabel ? `<span class="pill plain" title="круг доверия ${esc(p.realm || '')}">${esc(p.realmLabel)}</span>` : ''}</div>
         <div class="card-meta">
