@@ -1139,6 +1139,7 @@ export class App extends EventEmitter {
       usbipPort: this.config.get('usbipPort'),
       online: true,
       self: true,
+      nets: this.networks.length,
       platform: process.platform,
       startedAt: this.startedAt,
       devices: this.share.listShared(),

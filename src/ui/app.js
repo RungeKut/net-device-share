@@ -193,6 +193,7 @@ function renderHeader() {
   $('#selfLine').textContent = s.networks?.length > 1
     ? `${s.name} · ${s.networks.map((n) => `${n.address} (${n.cidr}, ${n.iface})`).join(' · ')}`
     : `${s.name} · ${s.address} · сеть ${s.network} (${s.iface})`;
+  if (s.networks?.length > 1) $('#selfLine').insertAdjacentHTML('beforeend', gatewayMark({ gateway: true }));
   if (!titleFlashTimer) document.title = `${s.name} — Net Device Share`;
 
   const server = $('#capServer');
