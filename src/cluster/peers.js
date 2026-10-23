@@ -83,6 +83,18 @@ export class PeerRegistry extends EventEmitter {
     clearTimeout(this.pollTimer);
   }
 
+  /**
+   * Из наших сетей (CIDR) — те, где сейчас слышен хоть один сосед. Шлюз «живой»,
+   * только пока соседи есть минимум в двух: оборванный кабель или выключенный
+   * компьютер на другом конце сразу лишает узел этого звания, хотя его карта
+   * осталась поднятой (например, на коммутаторе).
+   */
+  liveNetworks(cidrs, now = Date.now()) {
+    return cidrs.filter((cidr) => [...this.peers.values()].some((p) => p.online && p.origin === 'local'
+      && [...p.routes.values()].some((r) => r.kind === 'direct' && r.heardOn === cidr
+        && now - r.lastSeen <= (p.timeoutMs || this.opts.peerTimeoutMs))));
+  }
+
   /** Перечитать состояние узлов, у которых что-то занято: только у них меняется скорость. */
   _refreshBusy() {
     for (const peer of this.peers.values()) {

@@ -193,7 +193,7 @@ function renderHeader() {
   $('#selfLine').textContent = s.networks?.length > 1
     ? `${s.name} · ${s.networks.map((n) => `${n.address} (${n.cidr}, ${n.iface})`).join(' · ')}`
     : `${s.name} · ${s.address} · сеть ${s.network} (${s.iface})`;
-  if (s.networks?.length > 1) $('#selfLine').insertAdjacentHTML('beforeend', gatewayMark({ gateway: true }));
+  if (s.gateway) $('#selfLine').insertAdjacentHTML('beforeend', gatewayMark({ gateway: true }));
   if (!titleFlashTimer) document.title = `${s.name} — Net Device Share`;
 
   const server = $('#capServer');
@@ -917,7 +917,7 @@ function renderPeers() {
   const selfCard = `
     <article class="card mine">
       <div class="card-main">
-        <div class="card-title">${esc(self.name)} <span class="pill mine">этот компьютер</span>${gatewayMark({ gateway: (self.networks || []).length > 1 })}</div>
+        <div class="card-title">${esc(self.name)} <span class="pill mine">этот компьютер</span>${gatewayMark({ gateway: self.gateway })}</div>
         <div class="card-meta">
           <span>адрес: <b>${esc(self.address)}</b></span>
           <span>платформа: ${esc(self.platform)}</span>

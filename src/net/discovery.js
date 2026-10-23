@@ -352,8 +352,8 @@ export class Discovery extends EventEmitter {
       usbipPort: this.opts.usbipPort,
       trafficPort: this.opts.trafficPort,
       netLinkPort: this.opts.netLinkPort,
-      // Сколько у узла сетей: больше одной — он может быть шлюзом между ними.
-      nets: this._nets().length,
+      // В скольких сетях у узла есть живые соседи: больше одной — он шлюз между ними.
+      nets: Math.max(1, this.opts.liveNets ? this.opts.liveNets() : this._nets().length),
       platform: process.platform,
       version: snapshot.version,
       startedAt: snapshot.startedAt,

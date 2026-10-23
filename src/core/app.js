@@ -36,7 +36,7 @@ const log = logger('app');
 export const VERSION = readVersion();
 
 /** Как часто проверять, не поменялся ли набор сетевых интерфейсов (кабель, DHCP, новый адаптер). */
-const NETWORK_WATCH_MS = 30000;
+const NETWORK_WATCH_MS = 5000;
 
 const ANNOUNCE_TRANSPORTS = new Set(['both', 'multicast', 'broadcast']);
 
@@ -214,7 +214,7 @@ export class App extends EventEmitter {
 
     this.share.on('changed', () => this.onStateChanged());
     this.attach.on('changed', () => this.onStateChanged());
-    this.peers.on('changed', () => this.api?.pushState());
+    this.peers.on('changed', () => { this._syncGateway(); this.api?.pushState(); });
 
     // Запрос на нашу же цель адресуем держателю немедленно, не дожидаясь
     // его очередного heartbeat: диалог должен всплыть сразу.
@@ -259,6 +259,7 @@ export class App extends EventEmitter {
       trafficPort: this.config.get('trafficPort'),
       netLinkPort: this.config.get('netLinkPort'),
       dirFor: (net) => this.directory.hashFor(net.cidr),
+      liveNets: () => this.liveNetworks().length,
       realms: this.realms,
       multicastAddress: this.config.get('multicastAddress'),
       announceIntervalMs: this.config.get('announceIntervalMs'),
@@ -304,6 +305,19 @@ export class App extends EventEmitter {
     return this.networks.find((n) => ipInCidr(ip, n.cidr))?.cidr || null;
   }
 
+  /** Наши сети, где сейчас кто-то слышен: узел — шлюз, если таких две и больше. */
+  liveNetworks() {
+    return this.networks.filter((n) => this.peers.liveNetworks([n.cidr]).length);
+  }
+
+  /** Число «живых» сетей изменилось — соседям нужно сказать об этом сразу, а не к следующему анонсу. */
+  _syncGateway() {
+    const live = this.liveNetworks().length;
+    if (live === this._liveSeen) return;
+    this._liveSeen = live;
+    this.discovery?.refresh();
+  }
+
   /** Наш адрес в той сети, где находится собеседник: куда ему к нам обращаться. */
   addressFor(peerAddress) {
     return (this.networks.find((n) => ipInCidr(peerAddress, n.cidr)) || this.network).address;
@@ -328,6 +342,7 @@ export class App extends EventEmitter {
    */
   async _watchNetworks() {
     if (this.stopping || !this.discovery) return;
+    this._syncGateway();
     const now = this._resolveNets();
     if (!now.length) return;
     const sig = (list) => list.map((n) => `${n.iface}|${n.address}/${n.prefix}`).sort().join(';');
@@ -1139,7 +1154,7 @@ export class App extends EventEmitter {
       usbipPort: this.config.get('usbipPort'),
       online: true,
       self: true,
-      nets: this.networks.length,
+      nets: Math.max(1, this.liveNetworks().length),
       platform: process.platform,
       startedAt: this.startedAt,
       devices: this.share.listShared(),
@@ -1206,6 +1221,7 @@ export class App extends EventEmitter {
         network: this.network.cidr,
         // Все сети узла: в автовыборе он объявляется в каждой настоящей.
         networks: this.networks.map((n) => ({ cidr: n.cidr, iface: n.iface, address: n.address })),
+        gateway: this.liveNetworks().length > 1,
         apiPort: this.config.get('apiPort'),
         usbipPort: this.config.get('usbipPort'),
         discoveryPort: this.config.get('discoveryPort'),
