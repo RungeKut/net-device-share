@@ -87,7 +87,9 @@ export class PeerRegistry extends EventEmitter {
   _refreshBusy() {
     for (const peer of this.peers.values()) {
       if (!peer.online) continue;
-      const busy = (peer.devices || []).some((d) => d.claim) || (peer.busyCount || 0) > 0;
+      // Карта в общем мосту занятой не числится (claim нет), но держатели в joins
+      // гоняют трафик: без них скорость моста у соседей замерзала.
+      const busy = (peer.devices || []).some((d) => d.claim || d.joins?.length) || (peer.busyCount || 0) > 0;
       if (busy) this.refreshPeerState(peer, null).catch(() => {});
     }
   }

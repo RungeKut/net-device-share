@@ -116,15 +116,16 @@ test('в общем мосту у каждого держателя своя с�
   assert.equal(ns.statsFor('net:other', 'X'), null);
 });
 
-test('у соседа сетевая карта: скорость на нашей стороне тоже не «замерзает»', async () => {
+for (const bridge of [false, true]) test(`у соседа сетевая карта${bridge ? ' в общем мосту' : ''}: скорость на нашей стороне тоже не «замерзает»`, async () => {
   const model = { rate: 200 };                   // момент занятия
   const server = http.createServer((req, res) => {
     res.writeHead(200, { 'content-type': 'application/json' });
+    const who = { holderId: 'me', holderName: 'ME', since: Date.now() };
     res.end(JSON.stringify({
       nodeId: 'owner', name: 'OWNER', stateHash: 'H-const',
       devices: [{
         deviceId: 'net:Ethernet_2', type: 'net', title: 'Ethernet 2', description: 'Сетевая карта',
-        claim: { holderId: 'me', holderName: 'ME', since: Date.now() },
+        ...(bridge ? { joins: [{ ...who, traffic: { bytesInPerMinute: model.rate } }] } : { claim: who }),
         traffic: { bytesInPerMinute: model.rate, bytesOutPerMinute: 0, totalIn: model.rate, totalOut: 0 },
       }],
       groups: [], requests: [],
@@ -138,7 +139,7 @@ test('у соседа сетевая карта: скорость на наше�
   try {
     reg.onAnnounce({
       nodeId: 'owner', name: 'OWNER', address: '127.0.0.1', apiPort: server.address().port, usbipPort: 3240, realm: 'open',
-      version: '2.2.1', startedAt: Date.now(), deviceCount: 1, busyCount: 1, stateHash: 'H-const', next: 60000,
+      version: '2.2.1', startedAt: Date.now(), deviceCount: 1, busyCount: bridge ? 0 : 1, stateHash: 'H-const', next: 60000,
     });
     const peer = reg.peers.get('owner');
     const until = async (cond) => { for (let i = 0; i < 120 && !cond(); i++) await new Promise((r) => setTimeout(r, 25)); return cond(); };
