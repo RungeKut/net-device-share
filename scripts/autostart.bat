@@ -38,6 +38,10 @@ if "%NODE_EXE%"=="node" (
   )
 )
 
+rem NDS_HOME for the service (SYSTEM has its own profile): autostart.home is written
+rem next to this file when autostart is enabled from a non-installed copy.
+if not defined NDS_HOME if exist "%BASE%autostart.home" set /p NDS_HOME=<"%BASE%autostart.home"
+
 set "ENTRY=%BASE%src\main.js"
 if exist "%BASE%launcher\supervisor.mjs" set "ENTRY=%BASE%launcher\supervisor.mjs"
 "%NODE_EXE%" "%ENTRY%" --no-open %*

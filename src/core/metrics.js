@@ -113,7 +113,7 @@ export function renderMetrics(app) {
   r.gauge('nds_backend_capability', 'Что умеет бэкенд USB/IP этого узла: server — раздавать свои устройства, client — подключать чужие.',
     { capability: 'client' }, Boolean(app.backendInfo?.client));
   r.gauge('nds_traffic_meter_enabled', 'Включён ли учёт трафика USB/IP на этом узле (1 — да).', null, Boolean(app.traffic));
-  r.gauge('nds_autostart_enabled', 'Включён ли автозапуск этого узла при входе в систему (1 — да).', null, app.autostartState?.enabled);
+  r.gauge('nds_autostart_enabled', 'Включён ли автозапуск этого узла вместе с системой (1 — да).', null, app.autostartState?.enabled);
 
   const mem = process.memoryUsage();
   const cpu = process.cpuUsage();

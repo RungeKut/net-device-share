@@ -30,7 +30,7 @@ Net Device Share ${VERSION} — общий доступ к USB-устройст�
   --doctor                проверить окружение и выйти
   --metrics               включить метрики Prometheus на этот запуск (GET /metrics)
   --metrics-token <строка> токен для метрик на этот запуск (иначе — только из рабочей сети)
-  --autostart <действие>  enable | disable | status — автозапуск при входе в систему
+  --autostart <действие>  enable | disable | status — автозапуск службой при загрузке системы
   --networks              показать доступные сети и выйти
   --help                  эта справка
 

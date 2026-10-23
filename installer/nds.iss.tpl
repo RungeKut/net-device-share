@@ -9,7 +9,11 @@
 ;     пользователю нельзя);
 ;   - данные (настройки, ключи, состояние обновления) — в ProgramData, с правами
 ;     только у SYSTEM и администраторов;
-;   - по желанию — правила брандмауэра и автозапуск;
+;   - по желанию — правила брандмауэра и автозапуск: задание планировщика от SYSTEM
+;     при загрузке системы (работает как служба, не зависит от прав вошедшего
+;     пользователя). Установщик сразу запускает его же, а не вторую копию с запросом
+;     UAC; без автозапуска последний шаг мастера запускает приложение с правами самого
+;     установщика (runascurrentuser), тоже без второго запроса;
 ;   - кладёт копию самого установщика в <каталог>\download: узел раздаёт его
 ;     соседям по http://<адрес>:47812/download;
 ;   - драйверы USB/IP приложение доустановит само при первом запуске из
@@ -49,7 +53,7 @@ RestartApplications=no
 Name: "russian"; MessagesFile: "compiler:Languages\Russian.isl"
 
 [Tasks]
-Name: "autostart"; Description: "Запускать при входе в систему (без окна)"; GroupDescription: "Автозапуск:"
+Name: "autostart"; Description: "Запускать как службу при загрузке системы (от SYSTEM, без окна, не требует прав администратора у пользователей)"; GroupDescription: "Автозапуск:"
 Name: "firewall"; Description: "Открыть порты в брандмауэре Windows (для частных и доменных сетей)"; GroupDescription: "Сеть:"
 Name: "desktopicon"; Description: "Ярлык на рабочем столе"; GroupDescription: "Ярлыки:"; Flags: unchecked
 
@@ -79,7 +83,13 @@ Filename: "{app}\node.exe"; Parameters: """{app}\launcher\supervisor.mjs"" --ado
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""Net Device Share (UDP)"" dir=in action=allow program=""{app}\node.exe"" protocol=UDP localport=47811 profile=domain,private"; Flags: runhidden; Tasks: firewall; StatusMsg: "Правила брандмауэра..."
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""Net Device Share (TCP)"" dir=in action=allow program=""{app}\node.exe"" protocol=TCP localport=47812-47814 profile=domain,private"; Flags: runhidden; Tasks: firewall
 Filename: "{app}\node.exe"; Parameters: """{app}\app\@@VERSION@@\src\main.js"" --autostart enable"; Flags: runhidden; Tasks: autostart; StatusMsg: "Автозапуск..."
-Filename: "{sys}\wscript.exe"; Parameters: """{app}\launcher\open.vbs"""; Description: "Запустить {#AppName}"; Flags: postinstall nowait skipifsilent
+; Служба стартует сразу, не дожидаясь перезагрузки: UAC не нужен, права уже у установщика.
+Filename: "{sys}\schtasks.exe"; Parameters: "/Run /TN NetDeviceShare"; Flags: runhidden; Tasks: autostart; StatusMsg: "Запуск службы..."
+; С автозапуском приложение уже запущено службой: ярлык лишь откроет интерфейс (от имени пользователя).
+Filename: "{sys}\wscript.exe"; Parameters: """{app}\launcher\open.vbs"""; Description: "Открыть {#AppName}"; Flags: postinstall nowait skipifsilent; Check: AutostartChosen
+; Без автозапуска приложению нужны права администратора. Установщик ими уже обладает, поэтому запускаем
+; с его токеном (runascurrentuser): второго запроса UAC не будет. Браузер откроется без повышения (open.vbs /elevated).
+Filename: "{sys}\wscript.exe"; Parameters: """{app}\launcher\open.vbs"" /elevated"; Description: "Запустить {#AppName}"; Flags: postinstall nowait skipifsilent runascurrentuser; Check: not AutostartChosen
 
 [UninstallRun]
 Filename: "{app}\node.exe"; Parameters: """{app}\launcher\supervisor.mjs"" --stop"; Flags: runhidden; RunOnceId: "NdsStop"
@@ -93,8 +103,14 @@ Type: filesandordirs; Name: "{app}\app"
 Type: filesandordirs; Name: "{app}\releases"
 Type: filesandordirs; Name: "{app}\download"
 Type: files; Name: "{app}\installed.json"
+Type: files; Name: "{app}\autostart.home"
 
 [Code]
+function AutostartChosen(): Boolean;
+begin
+  Result := WizardIsTaskSelected('autostart');
+end;
+
 procedure StopRunning();
 var
   Code: Integer;

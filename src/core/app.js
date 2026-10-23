@@ -158,7 +158,7 @@ export class App extends EventEmitter {
       log.warn('состояние автозапуска не прочитано:', e.message);
       return { supported: false, enabled: false, error: e.message };
     });
-    log.info(`автозапуск при входе в систему: ${this.autostartState.enabled ? 'включён' : 'выключен'}`);
+    log.info(`автозапуск при загрузке системы: ${this.autostartState.enabled ? 'включён' : 'выключен'}`);
 
     await this._startTrafficMeter();
 
