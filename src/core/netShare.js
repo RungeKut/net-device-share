@@ -66,6 +66,12 @@ const WINDOW_SECONDS = 60;
 const SCAN_EVERY_MS = 3 * 60 * 1000;
 const SCAN_FRESH_MS = 60 * 1000;
 
+/**
+ * Как часто перепроверять выбор маршрута к соседям владельца. Прибор перезагрузили
+ * или ARP на мосту сорвался — Windows мог снова увести часть адресов в офисную карту.
+ */
+const ROUTE_RECHECK_MS = 60000;
+
 /** Как часто смотреть, не появились ли у адаптера занявшего новые адреса. */
 const ADDRESS_WATCH_MS = 3000;
 
@@ -961,6 +967,10 @@ export class NetShare extends EventEmitter {
       this._watchAddresses(b);
       b.watch = setInterval(() => this._watchAddresses(b), ADDRESS_WATCH_MS);
       b.watch.unref?.();
+      b.routeTimer = setInterval(() => {
+        if (this.elevated && b.neighbors.length && b.ipApplied?.ok) this._checkRouting(b);
+      }, ROUTE_RECHECK_MS);
+      b.routeTimer.unref?.();
 
       log.info(`чужая карта подключена как адаптер «${tap.name}»${ip && b.ipApplied.ok ? ', настройки IP перенесены' : ''}`);
       this.emit('changed');
@@ -981,6 +991,8 @@ export class NetShare extends EventEmitter {
    * осталось, запоминаем в b.routeWarn: интерфейс скажет об этом человеку.
    */
   async _checkRouting(b) {
+    if (b.routeBusy || b.stopped || !b.tap) return;
+    b.routeBusy = true;
     try {
       const ips = (b.neighbors || []).map((n) => n.ip);
       let bad = (await routeChoice(b.tap.guid, ips)).filter((r) => !r.onTap);
@@ -991,10 +1003,16 @@ export class NetShare extends EventEmitter {
         bad = (await routeChoice(b.tap.guid, bad.map((r) => r.ip))).filter((r) => !r.onTap);
       }
       b.routeWarn = bad.map((r) => ({ ip: r.ip, via: r.alias }));
-      if (bad.length) log.warn(`после чистки пакеты к ${bad.map((r) => r.ip).join(', ')} всё ещё идут не через мост (${[...new Set(bad.map((r) => r.alias))].join(', ')}) — см. «Диагностика моста»`);
+      // Повторяющуюся картину не повторяем в журнале: пишем, только когда она изменилась.
+      const sig = bad.map((r) => `${r.ip}>${r.alias}`).sort().join(',');
+      if (bad.length && sig !== b.routeSig) log.warn(`после чистки пакеты к ${bad.map((r) => r.ip).join(', ')} всё ещё идут не через мост (${[...new Set(bad.map((r) => r.alias))].join(', ')}) — см. «Диагностика моста»`);
+      if (!bad.length && b.routeSig) log.info('маршруты к соседям владельца снова идут через мост');
+      b.routeSig = sig;
     } catch (e) {
       log.debug(`проверка маршрутов моста: ${e.message}`);
       b.routeWarn = b.routeWarn || [];
+    } finally {
+      b.routeBusy = false;
     }
   }
 
@@ -1083,6 +1101,7 @@ export class NetShare extends EventEmitter {
   async _stopBorrow(b) {
     b.stopped = true;
     clearInterval(b.watch);
+    clearInterval(b.routeTimer);
     this.borrows.delete(b.key);
     b.client?.stop();
     await b.relay?.stop();
