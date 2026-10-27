@@ -1,0 +1,131 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 1610" width="960" height="1610" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="14" fill="#1f2937">
+<rect x="1" y="1" width="958" height="1608" rx="14" fill="#f8fafc" stroke="#d0d7de"/>
+<defs><marker id="a-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#2563eb"/></marker><marker id="a-green" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#16a34a"/></marker><marker id="a-orange" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#d97706"/></marker><marker id="a-red" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#dc2626"/></marker><marker id="a-violet" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#7c3aed"/></marker></defs>
+<text x="30" y="40" font-size="20" font-weight="600">Занятие устройства по шагам</text>
+<text x="30" y="62" font-size="12" fill="#6b7280">От публикации до освобождения, в том числе когда клиент пропал. Время идёт сверху вниз.</text>
+<rect x="215" y="78" width="200" height="48" rx="8" fill="#ffffff" stroke="#2563eb" stroke-width="2"/>
+<text x="315" y="99" font-weight="600" text-anchor="middle">НОУТБУК-Б</text>
+<text x="315" y="116" font-size="12" fill="#6b7280" text-anchor="middle">клиент, он же держатель</text>
+<line x1="315" y1="126" x2="315" y2="1596" stroke="#9ca3af" stroke-width="1.2" stroke-dasharray="4 4"/>
+<rect x="475" y="78" width="200" height="48" rx="8" fill="#ffffff" stroke="#2563eb" stroke-width="2"/>
+<text x="575" y="99" font-weight="600" text-anchor="middle">СТЕНД-А</text>
+<text x="575" y="116" font-size="12" fill="#6b7280" text-anchor="middle">владелец устройства</text>
+<line x1="575" y1="126" x2="575" y2="1596" stroke="#9ca3af" stroke-width="1.2" stroke-dasharray="4 4"/>
+<rect x="725" y="78" width="200" height="48" rx="8" fill="#ffffff" stroke="#2563eb" stroke-width="2"/>
+<text x="825" y="99" font-weight="600" text-anchor="middle">ПК-В</text>
+<text x="825" y="116" font-size="12" fill="#6b7280" text-anchor="middle">другой клиент</text>
+<line x1="825" y1="126" x2="825" y2="1596" stroke="#9ca3af" stroke-width="1.2" stroke-dasharray="4 4"/>
+<rect x="430" y="142" width="290" height="46" rx="8" fill="#ffffff" stroke="#2563eb" stroke-width="1.5"/>
+<text x="575" y="161" font-size="12" text-anchor="middle">публикует устройство 1-4 (ключ ЭЦП);</text>
+<text x="575" y="177" font-size="12" text-anchor="middle">хеш его каталога меняется</text>
+<text x="445" y="210" font-size="12" text-anchor="middle">анонс с новым хешем · UDP 47811</text>
+<line x1="575" y1="218" x2="315" y2="218" stroke="#d97706" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#a-orange)"/>
+<text x="445" y="242" font-size="12" text-anchor="middle">запрос каталога · HTTP 47812</text>
+<line x1="315" y1="250" x2="575" y2="250" stroke="#2563eb" stroke-width="2" marker-end="url(#a-blue)"/>
+<rect x="205" y="262" width="220" height="30" rx="8" fill="#ffffff" stroke="#2563eb" stroke-width="1.5"/>
+<text x="315" y="281" font-size="12" text-anchor="middle">в каталоге клиента появилось 1-4</text>
+<circle cx="46" cy="154" r="13" fill="#2563eb"/>
+<text x="46" y="159" font-weight="600" fill="#ffffff" text-anchor="middle">1</text>
+<text x="68" y="159" font-weight="600">Опубликовал</text>
+<text x="34" y="186" font-size="12" fill="#6b7280">Владелец делает устройство</text>
+<text x="34" y="201" font-size="12" fill="#6b7280">видимым для других узлов</text>
+<line x1="24" y1="310" x2="936" y2="310" stroke="#d0d7de" stroke-width="1"/>
+<text x="445" y="336" font-size="12" text-anchor="middle">1. запрос права на устройство</text>
+<line x1="315" y1="344" x2="575" y2="344" stroke="#2563eb" stroke-width="2" marker-end="url(#a-blue)"/>
+<text x="445" y="359" font-size="12" fill="#6b7280" text-anchor="middle">POST peer/claim</text>
+<rect x="430" y="370" width="290" height="46" rx="8" fill="#ffffff" stroke="#2563eb" stroke-width="1.5"/>
+<text x="575" y="389" font-size="12" text-anchor="middle">владелец проверяет публикацию и занятость,</text>
+<text x="575" y="405" font-size="12" text-anchor="middle">ставит аренду на 30 с</text>
+<text x="445" y="438" font-size="12" text-anchor="middle">2. право выдано: порт и срок аренды</text>
+<line x1="575" y1="446" x2="315" y2="446" stroke="#2563eb" stroke-width="2" marker-end="url(#a-blue)"/>
+<text x="445" y="470" font-size="12" fill="#dc2626" text-anchor="middle">иначе: 409 busy, устройство занято</text>
+<line x1="575" y1="478" x2="315" y2="478" stroke="#dc2626" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#a-red)"/>
+<rect x="205" y="490" width="220" height="62" rx="8" fill="#f0fdf4" stroke="#16a34a" stroke-width="1.5"/>
+<text x="315" y="509" font-size="12" text-anchor="middle">3. только теперь Б подключает</text>
+<text x="315" y="525" font-size="12" text-anchor="middle">устройство (usbip attach): 1-4</text>
+<text x="315" y="541" font-size="12" text-anchor="middle">в «Диспетчере устройств»</text>
+<text x="445" y="574" font-size="12" text-anchor="middle">данные USB/IP · TCP 3240</text>
+<line x1="315" y1="582" x2="575" y2="582" stroke="#16a34a" stroke-width="2" marker-start="url(#a-green)" marker-end="url(#a-green)"/>
+<text x="445" y="606" font-size="12" fill="#dc2626" text-anchor="middle">сбой подключения: право возвращается</text>
+<line x1="315" y1="614" x2="575" y2="614" stroke="#dc2626" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#a-red)"/>
+<circle cx="46" cy="336" r="13" fill="#16a34a"/>
+<text x="46" y="341" font-weight="600" fill="#ffffff" text-anchor="middle">2</text>
+<text x="68" y="341" font-weight="600">Занял</text>
+<text x="34" y="368" font-size="12" fill="#6b7280">Владелец — единственный</text>
+<text x="34" y="383" font-size="12" fill="#6b7280">источник истины о занятости.</text>
+<text x="34" y="398" font-size="12" fill="#6b7280">Право и подключение —</text>
+<text x="34" y="413" font-size="12" fill="#6b7280">разные шаги</text>
+<line x1="24" y1="634" x2="936" y2="634" stroke="#d0d7de" stroke-width="1"/>
+<text x="445" y="660" font-size="12" text-anchor="middle">каждые 10 с: heartbeat</text>
+<line x1="315" y1="668" x2="575" y2="668" stroke="#2563eb" stroke-width="2" marker-end="url(#a-blue)"/>
+<text x="445" y="683" font-size="12" fill="#6b7280" text-anchor="middle">аренда снова на 30 с</text>
+<circle cx="46" cy="660" r="13" fill="#2563eb"/>
+<text x="46" y="665" font-weight="600" fill="#ffffff" text-anchor="middle">3</text>
+<text x="68" y="665" font-weight="600">Аренда</text>
+<text x="34" y="692" font-size="12" fill="#6b7280">Пока клиент работает,</text>
+<text x="34" y="707" font-size="12" fill="#6b7280">аренда продлевается</text>
+<line x1="24" y1="736" x2="936" y2="736" stroke="#d0d7de" stroke-width="1"/>
+<text x="700" y="762" font-size="12" text-anchor="middle">просит освободить 1-4</text>
+<line x1="825" y1="770" x2="575" y2="770" stroke="#7c3aed" stroke-width="2" marker-end="url(#a-violet)"/>
+<rect x="430" y="782" width="290" height="46" rx="8" fill="#ffffff" stroke="#7c3aed" stroke-width="1.5"/>
+<text x="575" y="801" font-size="12" text-anchor="middle">владелец только фиксирует просьбу</text>
+<text x="575" y="817" font-size="12" text-anchor="middle">и не отбирает устройство</text>
+<text x="445" y="850" font-size="12" text-anchor="middle">уведомление: окно, звук, диалог</text>
+<line x1="575" y1="858" x2="315" y2="858" stroke="#7c3aed" stroke-width="2" marker-end="url(#a-violet)"/>
+<rect x="205" y="870" width="220" height="46" rx="8" fill="#ffffff" stroke="#7c3aed" stroke-width="1.5"/>
+<text x="315" y="889" font-size="12" text-anchor="middle">решает держатель Б:</text>
+<text x="315" y="905" font-size="12" text-anchor="middle">отдать или отказать</text>
+<text x="445" y="938" font-size="12" text-anchor="middle">согласие: освободить</text>
+<line x1="315" y1="946" x2="575" y2="946" stroke="#7c3aed" stroke-width="2" marker-end="url(#a-violet)"/>
+<text x="445" y="961" font-size="12" fill="#6b7280" text-anchor="middle">при отказе устройство остаётся у Б</text>
+<rect x="430" y="972" width="290" height="62" rx="8" fill="#ffffff" stroke="#dc2626" stroke-width="1.5"/>
+<text x="575" y="991" font-size="12" text-anchor="middle">право владельца: свою цель он забирает</text>
+<text x="575" y="1007" font-size="12" text-anchor="middle">без спроса, кнопка «Забрать себе».</text>
+<text x="575" y="1023" font-size="12" text-anchor="middle">У других узлов такого права нет</text>
+<text x="445" y="1056" font-size="12" text-anchor="middle">владелец отозвал право, Б узнаёт сразу</text>
+<line x1="575" y1="1064" x2="315" y2="1064" stroke="#dc2626" stroke-width="2" marker-end="url(#a-red)"/>
+<circle cx="46" cy="762" r="13" fill="#7c3aed"/>
+<text x="46" y="767" font-weight="600" fill="#ffffff" text-anchor="middle">4</text>
+<text x="68" y="767" font-weight="600">Просьба освободить</text>
+<text x="34" y="794" font-size="12" fill="#6b7280">Решает держатель,</text>
+<text x="34" y="809" font-size="12" fill="#6b7280">а не проситель</text>
+<line x1="24" y1="1084" x2="936" y2="1084" stroke="#d0d7de" stroke-width="1"/>
+<rect x="205" y="1098" width="220" height="46" rx="8" fill="#ffffff" stroke="#16a34a" stroke-width="1.5"/>
+<text x="315" y="1117" font-size="12" text-anchor="middle">1. Б отцепляет устройство</text>
+<text x="315" y="1133" font-size="12" text-anchor="middle">в своей системе</text>
+<text x="445" y="1166" font-size="12" text-anchor="middle">2. Б возвращает право</text>
+<line x1="315" y1="1174" x2="575" y2="1174" stroke="#2563eb" stroke-width="2" marker-end="url(#a-blue)"/>
+<rect x="430" y="1186" width="290" height="46" rx="8" fill="#ffffff" stroke="#16a34a" stroke-width="1.5"/>
+<text x="575" y="1205" font-size="12" text-anchor="middle">3. владелец обрывает соединения данных,</text>
+<text x="575" y="1221" font-size="12" text-anchor="middle">возвращает устройство системе</text>
+<text x="700" y="1254" font-size="12" text-anchor="middle">после просьбы: бронь за ПК-В на 45 с</text>
+<line x1="575" y1="1262" x2="825" y2="1262" stroke="#7c3aed" stroke-width="2" marker-end="url(#a-violet)"/>
+<text x="700" y="1277" font-size="12" fill="#6b7280" text-anchor="middle">уступленное не перехватят</text>
+<circle cx="46" cy="1110" r="13" fill="#16a34a"/>
+<text x="46" y="1115" font-weight="600" fill="#ffffff" text-anchor="middle">5</text>
+<text x="68" y="1115" font-weight="600">Освобождение</text>
+<text x="34" y="1142" font-size="12" fill="#6b7280">Сначала отцепить,</text>
+<text x="34" y="1157" font-size="12" fill="#6b7280">потом вернуть право</text>
+<line x1="24" y1="1296" x2="936" y2="1296" stroke="#d0d7de" stroke-width="1"/>
+<rect x="205" y="1310" width="220" height="46" rx="8" fill="#ffffff" stroke="#dc2626" stroke-width="1.5"/>
+<text x="315" y="1329" font-size="12" text-anchor="middle">Б выключили из розетки:</text>
+<text x="315" y="1345" font-size="12" text-anchor="middle">heartbeat не приходят</text>
+<rect x="430" y="1366" width="290" height="46" rx="8" fill="#ffffff" stroke="#dc2626" stroke-width="1.5"/>
+<text x="575" y="1385" font-size="12" text-anchor="middle">тишина дольше 15 с: предупреждение</text>
+<text x="575" y="1401" font-size="12" text-anchor="middle">«держатель не отвечает» у владельца</text>
+<rect x="430" y="1422" width="290" height="62" rx="8" fill="#ffffff" stroke="#dc2626" stroke-width="1.5"/>
+<text x="575" y="1441" font-size="12" text-anchor="middle">30 с без продления — аренда истекла:</text>
+<text x="575" y="1457" font-size="12" text-anchor="middle">обрыв соединений данных, затем unbind.</text>
+<text x="575" y="1473" font-size="12" text-anchor="middle">Так же при закрытии соединения данных</text>
+<text x="700" y="1506" font-size="12" text-anchor="middle">анонс: устройство снова свободно</text>
+<line x1="575" y1="1514" x2="825" y2="1514" stroke="#d97706" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#a-orange)"/>
+<rect x="205" y="1526" width="220" height="46" rx="8" fill="#ffffff" stroke="#6b7280" stroke-width="1.5"/>
+<text x="315" y="1545" font-size="12" text-anchor="middle">вернулся позже: «право</text>
+<text x="315" y="1561" font-size="12" text-anchor="middle">отозвано», клиент отцепится сам</text>
+<circle cx="46" cy="1322" r="13" fill="#dc2626"/>
+<text x="46" y="1327" font-weight="600" fill="#ffffff" text-anchor="middle">6</text>
+<text x="68" y="1327" font-weight="600">Клиент пропал</text>
+<text x="34" y="1354" font-size="12" fill="#6b7280">Автоосвобождение</text>
+<text x="34" y="1369" font-size="12" fill="#6b7280">по аренде: устройство</text>
+<text x="34" y="1384" font-size="12" fill="#6b7280">не блокируется навсегда</text>
+</svg>

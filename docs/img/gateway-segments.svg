@@ -1,0 +1,103 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 636" width="960" height="636" font-family="Segoe UI, Helvetica, Arial, sans-serif" role="img" aria-labelledby="t d">
+<title id="t">Шлюз между сетями</title>
+<desc id="d">Компьютер с двумя картами пересказывает каждой сети каталог другой и открывает TCP-туннель для данных USB/IP.</desc>
+<defs>
+<style>
+.n{font-size:14px;fill:#1f2937}
+.nb{font-size:14px;font-weight:600;fill:#1f2937}
+.s{font-size:12px;fill:#6b7280}
+.sd{font-size:12px;fill:#1f2937}
+.h{font-size:16px;font-weight:600;fill:#1f2937}
+.ti{font-size:20px;font-weight:600;fill:#1f2937}
+.m{text-anchor:middle}
+.box{fill:#ffffff;stroke:#2563eb;stroke-width:1.5}
+.seg{fill:#f1f5f9;stroke:#cbd5e1;stroke-width:1.5}
+</style>
+<marker id="ao" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#d97706"/></marker>
+<marker id="ag" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#16a34a"/></marker>
+</defs>
+<rect x="0.5" y="0.5" width="959" height="635" rx="14" fill="#f8fafc" stroke="#d0d7de"/>
+<text x="24" y="38" class="ti">Шлюз между сетями</text>
+<text x="24" y="60" class="s">Маршрута между подсетями нет, а компьютер с двумя картами сводит их сам, без настройки.</text>
+
+<rect x="16" y="84" width="234" height="372" rx="8" class="seg"/>
+<text x="30" y="108" class="h">Сеть 1 · 192.168.1.0/24</text>
+<rect x="710" y="84" width="234" height="372" rx="8" class="seg"/>
+<text x="724" y="108" class="h">Сеть 2 · 200.100.1.0/24</text>
+
+<rect x="30" y="126" width="190" height="66" rx="8" class="box"/>
+<text x="42" y="152" class="nb">ПК-1</text>
+<text x="42" y="172" class="s">192.168.1.11</text>
+<rect x="30" y="208" width="190" height="66" rx="8" class="box"/>
+<text x="42" y="234" class="nb">ПК-2</text>
+<text x="42" y="254" class="s">192.168.1.12</text>
+<rect x="30" y="358" width="190" height="70" rx="8" class="box"/>
+<text x="42" y="382" class="nb">СТЕНД-А</text>
+<text x="42" y="400" class="s">192.168.1.10</text>
+<text x="42" y="418" class="sd">занимает USB-прибор</text>
+
+<rect x="740" y="126" width="190" height="66" rx="8" class="box"/>
+<text x="752" y="152" class="nb">ПК-3</text>
+<text x="752" y="172" class="s">200.100.1.11</text>
+<rect x="740" y="208" width="190" height="66" rx="8" class="box"/>
+<text x="752" y="234" class="nb">ПК-4</text>
+<text x="752" y="254" class="s">200.100.1.12</text>
+<rect x="740" y="358" width="190" height="70" rx="8" class="box"/>
+<text x="752" y="382" class="nb">СТЕНД-Г</text>
+<text x="752" y="400" class="s">200.100.1.10</text>
+<text x="752" y="418" class="sd">владеет USB-прибором</text>
+
+<g stroke="#2563eb" stroke-width="1.5" fill="none">
+<path d="M220 159H234V241H220M234 200H332"/>
+<path d="M740 159H726V241H740M726 200H628"/>
+</g>
+
+<rect x="316" y="84" width="328" height="372" rx="8" fill="#ffffff" stroke="#d97706" stroke-width="2"/>
+<text x="332" y="108" class="h">НОУТБУК-Б</text>
+<rect x="548" y="92" width="80" height="24" rx="12" fill="#d97706"/>
+<text x="588" y="109" class="m" style="font-size:12px;font-weight:600;fill:#ffffff">шлюз</text>
+
+<rect x="332" y="172" width="120" height="56" rx="8" class="box"/>
+<text x="392" y="196" class="n m">Карта 1</text>
+<text x="392" y="215" class="s m">192.168.1.15</text>
+<rect x="508" y="172" width="120" height="56" rx="8" class="box"/>
+<text x="568" y="196" class="n m">Карта 2</text>
+<text x="568" y="215" class="s m">200.100.1.15</text>
+
+<rect x="332" y="244" width="296" height="86" rx="8" fill="#ffffff" stroke="#d97706" stroke-width="1.5" stroke-dasharray="5 4"/>
+<text x="480" y="270" class="nb m">Пересказ каталогов</text>
+<text x="480" y="292" class="sd m">каждой сети — каталог другой,</text>
+<text x="480" y="310" class="sd m">один шаг, без цепочек</text>
+
+<rect x="332" y="346" width="296" height="94" rx="8" fill="#ffffff" stroke="#16a34a" stroke-width="2"/>
+<text x="480" y="370" class="nb m">Туннель TCP</text>
+<text x="480" y="390" class="sd m">порт СТЕНД-Г выглядит</text>
+<text x="480" y="408" class="sd m">локальным портом шлюза</text>
+<text x="480" y="428" class="s m">закрывается через 15 мин простоя</text>
+
+<path d="M332 304H44" stroke="#d97706" stroke-width="1.8" stroke-dasharray="6 4" fill="none" marker-end="url(#ao)"/>
+<text x="141" y="294" class="sd m">каталог сети 2</text>
+<path d="M628 304H916" stroke="#d97706" stroke-width="1.8" stroke-dasharray="6 4" fill="none" marker-end="url(#ao)"/>
+<text x="819" y="294" class="sd m">каталог сети 1</text>
+
+<path d="M220 393H332" stroke="#16a34a" stroke-width="2.2" fill="none" marker-start="url(#ag)" marker-end="url(#ag)"/>
+<path d="M628 393H740" stroke="#16a34a" stroke-width="2.2" fill="none" marker-start="url(#ag)" marker-end="url(#ag)"/>
+<text x="283" y="384" class="s m" style="fill:#15803d">USB/IP</text>
+<text x="677" y="384" class="s m" style="fill:#15803d">USB/IP</text>
+
+<line x1="24" y1="486" x2="64" y2="486" stroke="#2563eb" stroke-width="1.5"/>
+<text x="72" y="490" class="sd">связь узлов в подсети</text>
+<line x1="300" y1="486" x2="340" y2="486" stroke="#d97706" stroke-width="1.8" stroke-dasharray="6 4"/>
+<text x="348" y="490" class="sd">каталог узлов (пересказ шлюза)</text>
+<line x1="620" y1="486" x2="660" y2="486" stroke="#16a34a" stroke-width="2.2"/>
+<text x="668" y="490" class="sd">данные USB/IP через туннель TCP</text>
+
+<circle cx="30" cy="526" r="4" fill="#d97706"/>
+<text x="44" y="530" class="sd">Шлюз никто не назначает: звание ставится узлу, у которого живые соседи слышны минимум в двух сетях.</text>
+<circle cx="30" cy="550" r="4" fill="#d97706"/>
+<text x="44" y="554" class="sd">Пересказ — один шаг: узел не повторяет то, что ему пересказали, поэтому каталог не ходит по кругу.</text>
+<circle cx="30" cy="574" r="4" fill="#16a34a"/>
+<text x="44" y="578" class="sd">Для владельца устройства соединение выглядит соседом из его подсети: проверки и счётчики работают как обычно.</text>
+<circle cx="30" cy="598" r="4" fill="#dc2626"/>
+<text x="44" y="602" class="sd">Весь трафик туннеля шлюз видит и может прочитать, как любой маршрутизатор на пути; приватность даёт общий ключ.</text>
+</svg>

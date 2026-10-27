@@ -1,0 +1,107 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 928" width="960" height="928" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="14" fill="#1f2937">
+<rect x="1" y="1" width="958" height="926" rx="14" fill="#f8fafc" stroke="#d0d7de"/>
+<defs><marker id="a-green" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#16a34a"/></marker><marker id="a-orange" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#d97706"/></marker><marker id="a-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#2563eb"/></marker><marker id="a-red" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#dc2626"/></marker></defs>
+<text x="30" y="40" font-size="20" font-weight="600">Круги доверия</text>
+<text x="30" y="62" font-size="12" fill="#6b7280">Ключ делит сеть на круги: узлы с разными ключами не видят друг друга, даже в одной подсети.</text>
+<circle cx="235" cy="262" r="150" fill="#2563eb" fill-opacity="0.07" stroke="#2563eb" stroke-width="2"/>
+<circle cx="400" cy="262" r="150" fill="#7c3aed" fill-opacity="0.07" stroke="#7c3aed" stroke-width="2"/>
+<circle cx="775" cy="262" r="145" fill="#6b7280" fill-opacity="0.06" stroke="#6b7280" stroke-width="2" stroke-dasharray="7 5"/>
+<text x="150" y="104" font-weight="600" fill="#2563eb" text-anchor="middle">Сеть «Цех» · ключ X</text>
+<text x="485" y="104" font-weight="600" fill="#7c3aed" text-anchor="middle">Сеть «Лаборатория» · ключ Y</text>
+<text x="775" y="104" font-weight="600" fill="#6b7280" text-anchor="middle">Открытый круг · без ключа</text>
+<line x1="160" y1="222" x2="160" y2="302" stroke="#16a34a" stroke-width="2"/>
+<line x1="160" y1="222" x2="318" y2="262" stroke="#16a34a" stroke-width="2"/>
+<line x1="160" y1="302" x2="318" y2="262" stroke="#16a34a" stroke-width="2"/>
+<line x1="475" y1="222" x2="475" y2="302" stroke="#16a34a" stroke-width="2"/>
+<line x1="475" y1="222" x2="318" y2="262" stroke="#16a34a" stroke-width="2"/>
+<line x1="475" y1="302" x2="318" y2="262" stroke="#16a34a" stroke-width="2"/>
+<line x1="775" y1="222" x2="775" y2="302" stroke="#16a34a" stroke-width="2"/>
+<line x1="530" y1="222" x2="720" y2="222" stroke="#d97706" stroke-width="2" stroke-dasharray="6 4" marker-start="url(#a-orange)" marker-end="url(#a-orange)"/>
+<rect x="556" y="205" width="76" height="18" rx="4" fill="#f8fafc" stroke="none" stroke-width="1.5"/>
+<text x="594" y="218" font-size="12" fill="#d97706" text-anchor="middle">по галочкам</text>
+<path d="M 160 326 Q 318 412 475 326" fill="none" stroke="#dc2626" stroke-width="2" stroke-dasharray="6 4"/>
+<rect x="224" y="378" width="188" height="38" rx="6" fill="#f8fafc" stroke="#dc2626" stroke-width="1"/>
+<text x="318" y="394" font-size="12" font-weight="600" fill="#dc2626" text-anchor="middle">X и Y друг друга</text>
+<text x="318" y="409" font-size="12" font-weight="600" fill="#dc2626" text-anchor="middle">не видят</text>
+<rect x="105" y="205" width="110" height="34" rx="8" fill="#ffffff" stroke="#2563eb" stroke-width="1.8"/>
+<text x="160" y="227" font-weight="600" text-anchor="middle">СТЕНД-А</text>
+<rect x="105" y="285" width="110" height="34" rx="8" fill="#ffffff" stroke="#2563eb" stroke-width="1.8"/>
+<text x="160" y="307" font-weight="600" text-anchor="middle">НОУТБУК-Б</text>
+<rect x="256" y="239" width="124" height="46" rx="8" fill="#ffffff" stroke="#2563eb" stroke-width="1.8"/>
+<text x="318" y="259" font-weight="600" text-anchor="middle">НОУТБУК-Н</text>
+<text x="318" y="275" font-size="12" fill="#6b7280" text-anchor="middle">ключи X и Y</text>
+<rect x="420" y="205" width="110" height="34" rx="8" fill="#ffffff" stroke="#7c3aed" stroke-width="1.8"/>
+<text x="475" y="227" font-weight="600" text-anchor="middle">ПК-Г</text>
+<rect x="420" y="285" width="110" height="34" rx="8" fill="#ffffff" stroke="#7c3aed" stroke-width="1.8"/>
+<text x="475" y="307" font-weight="600" text-anchor="middle">ПК-Д</text>
+<rect x="720" y="205" width="110" height="34" rx="8" fill="#ffffff" stroke="#6b7280" stroke-width="1.8"/>
+<text x="775" y="227" font-weight="600" text-anchor="middle">ПК-Ж</text>
+<rect x="720" y="285" width="110" height="34" rx="8" fill="#ffffff" stroke="#6b7280" stroke-width="1.8"/>
+<text x="775" y="307" font-weight="600" text-anchor="middle">ПК-З</text>
+<text x="480" y="450" font-size="12" fill="#6b7280" text-anchor="middle">НОУТБУК-Н (наладчик) состоит в обеих сетях и видит обе, но не сводит их вместе.</text>
+<line x1="150" y1="478" x2="190" y2="478" stroke="#16a34a" stroke-width="2"/>
+<text x="198" y="482" font-size="12">видят друг друга</text>
+<line x1="340" y1="478" x2="380" y2="478" stroke="#d97706" stroke-width="2" stroke-dasharray="6 4"/>
+<text x="388" y="482" font-size="12">видят, если разрешено галочками</text>
+<line x1="640" y1="478" x2="680" y2="478" stroke="#dc2626" stroke-width="2" stroke-dasharray="6 4"/>
+<text x="688" y="482" font-size="12">не видят друг друга</text>
+<text x="30" y="520" font-size="16" font-weight="600">Кто кого видит</text>
+<rect x="30" y="534" width="519" height="40" rx="8" fill="#eff6ff" stroke="#2563eb" stroke-width="1.5"/>
+<text x="42" y="559" font-size="12" fill="#6b7280">Узел (строка) видит:</text>
+<text x="241.5" y="559" font-size="12" font-weight="600" text-anchor="middle">узлы без ключа</text>
+<text x="364.5" y="559" font-size="12" font-weight="600" text-anchor="middle">сеть с ключом X</text>
+<text x="487.5" y="559" font-size="12" font-weight="600" text-anchor="middle">сеть с ключом Y</text>
+<rect x="30" y="574" width="519" height="34" rx="0" fill="#ffffff" stroke="#d0d7de" stroke-width="1"/>
+<text x="42" y="596" font-weight="600">без ключа</text>
+<text x="241.5" y="596" font-weight="600" fill="#16a34a" text-anchor="middle">да</text>
+<text x="364.5" y="596" font-weight="600" fill="#dc2626" text-anchor="middle">нет</text>
+<text x="487.5" y="596" font-weight="600" fill="#dc2626" text-anchor="middle">нет</text>
+<rect x="30" y="608" width="519" height="34" rx="0" fill="#ffffff" stroke="#d0d7de" stroke-width="1"/>
+<text x="42" y="630" font-weight="600">только ключ X</text>
+<text x="241.5" y="630" font-weight="600" fill="#d97706" text-anchor="middle">по галочкам</text>
+<text x="364.5" y="630" font-weight="600" fill="#16a34a" text-anchor="middle">да</text>
+<text x="487.5" y="630" font-weight="600" fill="#dc2626" text-anchor="middle">нет</text>
+<rect x="30" y="642" width="519" height="34" rx="0" fill="#ffffff" stroke="#d0d7de" stroke-width="1"/>
+<text x="42" y="664" font-weight="600">ключи X и Y</text>
+<text x="241.5" y="664" font-weight="600" fill="#d97706" text-anchor="middle">по галочкам</text>
+<text x="364.5" y="664" font-weight="600" fill="#16a34a" text-anchor="middle">да</text>
+<text x="487.5" y="664" font-weight="600" fill="#16a34a" text-anchor="middle">да</text>
+<text x="580" y="520" font-size="16" font-weight="600">Открытый круг: две независимые галочки</text>
+<rect x="580" y="542" width="18" height="18" rx="4" fill="#ffffff" stroke="#2563eb" stroke-width="1.8"/>
+<path d="M 584 551 L 588 556 L 595 546" fill="none" stroke="#16a34a" stroke-width="2.2"/>
+<text x="608" y="556" font-weight="600">Видеть узлы без ключа</text>
+<text x="608" y="573" font-size="12" fill="#6b7280">показывать их в списке и пользоваться</text>
+<text x="608" y="587" font-size="12" fill="#6b7280">их устройствами</text>
+<rect x="580" y="598" width="18" height="18" rx="4" fill="#ffffff" stroke="#2563eb" stroke-width="1.8"/>
+<path d="M 584 607 L 588 612 L 595 602" fill="none" stroke="#16a34a" stroke-width="2.2"/>
+<text x="608" y="612" font-weight="600">Быть видимым для узлов без ключа</text>
+<text x="608" y="629" font-size="12" fill="#6b7280">объявлять себя им: они увидят этот</text>
+<text x="608" y="643" font-size="12" fill="#6b7280">компьютер и его устройства</text>
+<text x="580" y="664" font-size="12" fill="#6b7280">Обе сняты — узел скрыт от тех, у кого нет ключа.</text>
+<text x="30" y="716" font-size="16" font-weight="600">Подпись запросов и метка круга</text>
+<rect x="30" y="730" width="190" height="116" rx="8" fill="#ffffff" stroke="#2563eb" stroke-width="2"/>
+<text x="125" y="758" font-weight="600" text-anchor="middle">Отправитель</text>
+<text x="125" y="778" font-size="12" text-anchor="middle">НОУТБУК-Б</text>
+<text x="125" y="796" font-size="12" fill="#6b7280" text-anchor="middle">ключ сети X</text>
+<line x1="220" y1="782" x2="440" y2="782" stroke="#2563eb" stroke-width="2" marker-end="url(#a-blue)"/>
+<text x="330" y="760" font-size="12" text-anchor="middle">запрос HTTP, порт 47812</text>
+<text x="330" y="775" font-size="12" text-anchor="middle">подпись HMAC ключом X</text>
+<text x="330" y="802" font-size="12" text-anchor="middle">и метка круга X</text>
+<rect x="440" y="730" width="250" height="116" rx="8" fill="#ffffff" stroke="#2563eb" stroke-width="2"/>
+<text x="565" y="754" font-weight="600" text-anchor="middle">Получатель СТЕНД-А</text>
+<text x="565" y="776" font-size="12" text-anchor="middle">1. метка круга совпала?</text>
+<text x="565" y="794" font-size="12" text-anchor="middle">2. подпись верна для ключа круга?</text>
+<text x="565" y="816" font-size="12" fill="#6b7280" text-anchor="middle">узел без ключа принимает любую подпись,</text>
+<text x="565" y="832" font-size="12" fill="#6b7280" text-anchor="middle">поэтому одной подписи мало</text>
+<rect x="730" y="730" width="200" height="46" rx="8" fill="#f0fdf4" stroke="#16a34a" stroke-width="1.8"/>
+<text x="830" y="749" font-weight="600" fill="#16a34a" text-anchor="middle">совпало: ответ</text>
+<text x="830" y="766" font-size="12" text-anchor="middle">каталог, занятие, аренда</text>
+<rect x="730" y="800" width="200" height="46" rx="8" fill="#fef2f2" stroke="#dc2626" stroke-width="1.8"/>
+<text x="830" y="819" font-weight="600" fill="#dc2626" text-anchor="middle">не сошлось: отказ</text>
+<text x="830" y="836" font-size="12" text-anchor="middle">чужого круга для узла нет</text>
+<line x1="690" y1="753" x2="730" y2="753" stroke="#16a34a" stroke-width="2" marker-end="url(#a-green)"/>
+<line x1="690" y1="823" x2="730" y2="823" stroke="#dc2626" stroke-width="2" marker-end="url(#a-red)"/>
+<text x="30" y="874" font-size="12" fill="#6b7280">Одной подписи мало: без метки круга узел без ключа видел бы всех, кого слышит. Метка делает разделение симметричным.</text>
+<text x="30" y="892" font-size="12" fill="#6b7280">Открытый круг подписи не проверяет: его граница — достижимость порта 47812. Где граница сети не совпадает с границей доверия,</text>
+<text x="30" y="910" font-size="12" fill="#6b7280">задайте ключ сети и снимите обе галочки: тогда без подписи не пройдёт ни один вызов.</text>
+</svg>

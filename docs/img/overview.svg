@@ -1,0 +1,79 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 690" width="960" height="690" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="14" fill="#1f2937">
+<rect x="1" y="1" width="958" height="688" rx="14" fill="#f8fafc" stroke="#d0d7de"/>
+<defs><marker id="d-orange" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="5" markerHeight="5"><circle cx="5" cy="5" r="4.5" fill="#d97706"/></marker><marker id="d-blue" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="5" markerHeight="5"><circle cx="5" cy="5" r="4.5" fill="#2563eb"/></marker><marker id="d-green" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="5" markerHeight="5"><circle cx="5" cy="5" r="4.5" fill="#16a34a"/></marker><marker id="d-violet" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="5" markerHeight="5"><circle cx="5" cy="5" r="4.5" fill="#7c3aed"/></marker></defs>
+<text x="30" y="40" font-size="20" font-weight="600">Net Device Share: общая картина</text>
+<text x="30" y="62" font-size="12" fill="#6b7280">Каждый компьютер запускает одно и то же приложение: оно и раздаёт свои устройства, и подключает чужие.</text>
+<rect x="30" y="84" width="280" height="268" rx="8" fill="#ffffff" stroke="#2563eb" stroke-width="2"/>
+<text x="46" y="110" font-size="16" font-weight="600">СТЕНД-А</text>
+<text x="294" y="110" font-size="12" fill="#6b7280" text-anchor="end">компьютер-узел</text>
+<rect x="46" y="126" width="248" height="26" rx="6" fill="#f8fafc" stroke="#9ca3af" stroke-width="1"/>
+<text x="58" y="144"><tspan font-weight="600" fill="#2563eb">USB</tspan>  ·  1-4 ключ ЭЦП</text>
+<text x="282" y="143" font-size="12" font-weight="600" fill="#16a34a" text-anchor="end">отдан</text>
+<rect x="46" y="158" width="248" height="26" rx="6" fill="#f8fafc" stroke="#9ca3af" stroke-width="1"/>
+<text x="58" y="176"><tspan font-weight="600" fill="#2563eb">COM</tspan>  ·  COM3 порт стенда</text>
+<rect x="46" y="190" width="248" height="26" rx="6" fill="#f8fafc" stroke="#9ca3af" stroke-width="1"/>
+<text x="58" y="208"><tspan font-weight="600" fill="#2563eb">Сеть</tspan>  ·  Ethernet 2</text>
+<rect x="46" y="230" width="248" height="48" rx="8" fill="#eff6ff" stroke="#2563eb" stroke-width="1.5"/>
+<text x="170" y="251" font-weight="600" text-anchor="middle">Net Device Share</text>
+<text x="170" y="268" font-size="12" fill="#6b7280" text-anchor="middle">сервер и клиент в одном приложении</text>
+<rect x="46" y="290" width="248" height="52" rx="8" fill="#ffffff" stroke="#9ca3af" stroke-width="1.2" stroke-dasharray="5 4"/>
+<text x="170" y="311" font-weight="600" fill="#6b7280" text-anchor="middle">«Диспетчер устройств»</text>
+<text x="170" y="329" font-size="12" fill="#6b7280" text-anchor="middle">чужие устройства появятся здесь</text>
+<line x1="110" y1="352" x2="110" y2="398" stroke="#d97706" stroke-width="2" marker-start="url(#d-orange)" marker-end="url(#d-orange)"/>
+<line x1="150" y1="352" x2="150" y2="398" stroke="#2563eb" stroke-width="2" marker-start="url(#d-blue)" marker-end="url(#d-blue)"/>
+<line x1="190" y1="352" x2="190" y2="398" stroke="#16a34a" stroke-width="2" marker-start="url(#d-green)" marker-end="url(#d-green)"/>
+<line x1="230" y1="352" x2="230" y2="398" stroke="#7c3aed" stroke-width="2" marker-start="url(#d-violet)" marker-end="url(#d-violet)"/>
+<rect x="340" y="84" width="280" height="268" rx="8" fill="#ffffff" stroke="#2563eb" stroke-width="2"/>
+<text x="356" y="110" font-size="16" font-weight="600">НОУТБУК-Б</text>
+<text x="604" y="110" font-size="12" fill="#6b7280" text-anchor="end">компьютер-узел</text>
+<rect x="356" y="126" width="248" height="26" rx="6" fill="#f8fafc" stroke="#9ca3af" stroke-width="1"/>
+<text x="368" y="144"><tspan font-weight="600" fill="#2563eb">USB</tspan>  ·  2-2 флешка</text>
+<rect x="356" y="158" width="248" height="26" rx="6" fill="#f8fafc" stroke="#9ca3af" stroke-width="1"/>
+<text x="368" y="176"><tspan font-weight="600" fill="#2563eb">COM</tspan>  ·  COM4 переходник</text>
+<rect x="356" y="190" width="248" height="26" rx="6" fill="#f8fafc" stroke="#9ca3af" stroke-width="1"/>
+<text x="368" y="208"><tspan font-weight="600" fill="#2563eb">Сеть</tspan>  ·  Ethernet</text>
+<rect x="356" y="230" width="248" height="48" rx="8" fill="#eff6ff" stroke="#2563eb" stroke-width="1.5"/>
+<text x="480" y="251" font-weight="600" text-anchor="middle">Net Device Share</text>
+<text x="480" y="268" font-size="12" fill="#6b7280" text-anchor="middle">сервер и клиент в одном приложении</text>
+<rect x="356" y="290" width="248" height="52" rx="8" fill="#f0fdf4" stroke="#16a34a" stroke-width="1.5"/>
+<text x="480" y="311" font-weight="600" text-anchor="middle">«Диспетчер устройств»</text>
+<text x="480" y="329" font-size="12" fill="#16a34a" text-anchor="middle">появилось: 1-4 ключ ЭЦП (СТЕНД-А)</text>
+<line x1="420" y1="352" x2="420" y2="398" stroke="#d97706" stroke-width="2" marker-start="url(#d-orange)" marker-end="url(#d-orange)"/>
+<line x1="460" y1="352" x2="460" y2="398" stroke="#2563eb" stroke-width="2" marker-start="url(#d-blue)" marker-end="url(#d-blue)"/>
+<line x1="500" y1="352" x2="500" y2="398" stroke="#16a34a" stroke-width="2" marker-start="url(#d-green)" marker-end="url(#d-green)"/>
+<line x1="540" y1="352" x2="540" y2="398" stroke="#7c3aed" stroke-width="2" marker-start="url(#d-violet)" marker-end="url(#d-violet)"/>
+<rect x="650" y="84" width="280" height="268" rx="8" fill="#ffffff" stroke="#2563eb" stroke-width="2"/>
+<text x="666" y="110" font-size="16" font-weight="600">ПК-В</text>
+<text x="914" y="110" font-size="12" fill="#6b7280" text-anchor="end">компьютер-узел</text>
+<rect x="666" y="126" width="248" height="26" rx="6" fill="#f8fafc" stroke="#9ca3af" stroke-width="1"/>
+<text x="678" y="144"><tspan font-weight="600" fill="#2563eb">USB</tspan>  ·  3-1 сканер</text>
+<rect x="666" y="158" width="248" height="26" rx="6" fill="#f8fafc" stroke="#9ca3af" stroke-width="1"/>
+<text x="678" y="176"><tspan font-weight="600" fill="#2563eb">COM</tspan>  ·  COM1</text>
+<rect x="666" y="190" width="248" height="26" rx="6" fill="#f8fafc" stroke="#9ca3af" stroke-width="1"/>
+<text x="678" y="208"><tspan font-weight="600" fill="#2563eb">Сеть</tspan>  ·  Ethernet 3</text>
+<rect x="666" y="230" width="248" height="48" rx="8" fill="#eff6ff" stroke="#2563eb" stroke-width="1.5"/>
+<text x="790" y="251" font-weight="600" text-anchor="middle">Net Device Share</text>
+<text x="790" y="268" font-size="12" fill="#6b7280" text-anchor="middle">сервер и клиент в одном приложении</text>
+<rect x="666" y="290" width="248" height="52" rx="8" fill="#ffffff" stroke="#9ca3af" stroke-width="1.2" stroke-dasharray="5 4"/>
+<text x="790" y="311" font-weight="600" fill="#6b7280" text-anchor="middle">«Диспетчер устройств»</text>
+<text x="790" y="329" font-size="12" fill="#6b7280" text-anchor="middle">чужие устройства появятся здесь</text>
+<line x1="730" y1="352" x2="730" y2="398" stroke="#d97706" stroke-width="2" marker-start="url(#d-orange)" marker-end="url(#d-orange)"/>
+<line x1="770" y1="352" x2="770" y2="398" stroke="#2563eb" stroke-width="2" marker-start="url(#d-blue)" marker-end="url(#d-blue)"/>
+<line x1="810" y1="352" x2="810" y2="398" stroke="#16a34a" stroke-width="2" marker-start="url(#d-green)" marker-end="url(#d-green)"/>
+<line x1="850" y1="352" x2="850" y2="398" stroke="#7c3aed" stroke-width="2" marker-start="url(#d-violet)" marker-end="url(#d-violet)"/>
+<rect x="30" y="398" width="900" height="38" rx="8" fill="#ffffff" stroke="#6b7280" stroke-width="2"/>
+<text x="480" y="422" font-weight="600" text-anchor="middle">Локальная сеть 192.168.1.x</text>
+<text x="30" y="474" font-size="16" font-weight="600">Что идёт между узлами</text>
+<line x1="40" y1="500" x2="100" y2="500" stroke="#d97706" stroke-width="2.5" marker-start="url(#d-orange)" marker-end="url(#d-orange)"/>
+<text x="116" y="505"><tspan font-weight="600">Обнаружение</tspan>  ·  UDP multicast и broadcast, порт 47811</text>
+<text x="116" y="524" font-size="12" fill="#6b7280">Узлы сами находят друг друга без сервера и списков адресов; анонс несёт хеш каталога, а не сам каталог.</text>
+<line x1="40" y1="546" x2="100" y2="546" stroke="#2563eb" stroke-width="2.5" marker-start="url(#d-blue)" marker-end="url(#d-blue)"/>
+<text x="116" y="551"><tspan font-weight="600">Каталог и занятость</tspan>  ·  HTTP с подписью HMAC, порт 47812</text>
+<text x="116" y="570" font-size="12" fill="#6b7280">Список устройств, занятие и освобождение, продление аренды; владелец устройства решает, кому его отдать.</text>
+<line x1="40" y1="592" x2="100" y2="592" stroke="#16a34a" stroke-width="2.5" marker-start="url(#d-green)" marker-end="url(#d-green)"/>
+<text x="116" y="597"><tspan font-weight="600">Данные USB/IP</tspan>  ·  TCP 3240, у клиента через счётчик трафика (порт 47813)</text>
+<text x="116" y="616" font-size="12" fill="#6b7280">Сам обмен с устройством: ключ ЭЦП из СТЕНД-А работает на НОУТБУК-Б как воткнутый в его USB-разъём.</text>
+<line x1="40" y1="638" x2="100" y2="638" stroke="#7c3aed" stroke-width="2.5" marker-start="url(#d-violet)" marker-end="url(#d-violet)"/>
+<text x="116" y="643"><tspan font-weight="600">Кадры сетевой карты</tspan>  ·  порт 47814</text>
+<text x="116" y="662" font-size="12" fill="#6b7280">Чужая сетевая карта появляется у занявшего сетевым адаптером в той сети, куда воткнут её кабель.</text>
+</svg>

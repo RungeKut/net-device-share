@@ -1,0 +1,109 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 700" width="960" height="700" font-family="Segoe UI, Helvetica, Arial, sans-serif" role="img" aria-labelledby="t d">
+<title id="t">Общий мост</title>
+<desc id="d">Сетевая карта владельца подключена к сети стенда; программный коммутатор даёт нескольким узлам по порту, кадры идут по TCP, порт 47814.</desc>
+<defs>
+<style>
+.n{font-size:14px;fill:#1f2937}
+.nb{font-size:14px;font-weight:600;fill:#1f2937}
+.s{font-size:12px;fill:#6b7280}
+.sd{font-size:12px;fill:#1f2937}
+.h{font-size:16px;font-weight:600;fill:#1f2937}
+.ti{font-size:20px;font-weight:600;fill:#1f2937}
+.m{text-anchor:middle}
+.box{fill:#ffffff;stroke:#2563eb;stroke-width:1.5}
+.seg{fill:#f1f5f9;stroke:#cbd5e1;stroke-width:1.5}
+</style>
+<marker id="ag" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#16a34a"/></marker>
+</defs>
+<rect x="0.5" y="0.5" width="959" height="699" rx="14" fill="#f8fafc" stroke="#d0d7de"/>
+<text x="24" y="38" class="ti">Общий мост</text>
+<text x="24" y="60" class="s">Одна карта владельца даёт нескольким узлам места в сети стенда с приборами, а сам владелец остаётся в ней же.</text>
+
+<text x="16" y="88" class="h">Узлы-гости</text>
+<rect x="16" y="100" width="190" height="96" rx="8" class="box"/>
+<text x="28" y="126" class="nb">НОУТБУК-Б</text>
+<text x="28" y="146" class="sd">TAP-адаптер = порт</text>
+<text x="28" y="164" class="s">свой MAC · 192.168.1.21</text>
+<rect x="16" y="216" width="190" height="96" rx="8" class="box"/>
+<text x="28" y="242" class="nb">ПК-В</text>
+<text x="28" y="262" class="sd">TAP-адаптер = порт</text>
+<text x="28" y="280" class="s">свой MAC · 192.168.1.22</text>
+<rect x="16" y="332" width="190" height="96" rx="8" class="box"/>
+<text x="28" y="358" class="nb">ПК-Г</text>
+<text x="28" y="378" class="sd">TAP-адаптер = порт</text>
+<text x="28" y="396" class="s">свой MAC · 192.168.1.23</text>
+
+<rect x="330" y="70" width="360" height="470" rx="8" fill="#ffffff" stroke="#2563eb" stroke-width="2"/>
+<text x="346" y="94" class="h">СТЕНД-А — владелец карты</text>
+<rect x="348" y="108" width="324" height="224" rx="8" class="seg"/>
+<text x="362" y="128" class="s">Net Device Share</text>
+<rect x="368" y="140" width="284" height="172" rx="8" fill="#ffffff" stroke="#7c3aed" stroke-width="2"/>
+<text x="510" y="166" class="nb m">Программный коммутатор</text>
+<text x="510" y="186" class="sd m">кадры по MAC-адресам,</text>
+<text x="510" y="204" class="sd m">как в обычном коммутаторе</text>
+<text x="520" y="268" class="s m">по порту на каждый узел</text>
+<circle cx="368" cy="234" r="5" fill="#7c3aed"/>
+<circle cx="368" cy="264" r="5" fill="#7c3aed"/>
+<circle cx="368" cy="294" r="5" fill="#7c3aed"/>
+<circle cx="510" cy="312" r="5" fill="#7c3aed"/>
+
+<g fill="none" stroke="#16a34a" stroke-width="2.2" stroke-linejoin="round">
+<path d="M206 148H296V234H362" marker-start="url(#ag)" marker-end="url(#ag)"/>
+<path d="M206 264H362" marker-start="url(#ag)" marker-end="url(#ag)"/>
+<path d="M206 380H296V294H362" marker-start="url(#ag)" marker-end="url(#ag)"/>
+</g>
+<text x="212" y="142" class="s" style="fill:#15803d">TCP 47814</text>
+<text x="212" y="258" class="s" style="fill:#15803d">TCP 47814</text>
+<text x="212" y="374" class="s" style="fill:#15803d">TCP 47814</text>
+
+<g stroke="#2563eb" stroke-width="1.5" fill="none">
+<path d="M510 317V364"/>
+<path d="M438 420V472"/>
+<path d="M608 420V472"/>
+<path d="M672 500H764"/>
+</g>
+<text x="520" y="346" class="s">служебный TAP</text>
+<rect x="390" y="364" width="240" height="56" rx="8" class="box"/>
+<text x="510" y="388" class="nb m">Мост Windows</text>
+<text x="510" y="407" class="s m">карта + служебный TAP</text>
+<text x="446" y="450" class="s">адаптер «Сетевой мост»</text>
+<rect x="348" y="472" width="180" height="56" rx="8" class="box"/>
+<text x="438" y="496" class="nb m">Компьютер владельца</text>
+<text x="438" y="515" class="s m">остаётся в своей сети</text>
+<rect x="544" y="472" width="128" height="56" rx="8" class="box"/>
+<text x="608" y="496" class="nb m">Сетевая карта</text>
+<text x="608" y="515" class="s m">физическая</text>
+
+<rect x="750" y="70" width="194" height="470" rx="8" class="seg"/>
+<text x="764" y="94" class="h">Сеть стенда</text>
+<text x="764" y="112" class="s">192.168.1.0/24</text>
+<path d="M764 158V500M764 158H784M764 230H784M764 302H784" stroke="#2563eb" stroke-width="1.5" fill="none"/>
+<rect x="784" y="130" width="146" height="56" rx="8" class="box"/>
+<text x="796" y="154" class="nb">Прибор 1</text>
+<text x="796" y="173" class="s">192.168.1.50</text>
+<rect x="784" y="202" width="146" height="56" rx="8" class="box"/>
+<text x="796" y="226" class="nb">Прибор 2</text>
+<text x="796" y="245" class="s">192.168.1.51</text>
+<rect x="784" y="274" width="146" height="56" rx="8" class="box"/>
+<text x="796" y="298" class="nb">Прибор 3</text>
+<text x="796" y="317" class="s">192.168.1.52</text>
+<text x="782" y="372" class="sd">Узлы-гости видны здесь</text>
+<text x="782" y="390" class="sd">как отдельные устройства</text>
+<text x="782" y="408" class="sd">со своими MAC и адресами</text>
+
+<line x1="24" y1="574" x2="64" y2="574" stroke="#16a34a" stroke-width="2.2"/>
+<text x="72" y="578" class="sd">кадры сетевой карты по TCP, порт 47814</text>
+<line x1="380" y1="574" x2="420" y2="574" stroke="#2563eb" stroke-width="1.5"/>
+<text x="428" y="578" class="sd">соединения внутри компьютера и сети</text>
+<circle cx="740" cy="574" r="5" fill="#7c3aed"/>
+<text x="754" y="578" class="sd">порт коммутатора</text>
+
+<circle cx="30" cy="612" r="4" fill="#16a34a"/>
+<text x="44" y="616" class="sd">Каждый узел получает в коммутаторе порт — TAP-адаптер со своим MAC и адресом; в сети стенда он виден отдельно.</text>
+<circle cx="30" cy="636" r="4" fill="#16a34a"/>
+<text x="44" y="640" class="sd">Кадры между узлом и коммутатором идут по TCP, порт 47814; пересылает их приложение владельца.</text>
+<circle cx="30" cy="660" r="4" fill="#2563eb"/>
+<text x="44" y="664" class="sd">Владелец остаётся в сети карты через адаптер «Сетевой мост»: у моста MAC и адрес самой карты.</text>
+<circle cx="30" cy="684" r="4" fill="#dc2626"/>
+<text x="44" y="688" class="sd">Пока приложение владельца не запущено, виртуальные адаптеры показывают «кабель не подключён».</text>
+</svg>
