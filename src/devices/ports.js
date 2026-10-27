@@ -11,7 +11,7 @@
 
 import os from 'node:os';
 import fsp from 'node:fs/promises';
-import { psJson } from './backend.js';
+import { psJson, run } from './backend.js';
 import { registryExpr, fromRegistry } from '../net/ipConfig.js';
 import { logger } from '../log.js';
 import { makeDeviceId } from './types.js';
@@ -32,12 +32,15 @@ export async function listPorts() {
   return [];
 }
 
-async function listPortsWindows() {
-  const items = await psJson(
-    'Get-PnpDevice -Class Ports -PresentOnly -ErrorAction SilentlyContinue | '
-    + 'Select-Object -Property FriendlyName,InstanceId,Status | ConvertTo-Json -Compress -Depth 3',
-  );
+const PNP_PORTS_CMD = 'Get-PnpDevice -Class Ports -PresentOnly -ErrorAction SilentlyContinue | '
+  + 'Select-Object -Property FriendlyName,InstanceId,Status';
 
+async function listPortsWindows() {
+  return portsFromPnp(await psJson(`${PNP_PORTS_CMD} | ConvertTo-Json -Compress -Depth 3`));
+}
+
+/** Разбор ответа Get-PnpDevice: общий для одиночного и совмещённого опроса. */
+export function portsFromPnp(items) {
   const out = [];
   for (const d of items) {
     const name = d.FriendlyName || '';
@@ -108,18 +111,21 @@ export async function listNetInterfaces() {
   return listNetGeneric();
 }
 
+// Настройки IP — из реестра тем же вызовом: у отданной карты стек IP
+// отвязан, а показать, с какими настройками она работает, всё равно надо.
+const NET_ADAPTERS_CMD = 'Get-NetAdapter -ErrorAction SilentlyContinue | ForEach-Object { [pscustomobject]@{ '
+  + 'Name = $_.Name; InterfaceDescription = $_.InterfaceDescription; InterfaceGuid = $_.InterfaceGuid; '
+  + 'Status = [string]$_.Status; MacAddress = $_.MacAddress; LinkSpeed = $_.LinkSpeed; Virtual = $_.Virtual; '
+  + 'ComponentID = $_.ComponentID; HardwareInterface = $_.HardwareInterface; '
+  + 'NdisPhysicalMedium = $_.NdisPhysicalMedium; '
+  + `Reg = ${registryExpr('$_.InterfaceGuid')} } }`;
+
 async function listNetWindows() {
-  const adapters = await psJson(
-    // Настройки IP — из реестра тем же вызовом: у отданной карты стек IP
-    // отвязан, а показать, с какими настройками она работает, всё равно надо.
-    'Get-NetAdapter -ErrorAction SilentlyContinue | ForEach-Object { [pscustomobject]@{ '
-    + 'Name = $_.Name; InterfaceDescription = $_.InterfaceDescription; InterfaceGuid = $_.InterfaceGuid; '
-    + 'Status = [string]$_.Status; MacAddress = $_.MacAddress; LinkSpeed = $_.LinkSpeed; Virtual = $_.Virtual; '
-    + 'ComponentID = $_.ComponentID; HardwareInterface = $_.HardwareInterface; '
-    + 'NdisPhysicalMedium = $_.NdisPhysicalMedium; '
-    + `Reg = ${registryExpr('$_.InterfaceGuid')} } } `
-    + '| ConvertTo-Json -Compress -Depth 4',
-  );
+  return netsFromAdapters(await psJson(`${NET_ADAPTERS_CMD} | ConvertTo-Json -Compress -Depth 4`));
+}
+
+/** Разбор ответа Get-NetAdapter: общий для одиночного и совмещённого опроса. */
+export function netsFromAdapters(adapters) {
   if (!adapters.length) return listNetGeneric();
 
   const addrs = addressesByIface();
@@ -193,4 +199,80 @@ function addressesByIface() {
 /** Имя интерфейса попадает в идентификатор, поэтому чистим разделители. */
 function normalizeKey(name) {
   return String(name).replace(/[|:\s]+/g, '_');
+}
+
+// ------------------------------------------------- совмещённый опрос Windows
+
+// Запуск PowerShell стоит секунд процессорного времени (сам процесс, WMI,
+// антивирус), поэтому на Windows два перечисления идут одним запуском. Сбой
+// одной половины не должен стирать другую: каждая закрыта своим try и
+// помечена флагом, а наружу сорвавшийся источник выходит как null.
+// Части сериализуются отдельно и склеиваются строкой: ConvertTo-Json общего
+// объекта с вложенными списками на этой паре данных тратил около десяти секунд
+// там, где разбор каждой части занимает доли секунды.
+const COMBINED_SCRIPT = `$pOk = $true; $p = @(); try { $p = @(${PNP_PORTS_CMD}) } catch { $pOk = $false }; `
+  + `$nOk = $true; $n = @(); try { $n = @(${NET_ADAPTERS_CMD}) } catch { $nOk = $false }; `
+  + '$pj = ConvertTo-Json -InputObject $p -Compress -Depth 3; $nj = ConvertTo-Json -InputObject $n -Compress -Depth 4; '
+  + '\'{"portsOk":\' + $pOk.ToString().ToLower() + \',"ports":\' + $pj + \',"netsOk":\' + $nOk.ToString().ToLower() + \',"nets":\' + $nj + \'}\'';
+
+const asArray = (v) => (Array.isArray(v) ? v : (v ? [v] : []));
+
+/**
+ * Порты и сетевые интерфейсы разом.
+ * null у источника — он сорвался: решение «оставить прошлый список» за вызывающим.
+ */
+export async function listPortsAndNets({ ports: wantPorts = true, nets: wantNets = true } = {}) {
+  if (process.platform === 'win32' && wantPorts && wantNets) {
+    const rows = await psJson(COMBINED_SCRIPT, { timeoutMs: 30000, strict: true });
+    const r = rows[0];
+    if (!r) throw new Error('PowerShell не вернул перечень портов и интерфейсов');
+    return {
+      ports: r.portsOk === false ? null : portsFromPnp(asArray(r.ports)),
+      nets: r.netsOk === false ? null : netsFromAdapters(asArray(r.nets)),
+    };
+  }
+  return {
+    ports: wantPorts ? await listPorts().catch((e) => { log.warn('перечисление портов не удалось:', e.message); return null; }) : [],
+    nets: wantNets ? await listNetInterfaces().catch((e) => { log.warn('перечисление сетевых интерфейсов не удалось:', e.message); return null; }) : [],
+  };
+}
+
+// ------------------------------------------------ дешёвый признак «изменилось»
+
+// Раздел реестра с активными COM и LPT-портами: меняется, когда порт
+// появляется или исчезает. Читается reg.exe за миллисекунды, без WMI.
+const PORT_REG_KEYS = ['HKLM\\HARDWARE\\DEVICEMAP\\SERIALCOMM', 'HKLM\\HARDWARE\\DEVICEMAP\\PARALLEL PORTS'];
+
+async function regSnapshot(key) {
+  const r = await run('reg.exe', ['query', key], { timeoutMs: 5000 });
+  if (r.spawnError || r.timedOut) return null;
+  // Код 1 — раздела нет, то есть портов этого вида нет: это ответ, а не сбой.
+  if (!r.ok && r.code !== 1) return null;
+  return r.ok ? r.stdout.replace(/\s+/g, ' ').trim() : '';
+}
+
+/** Состав интерфейсов, их MAC и адреса — в самом процессе, без запуска чего-либо. */
+export function netSignature() {
+  return Object.entries(os.networkInterfaces())
+    .map(([name, list]) => [name, (list || []).filter((a) => !a.internal).map((a) => `${a.mac}|${a.address}`).sort().join(',')])
+    .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
+    .map((row) => row.join('='))
+    .join(';');
+}
+
+/**
+ * Дешёвый отпечаток того, что перечисляют порты и интерфейсы. Совпал — тяжёлый
+ * опрос не нужен. null — отпечаток недоступен (не Windows или сбой чтения):
+ * вызывающий обязан перечитать всё по-настоящему.
+ */
+export async function slowSignature({ ports: wantPorts = true, nets: wantNets = true } = {}) {
+  if (process.platform !== 'win32') return null;
+  const parts = [];
+  if (wantNets) parts.push(`n:${netSignature()}`);
+  if (wantPorts) {
+    const snaps = await Promise.all(PORT_REG_KEYS.map(regSnapshot));
+    if (snaps.some((s) => s === null)) return null;
+    parts.push(`c:${snaps[0]}`, `l:${snaps[1]}`);
+  }
+  return parts.join('\n');
 }
