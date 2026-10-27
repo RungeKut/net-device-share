@@ -50,7 +50,10 @@ export function resolveNetwork(cidr) {
 }
 
 /** Имена и MAC-префиксы виртуальных адаптеров, которые не годятся в рабочую сеть. */
-const VIRTUAL_NAME = /vEthernet|VMware|VirtualBox|Hyper-V|Bluetooth|TAP|OpenVPN|WireGuard|Tailscale|ZeroTier|Docker|WSL|Loopback| на /i;
+// Короткие слова (TAP, WSL) — только целиком: без границ «TAP» находился в
+// «Laptop Wi-Fi» и «Desktop». «<карта> на <узел>» — имя, под которым TAP
+// занятой чужой карты виден у нас; голый « на » резал бы и обычные имена.
+const VIRTUAL_NAME = /vEthernet|VMware|VirtualBox|Hyper-V|Bluetooth|\bTAP\b|OpenVPN|WireGuard|Tailscale|ZeroTier|Docker|\bWSL\b|Loopback|^(Ethernet|Подключение по локальной сети)( \d+)? на \S+$/i;
 const VIRTUAL_MAC = /^(00:ff|00:50:56|00:0c:29|00:15:5d|08:00:27|0a:00:27)/i;
 
 export function isVirtualInterface({ iface, mac }) {

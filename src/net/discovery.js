@@ -25,7 +25,7 @@ import dgram from 'node:dgram';
 import { EventEmitter } from 'node:events';
 import { logger } from '../log.js';
 import { PROTO, MSG, encodeDatagram, unpackDatagram } from './protocol.js';
-import { broadcastAddress, ipInCidr, normalizeIp } from './interfaces.js';
+import { broadcastAddress, ipInCidr, listNetworks, normalizeIp } from './interfaces.js';
 
 const log = logger('discovery');
 
@@ -37,6 +37,20 @@ const log = logger('discovery');
  * широковещательных пакетов, хотя соседям достаточно одного.
  */
 const MIN_GAP_MS = 500;
+
+/**
+ * Предел частоты одинаковых предупреждений: сеть без маршрута даёт ошибку
+ * на каждый пакет, и журнал без предела тонул бы в одинаковых строках.
+ */
+const WARN_GAP_MS = 30_000;
+
+/**
+ * Промежуток между починками: первая попытка почти сразу, дальше вдвое реже
+ * до потолка. Адаптер, на котором multicast не работает вовсе, иначе
+ * переоткрывался бы каждые 5 секунд вечно.
+ */
+const REPAIR_GAP_MS = 10_000;
+const REPAIR_GAP_MAX_MS = 5 * 60_000;
 
 export class Discovery extends EventEmitter {
   /**
@@ -59,6 +73,17 @@ export class Discovery extends EventEmitter {
     this.lastDir = null;
     this.lastSentAt = 0;
     this.sent = 0;
+    this.replyTimer = null;
+
+    this.dropped = { outOfNet: 0, otherRealm: 0, badSignature: 0, protoMismatch: 0, malformed: 0, echo: 0, clone: 0 };
+    this.sendErrors = 0;
+    this.lastSendError = null;
+    this.warnedAt = new Map();
+    this.cloneSeen = new Set();
+    this.socketDead = false;
+    this.repairs = 0;
+    this.repairGap = REPAIR_GAP_MS;
+    this.repairAt = 0;
   }
 
   /** Медленный темп не может быть быстрее обычного — это была бы опечатка. */
@@ -67,25 +92,8 @@ export class Discovery extends EventEmitter {
   }
 
   async start() {
-    const { port } = this.opts;
-    const sock = dgram.createSocket({ type: 'udp4', reuseAddr: true });
-    this.socket = sock;
     this.stopped = false;
-
-    sock.on('error', (err) => {
-      log.error('ошибка UDP-сокета:', err.message);
-      this.emit('error', err);
-    });
-
-    sock.on('message', (buf, rinfo) => this._onMessage(buf, rinfo));
-
-    await new Promise((resolve, reject) => {
-      sock.once('error', reject);
-      sock.bind(port, '0.0.0.0', () => {
-        sock.removeListener('error', reject);
-        resolve();
-      });
-    });
+    await this._openSocket();
 
     this.transport = this.opts.announceTransport || 'both';
     if (this.transport === 'broadcast') {
@@ -104,6 +112,33 @@ export class Discovery extends EventEmitter {
     return this;
   }
 
+  async _openSocket() {
+    const sock = dgram.createSocket({ type: 'udp4', reuseAddr: true });
+    this.socket = sock;
+    this.socketDead = false;
+
+    // Ошибки и закрытие старого сокета после его замены уже ничего не значат.
+    sock.on('error', (err) => {
+      if (sock !== this.socket) return;
+      this.socketDead = true;
+      log.error('ошибка UDP-сокета:', err.message);
+      // Без слушателя emit('error') бросил бы исключение и уронил процесс.
+      if (this.listenerCount('error')) this.emit('error', err);
+    });
+    sock.on('close', () => {
+      if (sock === this.socket && !this.stopped) this.socketDead = true;
+    });
+    sock.on('message', (buf, rinfo) => this._onMessage(buf, rinfo));
+
+    await new Promise((resolve, reject) => {
+      sock.once('error', reject);
+      sock.bind(this.opts.port, '0.0.0.0', () => {
+        sock.removeListener('error', reject);
+        resolve();
+      });
+    });
+  }
+
   _onMessage(buf, rinfo) {
     const from = normalizeIp(rinfo.address);
 
@@ -112,6 +147,7 @@ export class Discovery extends EventEmitter {
     // подделать UDP-пакет проще, чем установить TCP-соединение, а узлы из
     // других сегментов и так приходят не сюда, а через обмен каталогом.
     if (!this._nets().some((n) => ipInCidr(from, n.cidr))) {
+      this.dropped.outOfNet++;
       log.trace('пакет вне рабочей сети от', from);
       return;
     }
@@ -122,13 +158,24 @@ export class Discovery extends EventEmitter {
     // что узел без ключа принимает любую.
     const { message, error, realm } = unpackDatagram(buf, (r) => this.opts.realms.keyFor(r, 'listening'));
     if (error) {
-      if (error === 'bad-signature') log.warn(`отклонён пакет с неверной подписью от ${from} (круг ${realm})`);
-      else if (error === 'other-realm') log.trace(`пакет из чужого круга доверия (${realm}) от ${from}`);
-      else log.trace(`пакет отброшен (${error}) от ${from}`);
+      if (error === 'bad-signature') {
+        this.dropped.badSignature++;
+        log.warn(`отклонён пакет с неверной подписью от ${from} (круг ${realm})`);
+      } else if (error === 'other-realm') {
+        this.dropped.otherRealm++;
+        log.trace(`пакет из чужого круга доверия (${realm}) от ${from}`);
+      } else {
+        if (error === 'proto-mismatch') this.dropped.protoMismatch++;
+        else this.dropped.malformed++;
+        log.trace(`пакет отброшен (${error}) от ${from}`);
+      }
       return;
     }
     if (typeof message !== 'object' || message === null) return;
-    if (message.nodeId === this.opts.nodeId) return; // собственный анонс
+    if (message.nodeId === this.opts.nodeId) {
+      this._onOwnId(from);
+      return;
+    }
 
     switch (message.type) {
       case MSG.ANNOUNCE:
@@ -139,11 +186,39 @@ export class Discovery extends EventEmitter {
         break;
       case MSG.QUERY:
         // Новый узел просит представиться — отвечаем без ожидания таймера.
-        this.announce();
+        // Обычный 'change' у спокойного узла молчал бы, и новичок ждал бы
+        // его до следующего тика.
+        this.announce('query');
         break;
       default:
         log.trace('неизвестный тип сообщения', message.type);
     }
+  }
+
+  /**
+   * Пакет с нашим nodeId: свой же broadcast (идёт с нашего адреса) или чужой
+   * узел с тем же идентификатором. Второе — клон профиля или виртуальной
+   * машины: для соседей это один и тот же узел, и один из двух невидим.
+   */
+  _onOwnId(from) {
+    const mine = this._nets().some((n) => n.address === from) || listNetworks().some((n) => n.address === from);
+    if (mine) {
+      this.dropped.echo++;
+      return;
+    }
+    this.dropped.clone++;
+    if (this.cloneSeen.has(from) || this.cloneSeen.size >= 64) return;
+    this.cloneSeen.add(from);
+    log.warn(`с адреса ${from} пришёл анонс с НАШИМ идентификатором узла — вероятно, клон профиля или виртуальной машины; `
+      + 'у копии нужно сбросить nodeId, иначе соседи видят только один из двух узлов');
+  }
+
+  _warnLimited(key, text) {
+    const now = Date.now();
+    if (now - (this.warnedAt.get(key) || 0) < WARN_GAP_MS) return;
+    if (this.warnedAt.size >= 256) this.warnedAt.clear();
+    this.warnedAt.set(key, now);
+    log.warn(text);
   }
 
   _nets() {
@@ -183,10 +258,13 @@ export class Discovery extends EventEmitter {
 
   async _openLeg(net) {
     const { port } = this.opts;
-    const leg = { net, sock: null, multicastOk: false, broadcastAddr: null };
+    const leg = { net, sock: null, multicastOk: false, broadcastAddr: null, broken: false };
     try {
       leg.sock = dgram.createSocket({ type: 'udp4', reuseAddr: true });
-      leg.sock.on('error', (e) => log.warn(`отправка через ${net.iface}: ${e.message}`));
+      leg.sock.on('error', (e) => {
+        leg.broken = true;
+        this._warnLimited(`leg:${net.address}`, `отправка через ${net.iface}: ${e.message}`);
+      });
       await new Promise((resolve, reject) => {
         leg.sock.once('error', reject);
         leg.sock.bind(0, net.address, () => { leg.sock.removeListener('error', reject); resolve(); });
@@ -246,9 +324,18 @@ export class Discovery extends EventEmitter {
       for (const r of circles) {
         const buf = encodeDatagram({ ...makeBase(leg), realm: r.realm }, r.key);
         for (const addr of targets) {
-          leg.sock.send(buf, 0, buf.length, this.opts.port, addr, (err) => {
-            if (err) log.debug(`отправка на ${addr} (${leg.net.iface}) не удалась: ${err.message}`);
-          });
+          const failed = (err) => {
+            this.sendErrors++;
+            this.lastSendError = `${addr} (${leg.net.iface}): ${err.message}`;
+            this._warnLimited(`send:${addr}`, `отправка на ${addr} (${leg.net.iface}) не удалась: ${err.message}`);
+          };
+          try {
+            leg.sock.send(buf, 0, buf.length, this.opts.port, addr, (err) => { if (err) failed(err); });
+          } catch (e) {
+            // Синхронный отказ — сокет уже закрыт; пока его не переоткроют, пакеты уходят в никуда.
+            leg.broken = true;
+            failed(e);
+          }
         }
       }
     }
@@ -295,7 +382,13 @@ export class Discovery extends EventEmitter {
    * такой вызов «тиком без изменений», узел уезжает на медленный темп за
    * пару секунд — ровно противоположно замыслу.
    *
-   * @param {'change'|'tick'} [reason]
+   * 'query' — ответ на просьбу новичка представиться: уходит даже при
+   * неизменном состоянии (ответа ждёт именно он), но темп не трогает —
+   * ни не ускоряет, ни не замедляет, и таймер очередного тика не сбивает.
+   * Иначе поток запросов то держал бы узел на быстром темпе, то отодвигал бы
+   * его тик до бесконечности.
+   *
+   * @param {'change'|'tick'|'query'} [reason]
    */
   announce(reason = 'change') {
     if (this.stopped || !this.socket) return;
@@ -308,18 +401,33 @@ export class Discovery extends EventEmitter {
     // Объявлять нечего, и никто не ждёт подтверждения жизни — молчим.
     // Это и есть главная экономия: поток событий интерфейса больше не
     // превращается в поток широковещательных пакетов.
-    if (!first && !changed && reason !== 'tick') return;
+    if (!first && !changed && reason === 'change') return;
 
     const now = Date.now();
     const since = now - this.lastSentAt;
     if (!first && since < MIN_GAP_MS) {
+      if (reason === 'query') {
+        // Отдельный таймер: общий нужен тику, а несколько запросов подряд
+        // сливаются в один ответ.
+        if (!this.replyTimer) {
+          this.replyTimer = setTimeout(() => {
+            this.replyTimer = null;
+            this.announce('query');
+          }, MIN_GAP_MS - since);
+          this.replyTimer.unref?.();
+        }
+        return;
+      }
       // Слишком часто. Отложим — состояние к тому моменту всё равно
       // перечитается, и уедет самая свежая его версия.
       this._reschedule(MIN_GAP_MS - since);
       return;
     }
 
-    if (this.opts.announceBackoff === false) {
+    const replyOnly = reason === 'query' && !changed && !first;
+    if (replyOnly) {
+      // ответ новичку: темп остаётся прежним
+    } else if (this.opts.announceBackoff === false) {
       this.interval = this.opts.announceIntervalMs;
     } else if (changed || first) {
       // Состояние поменялось — соседи должны узнать об этом быстро.
@@ -366,7 +474,73 @@ export class Discovery extends EventEmitter {
       dir,
     });
 
-    this._reschedule(this.interval);
+    if (!replyOnly) this._reschedule(this.interval);
+  }
+
+  /**
+   * Нужна ли починка: ножка не открылась или сломалась, multicast не вступил
+   * в группу, принимающий сокет умер. Сменить подпись «интерфейс|адрес» это
+   * не заставляет — после сна или выдернутого кабеля Windows сбрасывает
+   * членство в группе при том же адресе, и без явной проверки узел оставался
+   * бы глухим до перезапуска.
+   */
+  needsRepair() {
+    if (this.stopped || !this.socket) return false;
+    if (this.socketDead) return true;
+    for (const n of this._nets()) {
+      if (!this._legHealthy(this.legs.get(n.address))) return true;
+    }
+    return false;
+  }
+
+  _legHealthy(leg) {
+    if (!leg || leg.broken) return false;
+    if (this.transport !== 'broadcast' && !leg.multicastOk) return false;
+    if (this.transport !== 'multicast' && !leg.broadcastAddr) return false;
+    return true;
+  }
+
+  /**
+   * Починить, что сломано, не чаще чем раз в repairGap (растёт вдвое, пока
+   * починка не помогает, и сбрасывается, когда всё в порядке).
+   * @returns {Promise<boolean>} выполнялась ли попытка
+   */
+  async repair() {
+    if (!this.needsRepair()) {
+      this.repairGap = REPAIR_GAP_MS;
+      return false;
+    }
+    const now = Date.now();
+    if (now - this.repairAt < this.repairGap) return false;
+    this.repairAt = now;
+    this.repairGap = Math.min(this.repairGap * 2, REPAIR_GAP_MAX_MS);
+    this.repairs++;
+
+    const run = (this._syncing || Promise.resolve()).catch(() => {}).then(() => this._repairNow());
+    this._syncing = run;
+    await run;
+    if (this.legs.size) this.refresh();
+    return true;
+  }
+
+  async _repairNow() {
+    if (this.stopped) return;
+    log.warn('обнаружение неисправно (сокет, ножка или членство в multicast-группе) — переоткрываю');
+    const broken = this.socketDead;
+    if (broken) {
+      const old = this.socket;
+      await this._openSocket();
+      try { old.close(); } catch { /* уже закрыт */ }
+    }
+    // Членство в группе принадлежит приёмному сокету, поэтому при его замене
+    // пересоздаются все ножки; иначе — только неисправные.
+    for (const [addr, leg] of [...this.legs]) {
+      if (!broken && this._legHealthy(leg)) continue;
+      this.legs.delete(addr);
+      try { this.socket.dropMembership(this.opts.multicastAddress, addr); } catch { /* членства могло не быть */ }
+      await new Promise((res) => { try { leg.sock.close(() => res()); } catch { res(); } });
+    }
+    await this._syncLegsNow();
   }
 
   /**
@@ -420,6 +594,14 @@ export class Discovery extends EventEmitter {
       broadcast: [...this.legs.values()].some((l) => l.broadcastAddr),
       interfaces: [...this.legs.values()].map((l) => ({ iface: l.net.iface, address: l.net.address, network: l.net.cidr })),
       sent: this.sent,
+      // Почему пакеты не дошли до соседей: без этих счётчиков «узел не виден»
+      // нельзя отличить от «пакеты приходят, но отбрасываются».
+      dropped: { ...this.dropped },
+      sendErrors: this.sendErrors,
+      lastSendError: this.lastSendError,
+      clones: [...this.cloneSeen],
+      repairs: this.repairs,
+      needsRepair: this.needsRepair(),
       // Пакетов на один анонс: кругов доверия × каналов. Полезно видеть,
       // потому что число кругов умножает широковещательный трафик.
       realms: this.opts.realms.announcing().length,
@@ -430,6 +612,8 @@ export class Discovery extends EventEmitter {
 
   async stop() {
     clearTimeout(this.timer);
+    clearTimeout(this.replyTimer);
+    this.replyTimer = null;
     if (!this.socket) {
       this.stopped = true;
       return;

@@ -275,6 +275,8 @@ export class App extends EventEmitter {
       this.directory.onAnnounce(m);
     });
     this.discovery.on('bye', (m) => this.peers.onBye(m));
+    // Не noteFault: умерший приёмный сокет чинится сам из _watchNetworks, это не отказ узла.
+    this.discovery.on('error', (e) => log.warn(`обнаружение: ошибка приёмного сокета: ${e.message}`));
     await this.discovery.start();
 
     this.directory.on('changed', () => this.onStateChanged());
@@ -346,7 +348,12 @@ export class App extends EventEmitter {
     const now = this._resolveNets();
     if (!now.length) return;
     const sig = (list) => list.map((n) => `${n.iface}|${n.address}/${n.prefix}`).sort().join(';');
-    if (sig(now) === sig(this.networks)) return;
+    if (sig(now) === sig(this.networks)) {
+      // Подпись та же, а обнаружение глухое: после сна или выдернутого кабеля
+      // Windows сбрасывает членство в multicast-группе при прежнем адресе.
+      if (this.discovery.needsRepair()) await this.discovery.repair();
+      return;
+    }
     this._setNetworks(now);
     await this.discovery.setNetworks(this.networks);
     this.onStateChanged();
