@@ -26,3 +26,6 @@ dist/
 # (иначе publish-release видит грязное дерево).
 /result/*
 !/result/.gitkeep
+
+# Рабочее состояние сторожа go.md (дедлайн 12-часового окна)
+/.go-watchdog.json
