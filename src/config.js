@@ -132,10 +132,15 @@ export class Config {
   load() {
     try {
       const raw = fs.readFileSync(this.file, 'utf8');
-      Object.assign(this.data, JSON.parse(raw));
+      // Блокнот и PowerShell дописывают BOM, а JSON.parse на нём падает.
+      const parsed = JSON.parse(raw.replace(/^﻿/, ''));
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        throw new SyntaxError('в корне файла не объект настроек');
+      }
+      Object.assign(this.data, parsed);
       log.debug('конфигурация загружена из', this.file);
     } catch (e) {
-      if (e.code !== 'ENOENT') log.warn('не удалось прочитать конфигурацию:', e.message);
+      if (e.code !== 'ENOENT') this._keepUnreadable(e);
     }
 
     // Самозаполняющиеся поля.
@@ -206,6 +211,22 @@ export class Config {
     }
 
     if (dirty) this.save();
+  }
+
+  /**
+   * Дальше load() заведёт умолчания и новый nodeId, а save() перезапишет
+   * файл — вместе с ним пропали бы сети с ключами и пароль. Поэтому
+   * нечитаемый файл сначала уходит в копию рядом.
+   */
+  _keepUnreadable(cause) {
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const copy = `${this.file}.bad-${stamp}`;
+    try {
+      fs.copyFileSync(this.file, copy);
+      log.error(`config.json нечитаем (${cause.message}); копия сохранена: ${copy}. Работаем с настройками по умолчанию — восстановите нужное из копии`);
+    } catch (e) {
+      log.error(`config.json нечитаем (${cause.message}), и копию сохранить не удалось: ${e.message}. Исходный файл будет перезаписан`);
+    }
   }
 
   save() {

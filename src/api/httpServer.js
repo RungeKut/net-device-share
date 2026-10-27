@@ -28,6 +28,7 @@ import { fileURLToPath } from 'node:url';
 import { logger, recentLogs, onLogRecord } from '../log.js';
 import { AUTH_HEADER, AUTH2_HEADER, TS_HEADER, NODE_HEADER } from '../net/rpc.js';
 import { ipInCidr, normalizeIp, listNetworks } from '../net/interfaces.js';
+import { diagnoseRequest } from '../net/protocol.js';
 import { baseDir } from '../core/paths.js';
 import { renderMetrics } from '../core/metrics.js';
 
@@ -35,6 +36,7 @@ const log = logger('http');
 const UI_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'ui');
 const SESSION_COOKIE = 'nds_session';
 const SESSION_TTL_MS = 12 * 3600 * 1000;
+const CLOCK_WARN_EVERY_MS = 5 * 60 * 1000;
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -73,6 +75,7 @@ export class ApiServer {
     this.server = null;
     /** @type {Map<import('node:http').ServerResponse, string>} поток → уровень доступа */
     this.sseClients = new Map();
+    this.clockWarned = new Map();     // адрес → когда последний раз писали про часы
     this.downloads = 0;               // отдаваемые сейчас файлы из /download
     this.downloadSums = new Map();    // имя+размер+время → SHA-256
     this.pushTimer = null;
@@ -328,6 +331,22 @@ export class ApiServer {
     fs.createReadStream(file).on('error', () => res.destroy()).pipe(res);
   }
 
+  /**
+   * Расхождение часов шлёт каждый запрос соседа, а опросы идут по кругу, —
+   * без ограничения журнал забился бы одной и той же строкой. Раз в
+   * CLOCK_WARN_EVERY_MS на адрес достаточно, чтобы человек заметил.
+   */
+  _warnClockSkew(remote, route, message) {
+    const now = Date.now();
+    const last = this.clockWarned.get(remote);
+    if (last !== undefined && now - last < CLOCK_WARN_EVERY_MS) return;
+    // Адресов с неверными часами мало, но чужие вызовы могут идти с любых:
+    // не даём таблице расти без предела.
+    if (this.clockWarned.size >= 256) this.clockWarned.clear();
+    this.clockWarned.set(remote, now);
+    log.warn(`отклонён вызов ${route} (${remote}): ${message}`);
+  }
+
   async _handlePeer(req, res, route, remote) {
     const realms = this.app.realms;
     const local = isLoopback(remote) || this.app.isInWorkingNetwork(remote);
@@ -354,8 +373,15 @@ export class ApiServer {
       nodeId: req.headers[NODE_HEADER] || '',
     });
     if (!circle) {
-      log.warn(`отклонён вызов ${route} с неверной подписью (${remote})`);
-      return sendJson(res, 401, { error: 'bad_signature', message: 'неверная подпись — не совпадает общий ключ' });
+      const why = diagnoseRequest({
+        ts: req.headers[TS_HEADER],
+        signature: req.headers[AUTH_HEADER] || '',
+        signature2: req.headers[AUTH2_HEADER] || '',
+        strict: this.app.config.get('strictSignatures') === true,
+      });
+      if (why.reason === 'clock_skew') this._warnClockSkew(remote, route, why.message);
+      else log.warn(`отклонён вызов ${route} (${remote}): ${why.message}`);
+      return sendJson(res, 401, { error: 'bad_signature', message: why.message });
     }
 
     const body = parseJson(raw);
@@ -402,7 +428,7 @@ export class ApiServer {
         // устройств, ни занятости здесь нет: их каждый спрашивает у
         // владельца напрямую, чтобы мост не оказался в тракте данных.
         case 'GET /api/v1/peer/directory':
-          return sendJson(res, 200, this.app.directory.payload(circle.realm, this.app.networkOf(remote)));
+          return sendJson(res, 200, this.app.directory.payload(circle.realm, this.app.networkOf(remote), remote));
 
         case 'POST /api/v1/peer/directory': {
           // Круг доверия сверяем и здесь. Узел БЕЗ ключа принимает любую
@@ -432,7 +458,7 @@ export class ApiServer {
             // его сами, не дожидаясь своего круга обмена.
             this.app.onStateChanged();
           }
-          return sendJson(res, 200, this.app.directory.payload(circle.realm, local ? this.app.networkOf(remote) : null));
+          return sendJson(res, 200, this.app.directory.payload(circle.realm, local ? this.app.networkOf(remote) : null, remote));
         }
 
         case 'POST /api/v1/peer/tunnel': {

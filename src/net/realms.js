@@ -66,15 +66,21 @@ export class Realms {
       });
     }
 
+    // Ключ обрезаем так же, как это делает интерфейс при сохранении: пробел
+    // или перевод строки, попавший в config.json при правке вручную, иначе
+    // дал бы другой отпечаток круга, и узел «потерял» бы свою сеть.
     return out.concat((this.config.get('networks') || [])
-      .filter((n) => n && n.key)
-      .map((n) => ({
-        id: n.id,
-        key: n.key,
-        label: n.label || 'сеть без названия',
-        realm: realmOf(n.key),
-        open: false,
-      })));
+      .filter((n) => n && n.key && String(n.key).trim())
+      .map((n) => {
+        const key = String(n.key).trim();
+        return {
+          id: n.id,
+          key,
+          label: n.label || 'сеть без названия',
+          realm: realmOf(key),
+          open: false,
+        };
+      }));
   }
 
   /** Круги, в которых мы объявляем о себе. */
@@ -146,8 +152,7 @@ export class Realms {
    * принимается, пока не включён «строгий режим» (strictSignatures): им
    * отключают совместимость, когда во всей сети узлы уже новые.
    */
-  matchRequest({ payload, signature, signature2, ts, method, path, nodeId }) {
-    if (signature2) {
+  matchRequest({ payload, signature, signature2, ts, method, path, nodeId }) {    if (signature2) {
       const req = { ts, method, path, nodeId, body: payload };
       for (const r of this.keyed()) {
         if (verifyRequest(req, signature2, r.key)) return r;

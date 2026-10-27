@@ -116,6 +116,46 @@ export function verifyRequest(req, signature, key) {
   return crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(signature));
 }
 
+/**
+ * Почему вызов с подписью не принят — только для текста ответа и журнала.
+ * Решение «принять или нет» остаётся за verifyRequest/matchRequest; здесь
+ * лишь разбираем, какая из причин вероятнее, чтобы человек не гадал над
+ * одинаковым «неверная подпись» (чаще всего это часы, а не ключ).
+ */
+export function diagnoseRequest({ ts, signature, signature2, strict = false }) {
+  if (!signature2 && !signature) {
+    return {
+      reason: 'no_signature',
+      message: 'вызов без подписи — этот узел принимает только подписанные вызовы (нужен общий ключ сети)',
+    };
+  }
+  if (!signature2) {
+    return {
+      reason: 'legacy_rejected',
+      message: strict
+        ? 'старая подпись не принимается: на этом узле включён строгий режим подписей'
+        : 'неверная подпись — не совпадает общий ключ или круг доверия',
+    };
+  }
+  const sent = Number(ts);
+  if (!Number.isFinite(sent)) {
+    return { reason: 'bad_ts', message: 'в вызове нет читаемой метки времени — подпись проверить нельзя' };
+  }
+  const skewMs = Date.now() - sent;
+  if (Math.abs(skewMs) > REQUEST_SKEW_MS) {
+    const minutes = Math.round(Math.abs(skewMs) / 60000);
+    return {
+      reason: 'clock_skew',
+      skewMs,
+      message: `расхождение часов: часы вызывающего узла ${skewMs > 0 ? 'отстают' : 'спешат'} от часов этого узла на ${minutes} мин (допуск ${REQUEST_SKEW_MS / 60000} мин) — выставьте время на обоих компьютерах`,
+    };
+  }
+  return {
+    reason: 'bad_key',
+    message: 'неверная подпись — не совпадает общий ключ сети или узел в другом круге доверия',
+  };
+}
+
 export function verify(payload, signature, key) {
   if (!key) return true; // аутентификация выключена
   const expected = sign(payload, key);
