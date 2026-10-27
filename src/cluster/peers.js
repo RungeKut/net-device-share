@@ -30,6 +30,7 @@ import { EventEmitter } from 'node:events';
 import { logger } from '../log.js';
 import { rpc } from '../net/rpc.js';
 import crypto from 'node:crypto';
+import { OPEN_REALM } from '../net/realms.js';
 
 const log = logger('peers');
 
@@ -42,6 +43,9 @@ const ROUTE_TTL_FACTOR = 3;
 /** Порты по умолчанию — для узлов прежних версий, которые о них не объявляют. */
 const DEFAULT_TRAFFIC_PORT = 47813;
 const DEFAULT_NETLINK_PORT = 47814;
+
+/** Не чаще раза в это время пишем в журнал об одной и той же неработающей пробе туннеля. */
+const PROBE_LOG_EVERY_MS = 60 * 1000;
 
 export class PeerRegistry extends EventEmitter {
   constructor(opts) {
@@ -57,6 +61,10 @@ export class PeerRegistry extends EventEmitter {
     this.stopped = false;
     /** @type {Map<string, {host: string, port: number, until: number}>} открытые туннели через шлюзы */
     this.tunnelCache = new Map();
+    /** @type {Map<string, number>} узел|маршрут → когда последний раз писали об ошибке пробы */
+    this.probeLogged = new Map();
+    /** @type {Map<string, string>} узел → хеш, пришедший, пока шёл запрос состояния: нужен повтор */
+    this.stateRetry = new Map();
   }
 
   start() {
@@ -181,6 +189,7 @@ export class PeerRegistry extends EventEmitter {
         // теперь остался только туннель через шлюз.
         const main = this.primaryRoute(peer);
         if (main && main.via && main.kind !== 'direct') main.mode = null;
+        this.dropTunnels(main);
         log.debug(`узел "${peer.name}" (${peer.address}) не ответил: ${e.message}`);
       } finally {
         this.pinging.delete(peer.nodeId);
@@ -265,7 +274,6 @@ export class PeerRegistry extends EventEmitter {
       origin: 'local',
       via: null,
       viaName: null,
-      realm: msg.realm,
       name: msg.name,
       address,
       apiPort: msg.apiPort,
@@ -286,6 +294,8 @@ export class PeerRegistry extends EventEmitter {
       self: false,
     });
     peer.timeoutMs = this._timeoutFor(peer, msg.next);
+    peer.realmSeen = { ...(peer.realmSeen || {}), [msg.realm]: now };
+    peer.realm = this._pickRealm(peer, now);
 
     this.peers.set(msg.nodeId, peer);
 
@@ -307,6 +317,20 @@ export class PeerRegistry extends EventEmitter {
     }
   }
 
+  /**
+   * Круг записи. Узел в двух кругах шлёт по анонсу на каждый, и если брать круг
+   * последнего пакета, запись прыгала бы между ними: подпись то ключом, то без,
+   * пересказ каталога то есть, то нет, а туннель через шлюз получал 404 из-за
+   * несовпавшего круга. Поэтому берём круг с ключом, пока он слышен.
+   */
+  _pickRealm(peer, now) {
+    const seen = peer.realmSeen || {};
+    const timeout = peer.timeoutMs || this.opts.peerTimeoutMs;
+    const fresh = Object.keys(seen).filter((r) => now - seen[r] < timeout).sort((a, b) => seen[b] - seen[a]);
+    if (peer.realm && peer.realm !== OPEN_REALM && fresh.includes(peer.realm)) return peer.realm;
+    return fresh.find((r) => r !== OPEN_REALM) || fresh[0] || peer.realm;
+  }
+
   onBye(msg) {
     const peer = this.peers.get(msg.nodeId);
     if (!peer) return;
@@ -314,9 +338,22 @@ export class PeerRegistry extends EventEmitter {
     // каталогу, он там и останется — исчезнет, когда перестанет
     // подтверждаться обменом.
     if (peer.origin !== 'local') return;
+    // Прощание пришло из одного круга; в другом узел может быть по-прежнему на связи.
+    if (msg.realm && peer.realmSeen && msg.realm in peer.realmSeen) {
+      delete peer.realmSeen[msg.realm];
+      const now = Date.now();
+      const timeout = peer.timeoutMs || this.opts.peerTimeoutMs;
+      if (Object.values(peer.realmSeen).some((t) => now - t < timeout)) {
+        peer.realm = this._pickRealm(peer, now);
+        log.debug(`узел "${peer.name}" попрощался в круге ${msg.realm}, но слышен в другом`);
+        this.emit('changed');
+        return;
+      }
+    }
     log.info(`узел "${peer.name}" покинул сеть`);
     this.peers.delete(msg.nodeId);
     this.emit('peer-down', peer);
+    this.emit('peer-gone', peer);
     this.emit('changed');
   }
 
@@ -475,9 +512,16 @@ export class PeerRegistry extends EventEmitter {
     const keep = new Set(realms);
     let dropped = 0;
     for (const [id, peer] of this.peers) {
+      // Забытый круг не должен оставаться в памяти о слышимости: по нему выбирался бы ключ, которого уже нет.
+      for (const r of Object.keys(peer.realmSeen || {})) if (!keep.has(r)) delete peer.realmSeen[r];
       if (keep.has(peer.realm)) continue;
+      if (peer.origin === 'local' && Object.keys(peer.realmSeen || {}).length) {
+        peer.realm = this._pickRealm(peer, Date.now());
+        if (keep.has(peer.realm)) continue;
+      }
       this.peers.delete(id);
       this.emit('peer-down', peer);
+      this.emit('peer-gone', peer);
       dropped++;
     }
     if (dropped) {
@@ -506,6 +550,7 @@ export class PeerRegistry extends EventEmitter {
       if (peer.origin === 'local') continue;
       this.peers.delete(id);
       this.emit('peer-down', peer);
+      this.emit('peer-gone', peer);
       dropped++;
     }
     if (dropped) {
@@ -602,6 +647,25 @@ export class PeerRegistry extends EventEmitter {
     return r[own] || peer[own] || fallback;
   }
 
+  /**
+   * Забыть открытые через шлюз туннели к маршруту. Кэш живёт 5 минут, а порт
+   * туннеля мог умереть раньше (шлюз перезапустился, туннель закрыт по простою):
+   * без сброса каждая проба ходила бы в мёртвый порт до конца срока.
+   */
+  dropTunnels(route) {
+    if (!route?.via) return;
+    const prefix = `${route.via.nodeId}|${route.address}|`;
+    for (const k of this.tunnelCache.keys()) if (k.startsWith(prefix)) this.tunnelCache.delete(k);
+  }
+
+  _logProbe(peer, route, message) {
+    const now = Date.now();
+    const k = `${peer.nodeId}|${route.key}`;
+    if (now - (this.probeLogged.get(k) || 0) < PROBE_LOG_EVERY_MS) return;
+    this.probeLogged.set(k, now);
+    log.warn(`узел "${peer.name}": маршрут ${route.address} через шлюз «${route.via?.name || route.via?.nodeId}» не работает: ${message}`);
+  }
+
   async _openTunnel(peer, route, port) {
     const cacheKey = `${route.via.nodeId}|${route.address}|${port}`;
     const hit = this.tunnelCache.get(cacheKey);
@@ -645,10 +709,15 @@ export class PeerRegistry extends EventEmitter {
           route.mode = 'tunnel';
         } catch (e) {
           route.probeError = e.message;
+          this.dropTunnels(route);
+          this._logProbe(peer, route, e.message);
         }
       }
     }
-    if (route.mode) route.lastSeen = Date.now();
+    if (route.mode) {
+      route.lastSeen = Date.now();
+      route.probeError = null;
+    }
     return route.mode;
   }
 
@@ -668,7 +737,12 @@ export class PeerRegistry extends EventEmitter {
   }
 
   async refreshPeerState(peer, expectedHash) {
-    if (this.inflight.has(peer.nodeId)) return;
+    // Запрос уже идёт, а хеш за это время мог смениться: его ответ может оказаться
+    // старым. Запоминаем хеш и повторяем, когда текущий запрос закончится.
+    if (this.inflight.has(peer.nodeId)) {
+      if (expectedHash != null) this.stateRetry.set(peer.nodeId, expectedHash);
+      return;
+    }
     this.inflight.add(peer.nodeId);
     try {
       // Пересказанный узел: сначала выясняем, как до него добраться, — иначе
@@ -696,6 +770,7 @@ export class PeerRegistry extends EventEmitter {
       this.emit('changed');
     } catch (e) {
       peer.stateError = e.message;
+      this.dropTunnels(this.primaryRoute(peer));
       // Для узла из каталога это самая частая и самая понятная поломка:
       // рассказали о нём, а маршрута или правила брандмауэра нет.
       if (peer.origin !== 'local') {
@@ -706,6 +781,11 @@ export class PeerRegistry extends EventEmitter {
       this.emit('changed');
     } finally {
       this.inflight.delete(peer.nodeId);
+    }
+    const again = this.stateRetry.get(peer.nodeId);
+    this.stateRetry.delete(peer.nodeId);
+    if (again != null && again !== peer.stateHash && !this.stopped && this.peers.get(peer.nodeId) === peer) {
+      await this.refreshPeerState(peer, again);
     }
   }
 
@@ -731,6 +811,8 @@ export class PeerRegistry extends EventEmitter {
         this.peers.delete(id);
         changed = true;
         log.info(`узел "${peer.name}" удалён из списка`);
+        this.stateRetry.delete(id);
+        this.emit('peer-gone', peer);
         // Шлюза больше нет — кэшированные туннели через него ведут в никуда.
         for (const [k, t] of this.tunnelCache) {
           if (t.host === peer.address || t.host === peer.routes?.get(peer.routeKey)?.address) this.tunnelCache.delete(k);
@@ -739,6 +821,7 @@ export class PeerRegistry extends EventEmitter {
     }
     // Просроченные записи кэша туннелей чистим, а не только пропускаем при чтении.
     for (const [k, t] of this.tunnelCache) if (t.until <= now) this.tunnelCache.delete(k);
+    for (const [k, t] of this.probeLogged) if (now - t >= PROBE_LOG_EVERY_MS) this.probeLogged.delete(k);
     if (changed) this.emit('changed');
   }
 

@@ -23,6 +23,7 @@ import crypto from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { logger } from '../log.js';
 import { rpc } from '../net/rpc.js';
+import { ipInCidr } from '../net/interfaces.js';
 
 const log = logger('directory');
 
@@ -98,6 +99,15 @@ export class DirectoryService extends EventEmitter {
     this.pulled = new Map();
     this.pullTimers = new Map();
     this.lastRound = null;
+    // Отпечаток в pulled означает «эти записи у нас есть». Удалили запись —
+    // отпечаток соврёт, и тот же каталог пришлось бы ждать, пока он изменится.
+    this.peers.on?.('peer-gone', (peer) => this._forgetPulled(peer));
+  }
+
+  _forgetPulled(peer) {
+    this.pulled.delete(peer.nodeId);
+    if (peer.via) this.pulled.delete(peer.via);
+    for (const r of peer.routes?.values?.() || []) if (r.via?.nodeId) this.pulled.delete(r.via.nodeId);
   }
 
   get enabled() {
@@ -172,8 +182,8 @@ export class DirectoryService extends EventEmitter {
    * «Лаборатории» об узлах «Цеха» значило бы склеить обратно то, что ключи
    * разделяют.
    */
-  payload(realm, forNetwork = null) {
-    const self = this.opts.selfEntry();
+  payload(realm, forNetwork = null, peerAddress = null) {
+    const self = this._selfFor(forNetwork, peerAddress);
     return {
       nodeId: self.nodeId,
       name: self.name,
@@ -182,6 +192,18 @@ export class DirectoryService extends EventEmitter {
       ts: Date.now(),
       peers: [self, ...this.peers.directoryEntries(realm, { forNetwork })],
     };
+  }
+
+  /**
+   * Запись о нас с адресом той сети, где собеседник: узел с двумя сетями иначе
+   * называл бы всем адрес первой, и по нему из второй сети до нас не добраться.
+   */
+  _selfFor(forNetwork, peerAddress) {
+    const self = this.opts.selfEntry();
+    const nets = this.opts.networks?.() || [];
+    const net = (forNetwork && nets.find((n) => n.cidr === forNetwork))
+      || (peerAddress && nets.find((n) => ipInCidr(peerAddress, n.cidr)));
+    return net ? { ...self, address: net.address, network: net.cidr } : self;
   }
 
   /**
@@ -205,6 +227,9 @@ export class DirectoryService extends EventEmitter {
   async _pullLocal(nodeId) {
     const peer = this.peers.get(nodeId);
     if (!peer || peer.origin !== 'local') return;
+    // Отпечаток берём до запроса: если он сменится, пока идёт ответ, новый каталог
+    // останется незабранным, а не будет записан как полученный.
+    const dir = peer.dir;
 
     try {
       const res = await rpc({
@@ -225,7 +250,7 @@ export class DirectoryService extends EventEmitter {
         // соединение пойдёт туннелем через него.
         via: { nodeId: peer.nodeId, name: peer.name, address: peer.address, apiPort: peer.apiPort },
       });
-      this.pulled.set(nodeId, peer.dir);
+      if (this.peers.get(nodeId) === peer) this.pulled.set(nodeId, dir);
       if (added) log.info(`от соседа "${peer.name}" получены узлы из других сетей: ${added}`);
     } catch (e) {
       log.warn(`каталог у соседа "${peer.name}" не забран: ${e.message}`);
@@ -332,7 +357,7 @@ export class DirectoryService extends EventEmitter {
         port,
         path: '/api/v1/peer/directory',
         method: 'POST',
-        body: this.payload(circle.realm),
+        body: this.payload(circle.realm, null, host),
         key: circle.key,
         nodeId: selfId,
         timeoutMs: SEED_TIMEOUT_MS,
