@@ -200,6 +200,7 @@ export class App extends EventEmitter {
       announceIntervalMs: this.config.get('announceIntervalMs'),
       gossipIntervalMs: this.config.get('gossipIntervalMs'),
       remotePollIntervalMs: this.config.get('remotePollIntervalMs'),
+      timerJitter: this.config.get('timerJitter'),
       networkOf: (ip) => this.networkOf(ip),
     });
     this.directory = new DirectoryService({
@@ -207,6 +208,7 @@ export class App extends EventEmitter {
       seeds: () => this.config.get('seeds') || [],
       realms: this.realms,
       intervalMs: () => this.config.get('gossipIntervalMs'),
+      timerJitter: this.config.get('timerJitter'),
       defaultPort: () => this.config.get('apiPort'),
       selfEntry: () => this._selfEntry(),
       networks: () => this.networks,
@@ -266,6 +268,7 @@ export class App extends EventEmitter {
       announceIdleIntervalMs: this.config.get('announceIdleIntervalMs'),
       announceBackoff: this.config.get('announceBackoff'),
       announceTransport: this.config.get('announceTransport'),
+      timerJitter: this.config.get('timerJitter'),
       getSnapshot: () => this._announceSnapshot(),
     });
     this.discovery.on('announce', (m) => {

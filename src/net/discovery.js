@@ -24,6 +24,7 @@
 import dgram from 'node:dgram';
 import { EventEmitter } from 'node:events';
 import { logger } from '../log.js';
+import { jittered } from '../core/jitter.js';
 import { PROTO, MSG, encodeDatagram, unpackDatagram } from './protocol.js';
 import { broadcastAddress, ipInCidr, listNetworks, normalizeIp } from './interfaces.js';
 
@@ -474,7 +475,9 @@ export class Discovery extends EventEmitter {
       dir,
     });
 
-    if (!replyOnly) this._reschedule(this.interval);
+    // Анонсируется «ровный» период, а ждём его с разбросом: таймаут соседа
+    // считан как три периода с запасом, и разброс его не задевает.
+    if (!replyOnly) this._reschedule(jittered(this.interval, this.opts.timerJitter, this.opts.random));
   }
 
   /**

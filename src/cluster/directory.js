@@ -22,6 +22,7 @@
 import crypto from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { logger } from '../log.js';
+import { jittered } from '../core/jitter.js';
 import { rpc } from '../net/rpc.js';
 import { ipInCidr } from '../net/interfaces.js';
 
@@ -279,7 +280,7 @@ export class DirectoryService extends EventEmitter {
     this.emit('changed');
 
     if (this.stopped || generation !== this.generation) return;
-    this.timer = setTimeout(() => this._round(generation), this.opts.intervalMs());
+    this.timer = setTimeout(() => this._round(generation), jittered(this.opts.intervalMs(), this.opts.timerJitter, this.opts.random));
     this.timer.unref?.();
   }
 

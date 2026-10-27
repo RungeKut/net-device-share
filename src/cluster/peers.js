@@ -28,6 +28,7 @@
 
 import { EventEmitter } from 'node:events';
 import { logger } from '../log.js';
+import { jittered } from '../core/jitter.js';
 import { rpc } from '../net/rpc.js';
 import crypto from 'node:crypto';
 import { OPEN_REALM } from '../net/realms.js';
@@ -127,7 +128,7 @@ export class PeerRegistry extends EventEmitter {
       this._pollRemote()
         .catch((e) => log.debug(`опрос удалённых узлов: ${e.message}`))
         .finally(() => this._scheduleRemotePoll());
-    }, this.opts.remotePollIntervalMs);
+    }, jittered(this.opts.remotePollIntervalMs, this.opts.timerJitter, this.opts.random));
     this.pollTimer.unref?.();
   }
 

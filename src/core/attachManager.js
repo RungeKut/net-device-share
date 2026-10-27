@@ -14,6 +14,7 @@
 
 import { EventEmitter } from 'node:events';
 import { logger } from '../log.js';
+import { jittered } from './jitter.js';
 import { rpc, RpcError } from '../net/rpc.js';
 
 const log = logger('attach');
@@ -53,19 +54,34 @@ export class AttachManager extends EventEmitter {
     /** Запросы, где держатель — мы. Приходят в ответах на heartbeat. */
     this.incomingRequests = new Map();
     this.hbTimer = null;
+    this.hbStopped = false;
+    this.random = Math.random;
   }
 
   async start() {
     await this.reconcile();
-    this.hbTimer = setInterval(() => {
-      this._heartbeatAll().catch((e) => log.warn('цикл heartbeat завершился ошибкой:', e.message));
-    }, this.config.get('heartbeatIntervalMs'));
-    this.hbTimer.unref?.();
+    this.hbStopped = false;
+    this._scheduleHeartbeat();
     return this;
   }
 
+  // Цепочкой, а не setInterval: следующий цикл ждёт с разбросом и не
+  // наслаивается на предыдущий, если владелец отвечает медленно. Аренда
+  // (30 с) втрое длиннее периода, поэтому разброс ±15% её не задевает.
+  _scheduleHeartbeat() {
+    clearTimeout(this.hbTimer);
+    if (this.hbStopped) return;
+    this.hbTimer = setTimeout(() => {
+      this._heartbeatAll()
+        .catch((e) => log.warn('цикл heartbeat завершился ошибкой:', e.message))
+        .finally(() => this._scheduleHeartbeat());
+    }, jittered(this.config.get('heartbeatIntervalMs'), this.config.get('timerJitter'), this.random));
+    this.hbTimer.unref?.();
+  }
+
   stop() {
-    clearInterval(this.hbTimer);
+    this.hbStopped = true;
+    clearTimeout(this.hbTimer);
   }
 
   /**
