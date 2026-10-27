@@ -47,7 +47,7 @@ test('стенд: неверные опции отвергаются до зап
 test('стенд: ramp на 3 узлах даёт замеры, отчёт и не оставляет процессов', { skip, timeout: 180000 }, async () => {
   const out = path.join(work, 'result');
   const r = await stand([
-    'ramp', '--steps', '3', '--batch', '3', '--settle-seconds', '3', '--min-free-mb', '256',
+    'ramp', '--steps', '3', '--batch', '3', '--settle-seconds', '3', '--min-free-mb', '256', '--tcp-trace', '3',
     '--base-port', String(basePort), '--discovery-port', String(discoveryPort), '--out', out,
   ]);
   assert.equal(r.code, 0, r.out);
@@ -74,6 +74,13 @@ test('стенд: ramp на 3 узлах даёт замеры, отчёт и н
   const report = fs.readFileSync(path.join(out, 'report.md'), 'utf8');
   assert.match(report, /Ступенчатый рост/);
   assert.match(report, /Приём UDP на общем порту обнаружения/);
+
+  const trace = rows(path.join(out, 'tcp-states.jsonl'));
+  const tcp = trace.filter((l) => l.ev === 'tcp');
+  assert.ok(tcp.length >= 1, 'состояния TCP записаны');
+  assert.ok(tcp.some((l) => l.states.Established > 0), 'живые соединения видны по английскому имени состояния');
+  assert.ok(trace.some((l) => l.ev === 'mark' && l.step === 3), 'ступень отмечена в трассе');
+  assert.match(report, /Состояния TCP машины/);
   assert.ok(fs.readdirSync(path.join(out, 'node-logs', 'ramp')).length === 3, 'журналы трёх узлов сохранены');
 
   assert.equal(countStrayNodes(MAIN), 0, 'после стенда не остаётся узлов LT-');

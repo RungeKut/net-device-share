@@ -2,6 +2,7 @@
 // процессор машины, проверка портов, остановка процессов. Только Windows.
 
 import { spawn, spawnSync } from 'node:child_process';
+import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 
@@ -244,6 +245,56 @@ function digest(snaps, cpu0, cpu1, samples, pidSet) {
     },
     net: summarizeNet(samples),
   };
+}
+
+// ------------------------------------------------------------------ состояния TCP
+
+let trace = null;
+
+/**
+ * Состояния TCP машины раз в несколько секунд, пока идёт стенд. CIM-счётчик
+ * ConnectionsEstablished не отличает живые соединения от TIME_WAIT и SYN_SENT, а
+ * по ним видно, лавина это запросов или нет. Get-NetTCPConnection отдаёт имена
+ * состояний в английской форме на любой Windows. Цикл сам выходит, когда
+ * исчезает процесс стенда, — если его убили жёстко.
+ */
+export function startTcpTrace(file, everySeconds = 15) {
+  stopTcpTrace();
+  const script = `
+$parent=${process.pid}
+while(Get-Process -Id $parent){
+  $g=[ordered]@{}
+  Get-NetTCPConnection | Group-Object State -NoElement | ForEach-Object { $g[[string]$_.Name]=$_.Count }
+  [ordered]@{t=[DateTime]::UtcNow.ToString('o');ev='tcp';states=$g} | ConvertTo-Json -Compress
+  Start-Sleep -Seconds ${everySeconds}
+}`;
+  let child;
+  try {
+    child = spawn('powershell.exe', psArgs(script), { windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] });
+  } catch { return; }
+  let buf = '';
+  child.stdout.setEncoding('utf8');
+  child.stdout.on('data', (d) => {
+    buf += d;
+    let i;
+    while ((i = buf.indexOf('\n')) >= 0) {
+      const line = buf.slice(0, i).trim();
+      buf = buf.slice(i + 1);
+      if (line) { try { fs.appendFileSync(file, `${line}\n`); } catch { /* трасса — вспомогательная */ } }
+    }
+  });
+  child.on('error', () => {});
+  trace = child;
+}
+
+export function stopTcpTrace() {
+  try { trace?.kill(); } catch { /* уже завершился */ }
+  trace = null;
+}
+
+/** Отметка в той же трассе (фаза, ступень), чтобы по времени было видно, что происходило. */
+export function traceMark(file, obj) {
+  try { fs.appendFileSync(file, `${JSON.stringify({ t: new Date().toISOString(), ev: 'mark', ...obj })}\n`); } catch { /* вспомогательная */ }
 }
 
 // ------------------------------------------------------------------ порты

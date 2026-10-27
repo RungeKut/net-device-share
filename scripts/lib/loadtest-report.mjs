@@ -205,6 +205,29 @@ function soakSection(rows) {
   return s;
 }
 
+/**
+ * Состояния TCP во времени (tcp-states.jsonl). Отметки фаз и ступеней стоят в той
+ * же трассе, поэтому у каждой строки видно, что в тот момент делал стенд.
+ */
+function tcpSection(rows) {
+  const samples = rows.filter((r) => r.ev === 'tcp' && r.states);
+  if (!samples.length) return '';
+  const COLS = ['Established', 'TimeWait', 'SynSent', 'SynReceived', 'CloseWait', 'FinWait1', 'FinWait2', 'LastAck', 'Closing'];
+  const mark = (t) => {
+    const m = rows.filter((r) => r.ev === 'mark' && r.t <= t).at(-1);
+    if (!m) return '';
+    return [m.phase, m.step ? `ступень ${m.step}` : '', m.cmd].filter(Boolean).join(' ');
+  };
+  const total = (st) => Object.entries(st).filter(([k]) => k !== 'Listen' && k !== 'Bound').reduce((a, [, v]) => a + Number(v), 0);
+  const line = (r) => [r.t.slice(11, 19), mark(r.t), ...COLS.map((c) => f(r.states[c] ?? 0, 0)), f(total(r.states), 0)];
+  const peak = samples.reduce((m, r) => (total(r.states) > total(m.states) ? r : m));
+  let out = '## Состояния TCP машины (tcp-states.jsonl)\n\n';
+  out += 'Снимок `Get-NetTCPConnection`, без слушающих сокетов. Много TimeWait и SynSent вместе с отказами `connect` в журналах узлов — признак лавины соединений; Established без роста TimeWait — зависшие запросы.\n\n';
+  out += table(['Время (UTC)', 'Что шло', ...COLS, 'Всего'], thin(samples, 40).map(line));
+  out += `\nПик: ${peak.t.slice(11, 19)} (${mark(peak.t) || 'без отметки'}), всего ${f(total(peak.states), 0)}, из них TimeWait ${f(peak.states.TimeWait ?? 0, 0)}.\n`;
+  return out;
+}
+
 function conclusions(ramp, storm, soak) {
   const out = [];
   const done = ramp.find((r) => r.ev === 'done');
@@ -232,6 +255,7 @@ export function buildReport(dir) {
   const ramp = readJsonl(dir, 'ramp.jsonl');
   const storm = readJsonl(dir, 'storm.jsonl');
   const soak = readJsonl(dir, 'soak.jsonl');
+  const tcp = readJsonl(dir, 'tcp-states.jsonl');
   return `# Отчёт нагрузочного стенда Net Device Share
 
 Сформирован ${new Date().toISOString()}. Узлы — настоящее приложение с имитацией устройств (\`--backend mock\`) на одной машине, имена LT-0001 …
@@ -242,5 +266,6 @@ ${conclusions(ramp, storm, soak)}
 ${machineSection(info)}
 ${rampSection(ramp)}
 ${stormSection(storm)}
-${soakSection(soak)}`;
+${soakSection(soak)}
+${tcpSection(tcp)}`;
 }

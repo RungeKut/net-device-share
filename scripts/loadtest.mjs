@@ -19,7 +19,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   PORT_LIMIT, sleep, round, pct, freeMb, mapLimit, measureWindow, portsFree,
-  killPids, killStrayNodes, countStrayNodes, collectInfo,
+  killPids, killStrayNodes, countStrayNodes, collectInfo, startTcpTrace, stopTcpTrace, traceMark,
 } from './lib/loadtest-sys.mjs';
 import { buildReport } from './lib/loadtest-report.mjs';
 
@@ -53,6 +53,7 @@ const HELP = `Нагрузочный стенд Net Device Share.
   --min-free-mb 2048      порог свободной памяти, ниже которого рост останавливается
   --jitter <доля>         timerJitter в конфиге узла
   --max-nodes 3000        потолок числа узлов
+  --tcp-trace 15          раз в сколько секунд писать состояния TCP машины в tcp-states.jsonl (0 — не писать)
 `;
 
 // ------------------------------------------------------------------ параметры
@@ -62,7 +63,7 @@ const SPECS = {
   'max-cpu': ['num', 92], nodes: ['int', null], victims: ['int', 3], minutes: ['num', null],
   out: ['str', path.join(ROOT, 'result')], 'base-port': ['int', 30000], 'discovery-port': ['int', 47931],
   types: ['str', 'all'], network: ['str', null], 'min-free-mb': ['int', 2048], jitter: ['num', null],
-  'max-nodes': ['int', 3000],
+  'max-nodes': ['int', 3000], 'tcp-trace': ['int', 15],
 };
 const COMMANDS = ['info', 'ramp', 'storm', 'soak', 'all'];
 
@@ -475,6 +476,7 @@ async function cmdRamp() {
     const added = ctx.nodes.filter((n) => n.stepMark === undefined);
     for (const n of added) n.stepMark = target;
     const readies = added.map((n) => n.readyMs).filter((x) => x != null);
+    traceMark(traceFile(), { phase: 'ramp', step: target, nodes: aliveNodes().length });
     const conv = await waitConvergence();
     if (conv.timedOut) say(`[ramp] ${aliveNodes().length} узлов: сходимости нет за ${CONVERGENCE_TIMEOUT_S} с`);
     await sleep(o.settleSeconds * 1000);
@@ -724,8 +726,11 @@ function newFleet(phase) {
   ctx.warn = new Map();
 }
 
+const traceFile = () => path.join(ctx.o.out, 'tcp-states.jsonl');
+
 async function runPhase(phase, fn) {
   newFleet(phase);
+  traceMark(traceFile(), { phase });
   const flusher = setInterval(flushLogs, 10000);
   try {
     return await fn();
@@ -770,7 +775,7 @@ async function main() {
     process.exit(130);
   };
   for (const s of ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGBREAK']) process.on(s, () => onSignal(s));
-  process.on('exit', () => { if (ctx.nodes.length || !tmpRemoved) releaseFleet(); });
+  process.on('exit', () => { stopTcpTrace(); if (ctx.nodes.length || !tmpRemoved) releaseFleet(); });
   process.on('uncaughtException', (e) => { process.stderr.write(`${e?.stack || e}\n`); releaseFleet(); process.exit(1); });
   process.on('unhandledRejection', (e) => { process.stderr.write(`${e?.stack || e}\n`); releaseFleet(); process.exit(1); });
 
@@ -780,6 +785,10 @@ async function main() {
     killStrayNodes(MAIN);
   }
   if (cmd !== 'info') removeStaleData();
+  if (cmd !== 'info' && o.tcpTrace > 0) {
+    traceMark(traceFile(), { cmd });
+    startTcpTrace(traceFile(), o.tcpTrace);
+  }
 
   await writeInfo();
   let ramp = null;
@@ -796,6 +805,7 @@ async function main() {
     const M = o.minutes ?? (cmd === 'all' ? 30 : 10);
     await runPhase('soak', () => cmdSoak(N, M)).catch((e) => { crashRow('soak.jsonl', e); say(`[soak] сбой стенда: ${e.message}`); });
   }
+  stopTcpTrace();
   if (cmd !== 'info') {
     fs.writeFileSync(path.join(o.out, 'report.md'), buildReport(o.out));
     say(`отчёт: ${path.join(o.out, 'report.md')}`);
