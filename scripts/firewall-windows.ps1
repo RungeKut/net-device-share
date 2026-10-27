@@ -15,7 +15,9 @@
 
     Правила создаются только для профилей Domain и Private. Профиль Public
     намеренно пропущен: раздавать USB в открытой сети — не то, что стоит
-    включать по умолчанию.
+    включать по умолчанию. Прямой кабель и адаптеры со статическим адресом
+    Windows часто относит к Public, и тогда узлы слышат друг друга только в
+    одну сторону — для такой сети есть ключ -IncludePublic.
 
 .PARAMETER Remove
     Удалить ранее созданные правила.
@@ -39,6 +41,10 @@
     Не трогать правило для порта 3240 — например, если оно уже создано
     другим средством и управляется отдельно.
 
+.PARAMETER IncludePublic
+    Открыть порты и для профиля Public — для прямого кабеля и карт со
+    статическим адресом, которые Windows считает «Неопознанной сетью».
+
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -File scripts\firewall-windows.ps1
 
@@ -54,7 +60,8 @@ param(
     [int] $TrafficPort = 47813,
     [int] $NetLinkPort = 47814,
     [int] $UsbipPort = 3240,
-    [switch] $SkipUsbip
+    [switch] $SkipUsbip,
+    [switch] $IncludePublic
 )
 
 $ErrorActionPreference = 'Stop'
@@ -112,6 +119,9 @@ foreach ($stale in @('USB Net Share - обнаружение (UDP)',
     }
 }
 
+$profiles = @('Domain', 'Private')
+if ($IncludePublic) { $profiles += 'Public' }
+
 foreach ($rule in $rules) {
     $existing = Get-NetFirewallRule -DisplayName $rule.Name -ErrorAction SilentlyContinue
 
@@ -135,7 +145,7 @@ foreach ($rule in $rules) {
         -Action Allow `
         -Protocol $rule.Protocol `
         -LocalPort $rule.Port `
-        -Profile Domain, Private `
+        -Profile $profiles `
         -Enabled True | Out-Null
 
     Write-Host "  открыт $($rule.Protocol)/$($rule.Port)  —  $($rule.Name)" -ForegroundColor Green
