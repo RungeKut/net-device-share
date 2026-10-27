@@ -14,6 +14,7 @@
 - `docs/50_status/STATE.md` — читать первым
 - `docs/INDEX.md` — какой файл когда
 - `docs/00_rules/` — правила процесса
+- `.zcode/skills/go-watch/SKILL.md` — страж и цикл файла go.md (вне git)
 
 ## Правила
 
