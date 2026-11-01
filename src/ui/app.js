@@ -12,6 +12,8 @@ import { initNet } from './net.js';
 
 const $ = (sel) => document.querySelector(sel);
 let state = null;
+/** Запуск с этого же компьютера: доступ и так всегда полный, сессия не нужна. */
+let sessionLocal = false;
 /** Вкладка «Сеть» (net.js); заводится перед подключением к потоку. */
 let net = null;
 let logBuffer = [];
@@ -218,7 +220,10 @@ function renderHeader() {
   const ro = !canEdit();
   $('#accessBadge').hidden = !ro;
   $('#btnLogin').hidden = !ro;
-  $('#btnLogout').hidden = ro || !state.config.hasWebPassword;
+  // «Выйти» гасит сессию пароля удалённого доступа — она есть только у
+  // чужого компьютера. С localhost доступ полный независимо от cookie,
+  // и кнопка там ничего не делает.
+  $('#btnLogout').hidden = ro || !state.config.hasWebPassword || sessionLocal;
   $('#btnSettings').hidden = ro;
 
   const bar = $('#readonlyBar');
@@ -1679,6 +1684,11 @@ function connect() {
 fetch('/api/v1/logs?limit=300')
   .then((r) => (r.ok ? r.json() : { records: [] }))
   .then((d) => { logBuffer = d.records || []; renderLog(); })
+  .catch(() => {});
+
+fetch('/api/v1/session')
+  .then((r) => r.json())
+  .then((s) => { sessionLocal = Boolean(s.local); if (state) render(); })
   .catch(() => {});
 
 net = initNet({ $, esc, post, action, toast, canEdit, getState: () => state, routeWarning });
