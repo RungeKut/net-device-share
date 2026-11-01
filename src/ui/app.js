@@ -459,18 +459,32 @@ function discoveryInfo(meta, note) {
   return ` <span class="info-i" tabindex="0" title="${esc(text)}" aria-label="${esc(text)}">ⓘ</span>`;
 }
 
-function transportPill(hasTransport, note, meta) {
+function transportPill(d) {
   // По сети пробрасываются USB и сетевые карты. Для COM, LPT и карт, которые
   // отдать нельзя, приложение ведёт только учёт занятости, и не сказать об
   // этом заметно — значит отправить человека искать в системе устройство,
   // которого не будет. У карты причина своя, и её надо показать: «бронь»
   // рядом с соседней картой, которая пробрасывается, иначе непонятна.
-  if (hasTransport) return '';
+  if (d.hasTransport) return '';
+  const meta = d.meta || {};
+  const note = meta.transportNote;
   const why = note
     ? `Проброса нет: ${note}. Приложение учитывает, кто занял устройство, но данные по сети не передаёт.`
     : 'Проброса нет: приложение учитывает, кто занял устройство, '
       + 'но данные по сети не передаёт. Подключаться к нему нужно физически.';
-  return `<span class="pill warn" title="${esc(why)}">только бронь</span>${discoveryInfo(meta, note)}`;
+  return `<span class="pill warn" title="${esc(why)}">только бронь</span>${usbAdapterHint(d, meta)}${discoveryInfo(meta, note)}`;
+}
+
+/** Совет для COM на USB-переходнике: полноценный проброс уже есть — через USB, а не через бронь. */
+function usbAdapterText() {
+  return 'Это USB-адаптер: опубликуйте его как USB-устройство — и оно пробросится целиком, '
+    + 'с его COM-портом у занявшего.';
+}
+
+function usbAdapterHint(d, meta) {
+  if (d.type !== 'com' || !meta?.viaUsb) return '';
+  const text = usbAdapterText();
+  return ` <span class="info-i" tabindex="0" title="${esc(text)}" aria-label="${esc(text)}">ⓘ</span>`;
 }
 
 /** Кнопки для записи каталога — и для устройства, и для группы. */
@@ -503,10 +517,13 @@ function entryActions(entry) {
     // жмёт её и идёт искать новое устройство в системе. Поэтому здесь
     // другое слово и прямое пояснение в подсказке.
     const reserve = entry.hasTransport === false;
+    // Тот же совет, что у значка «только бронь»: COM на переходнике пробрасывается через USB.
+    const reserveWhy = 'Только бронирование: приложение запишет, что устройство за вами, но в системе оно не появится — подключаться к нему нужно физически'
+      + (entry.type === 'com' && entry.meta?.viaUsb ? `. ${usbAdapterText()}` : '');
     acts.push(`<button class="btn small primary" data-attach="${esc(entry.ownerId)}|${esc(entry.target)}"
       data-reserve="${reserve ? '1' : ''}"
       title="${reserve
-        ? 'Только бронирование: приложение запишет, что устройство за вами, но в системе оно не появится — подключаться к нему нужно физически'
+        ? reserveWhy
         : entry.type === 'net'
           ? 'На этом компьютере появится сетевой адаптер, подключённый к сети за картой владельца. Первое занятие занимает до минуты: владелец собирает мост'
           : 'Устройство появится в «Диспетчере устройств» этого компьютера'}"
@@ -601,7 +618,7 @@ function deviceCard(d, { insideGroup = false } = {}) {
           ${insideGroup ? '' : statusPill(d)}
           ${joinPill(d)}
           ${d.busy ? trafficPill(d.traffic) : ''}
-          ${transportPill(d.hasTransport, d.meta?.transportNote, d.meta)}
+          ${transportPill(d)}
           ${d.ownerSelf ? '<span class="pill plain">моё</span>' : ''}
           ${d.ownerOnline ? '' : '<span class="pill err">владелец офлайн</span>'}
         </div>
@@ -781,7 +798,7 @@ function renderMine() {
             ${esc(d.description)}
             ${blocked ? '' : status}
             ${d.claim ? trafficPill(d.traffic) : ''}
-            ${transportPill(d.hasTransport, d.meta?.transportNote, d.meta)}
+            ${transportPill(d)}
             ${d.groupId ? `<span class="pill group-pill">${inGroup ? 'отдано группой' : 'в группе (не опубл.)'} «${esc(d.groupName || '')}»</span>` : ''}
           </div>
           <div class="card-meta">
