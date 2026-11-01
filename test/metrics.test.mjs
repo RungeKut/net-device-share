@@ -239,6 +239,10 @@ test('подключения этого узла, группы, запросы �
 const work = fs.mkdtempSync(path.join(os.tmpdir(), 'nds-metrics-'));
 after(() => fs.rmSync(work, { recursive: true, force: true }));
 let port = 48700 + Math.floor(Math.random() * 100) * 10;
+// Свой на каждый прогон: узлы одного файла обязаны делить порт обнаружения,
+// но фиксированный 47921 сталкивал параллельные прогоны — заблудший узел
+// убитого прогона отвечал вместо свежеподнятого, и метрики «выключались».
+const discoveryPort = 41000 + Math.floor(Math.random() * 900);
 
 function startNode(name, { extraArgs = [], config = {} } = {}) {
   const p = port; port += 10;
@@ -246,7 +250,7 @@ function startNode(name, { extraArgs = [], config = {} } = {}) {
   fs.mkdirSync(home, { recursive: true });
   fs.writeFileSync(path.join(home, 'config.json'), JSON.stringify({
     name, apiPort: p, trafficPort: p + 1, netLinkPort: p + 2, usbipPort: p + 3,
-    discoveryPort: 47921, announceIntervalMs: 1000, announceIdleIntervalMs: 2000, autoInstall: false, ...config,
+    discoveryPort, announceIntervalMs: 1000, announceIdleIntervalMs: 2000, autoInstall: false, ...config,
   }));
   const child = spawn(process.execPath, [path.join(ROOT, 'src', 'main.js'), '--backend', 'mock', '--no-open', ...extraArgs], {
     env: { ...process.env, NDS_HOME: home }, stdio: ['ignore', 'pipe', 'pipe'],

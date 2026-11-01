@@ -351,6 +351,38 @@ export class PeerRegistry extends EventEmitter {
         return;
       }
     }
+
+    // Узел ушёл из нашей подсети, но шлюзы из наших ДРУГИХ сетей о нём ещё
+    // рассказывают. Запись не удаляется, а переходит на пересказ: иначе узел,
+    // закреплённый за второй сетью (или ушедший в неё с автовыбором),
+    // пропадал бы из списка соседей до следующего обмена каталогом — до
+    // получаса. Живёт запись как пересказанная: опрос напрямую, таймаут по
+    // обмену, забвение, когда рассказчики замолчат.
+    const ttl = (peer.timeoutMs || this.opts.peerTimeoutMs) * ROUTE_TTL_FACTOR;
+    const now = Date.now();
+    const told = [...peer.routes.values()]
+      .filter((r) => r.kind !== 'direct' && now - r.lastSeen <= ttl)
+      .sort((a, b) => b.lastSeen - a.lastSeen)[0] || null;
+    if (told) {
+      peer.origin = 'relay';
+      peer.via = told.via?.nodeId || null;
+      peer.viaName = told.via?.name || null;
+      peer.address = told.address;
+      peer.apiPort = told.apiPort || peer.apiPort;
+      peer.usbipPort = told.usbipPort || peer.usbipPort;
+      peer.trafficPort = told.trafficPort ?? peer.trafficPort;
+      peer.netLinkPort = told.netLinkPort ?? peer.netLinkPort;
+      peer.network = told.network || peer.network;
+      peer.routeKey = told.key;
+      peer.seenAt = {};
+      peer.realmSeen = {};
+      // Таймаут теперь по обмену, а не по анонсам, которых больше не будет.
+      peer.timeoutMs = this._timeoutFor(peer);
+      log.info(`узел "${peer.name}" покинул нашу подсеть — остался в списке по пересказу шлюза «${peer.viaName || '—'}»`);
+      this.emit('changed');
+      return;
+    }
+
     log.info(`узел "${peer.name}" покинул сеть`);
     this.peers.delete(msg.nodeId);
     this.emit('peer-down', peer);

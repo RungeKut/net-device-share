@@ -315,9 +315,11 @@ export class App extends EventEmitter {
     return this.networks.filter((n) => this.peers.liveNetworks([n.cidr]).length);
   }
 
-  /** Число «живых» сетей изменилось — соседям нужно сказать об этом сразу, а не к следующему анонсу. */
+  /** Состав «живых» сетей изменился — соседям нужно сказать об этом сразу, а не к следующему анонсу. */
   _syncGateway() {
-    const live = this.liveNetworks().length;
+    // Подпись, а не число: сети меняются местами (в одной соседи пропали,
+    // в другой появились), и по равному количеству этого не видно.
+    const live = this.liveNetworks().map((n) => n.cidr).sort().join(';');
     if (live === this._liveSeen) return;
     this._liveSeen = live;
     this.discovery?.refresh();
@@ -1172,14 +1174,19 @@ export class App extends EventEmitter {
       // заготовка у владельца: её устройства показываются поодиночке.
       groups: localGroups.filter((g) => g.shared),
     }];
-    for (const peer of this.peers.list()) {
+    const list = this.peers.list();
+    const views = list.map((p) => {
+      const view = this._peerView(p);
+      view.gateway = (p.nets || 1) > 1;
+      return view;
+    });
+    for (const [i, peer] of list.entries()) {
       owners.push({
-        ...peer,
-        // Адреса узла в разных сетях: см. cluster/peers.js, «Маршруты».
-        routes: this.peers.routesOf(peer),
+        ...views[i],
         self: false,
         devices: peer.devices || [],
         groups: (peer.groups || []).filter((g) => g.shared !== false),
+        requests: peer.requests || [],
       });
     }
 
@@ -1265,36 +1272,49 @@ export class App extends EventEmitter {
       localGroups,
       catalog,
       requests: { incoming, outgoing },
-      peers: this.peers.list().map((p) => ({
-        nodeId: p.nodeId,
-        name: p.name,
-        address: p.address,
-        apiPort: p.apiPort,
-        platform: p.platform,
-        version: p.version,
-        online: p.online,
-        lastSeen: p.lastSeen,
-        startedAt: p.startedAt,
-        deviceCount: (p.devices || []).length,
-        busyCount: (p.devices || []).filter((d) => d.claim).length,
-        stateError: p.stateError || null,
-        // Откуда узел известен: из своей подсети или пересказан мостом.
-        // Для разбора «почему устройство видно, а занять не выходит» это
-        // первое, на что нужно смотреть.
-        origin: p.origin,
-        network: p.network || null,
-        viaName: p.viaName || null,
-        routes: this.peers.routesOf(p),
-        gateway: (p.nets || 1) > 1,
-        // Из какой сети узел. Когда сетей несколько, без подписи в списке
-        // не разобрать, почему одно устройство занимается, а другое нет.
-        realm: p.realm || null,
-        realmLabel: this.realms.labelFor(p.realm),
-      })),
+      peers: views,
       federation: this._federation(access),
       attachments,
       update: this.updater?.snapshot() ?? null,
       ts: Date.now(),
+    };
+  }
+
+  /**
+   * Узел для снимка: только то, что показывает интерфейс. Внутренности записи
+   * реестра (seenAt, realmSeen, таймауты, отпечаток каталога) не едут: снимок
+   * рассылается при каждом изменении, и на сотне узлов каждый лишний байт
+   * записи умножается на число соседей и клиентов.
+   *
+   * @param {object} p — запись из PeerRegistry
+   */
+  _peerView(p) {
+    return {
+      nodeId: p.nodeId,
+      name: p.name,
+      address: p.address,
+      apiPort: p.apiPort,
+      platform: p.platform,
+      version: p.version,
+      startedAt: p.startedAt,
+      online: p.online,
+      lastSeen: p.lastSeen,
+      deviceCount: (p.devices || []).length,
+      busyCount: (p.devices || []).filter((d) => d.claim).length,
+      stateError: p.stateError || null,
+      // Откуда узел известен: из своей подсети или пересказан мостом.
+      // Для разбора «почему устройство видно, а занять не выходит» это
+      // первое, на что нужно смотреть.
+      origin: p.origin,
+      network: p.network || null,
+      viaName: p.viaName || null,
+      // Адреса узла в разных сетях: см. cluster/peers.js, «Маршруты».
+      routes: this.peers.routesOf(p),
+      nets: p.nets || 1,
+      // Из какой сети узел. Когда сетей несколько, без подписи в списке
+      // не разобрать, почему одно устройство занимается, а другое нет.
+      realm: p.realm || null,
+      realmLabel: this.realms.labelFor(p.realm),
     };
   }
 
