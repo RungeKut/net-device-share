@@ -77,16 +77,23 @@ test('тик без изменений по-прежнему замедляет 
   clearTimeout(d.timer);
 });
 
-test('needsRepair: ножка не открылась, multicast не вступил, ножка сломана, сокет умер', () => {
+test('needsRepair: ножка не открылась, оба канала мертвы, ножка сломана, сокет умер', () => {
   const d = make();
   assert.equal(d.needsRepair(), true, 'ножки нет');
   d.legs.set(NET.address, healthyLeg());
   assert.equal(d.needsRepair(), false);
 
+  // multicast не вступил в группу, но broadcast жив: нога работает, чинить
+  // нечего — иначе она переоткрывалась бы вечно (Wi-Fi и часть драйверов).
   d.legs.get(NET.address).multicastOk = false;
-  assert.equal(d.needsRepair(), true, 'addMembership упал');
+  assert.equal(d.needsRepair(), false, 'работает хоть один канал — нога здорова');
+  d.legs.get(NET.address).broadcastAddr = null;
+  assert.equal(d.needsRepair(), true, 'мертвы оба канала');
+  d.legs.get(NET.address).broadcastAddr = healthyLeg().broadcastAddr;
   d.transport = 'broadcast';
-  assert.equal(d.needsRepair(), false, 'multicast выключен настройкой — это не поломка');
+  assert.equal(d.needsRepair(), false, 'выбран только broadcast, и он работает');
+  d.transport = 'multicast';
+  assert.equal(d.needsRepair(), true, 'выбран только multicast, а он не встал');
   d.transport = 'both';
 
   d.legs.set(NET.address, { ...healthyLeg(), broken: true });
@@ -211,4 +218,38 @@ test('синхронный отказ send (сокет закрыт) помеч�
   assert.equal(d.needsRepair(), true);
   assert.ok(d.stats().sendErrors >= 1);
   clearTimeout(d.timer);
+});
+
+test('нога с рабочим broadcast здоровена и при отказе multicast — вечный ремонт не нужен', () => {
+  const d = make();
+  const leg = healthyLeg();
+  leg.multicastOk = false;               // Wi-Fi или драйвер без multicast-группы
+  d.legs.set(NET.address, leg);
+  assert.equal(d.needsRepair(), false, 'broadcast работает — чинить нечего');
+
+  d.transport = 'multicast';
+  assert.equal(d.needsRepair(), true, 'выбран только multicast — нога без него сломана');
+  d.transport = 'broadcast';
+  assert.equal(d.needsRepair(), false, 'выбран только broadcast — нога здорова');
+  d.transport = 'both';
+});
+
+test('пакет из нашей сети помечает ногу «слышно», чужой круг — тоже', () => {
+  const d = make();
+  d.legs.set(NET.address, healthyLeg());
+  d._onMessage(pkt({ type: MSG.ANNOUNCE, nodeId: 'a', realm: 'zzz' }), { address: '10.99.99.7' });
+  assert.equal(d.legs.get(NET.address).lastHeardAt > 0, true, 'даже отброшенный пакет — признак живой сети');
+  assert.equal(d.stats().interfaces[0].lastHeardAt > 0, true);
+});
+
+test('чужой узел с адреса этой машины: предупреждение один раз, в списке соседей его нет', () => {
+  const d = make();
+  const announces = [];
+  d.on('announce', (m) => announces.push(m));
+  d._onMessage(pkt({ type: MSG.ANNOUNCE, nodeId: 'ghost', name: 'Двойник' }), { address: '10.99.99.5' });
+  d._onMessage(pkt({ type: MSG.ANNOUNCE, nodeId: 'ghost', name: 'Двойник' }), { address: '10.99.99.5' });
+  assert.equal(announces.length, 2, 'не отбрасываем: стенд со многими узлами на одной машине так живёт');
+  const st = d.stats();
+  assert.deepEqual(st.selfMachine, ['10.99.99.5']);
+  assert.match(String(st.selfMachine), /10\.99\.99\.5/);
 });

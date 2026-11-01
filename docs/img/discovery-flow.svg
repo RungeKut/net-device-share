@@ -1,0 +1,138 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 980 1210" width="980" height="1210" font-family="Segoe UI, Helvetica, Arial, sans-serif" role="img" aria-labelledby="t d">
+<title id="t">Как узлы находят друг друга</title>
+<desc id="d">Алгоритм обнаружения: выбор сетей, ноги на каждом адаптере, анонсы с адаптивным темпом, фильтры входящего пакета, реестр узлов с маршрутами, живые сети и звание шлюза, пересказ каталога и обмен с другими сегментами, слежение за интерфейсами и ремонт.</desc>
+<defs>
+<style>
+.n{font-size:14px;fill:#1f2937}
+.nb{font-size:14px;font-weight:600;fill:#1f2937}
+.s{font-size:12px;fill:#6b7280}
+.sd{font-size:12px;fill:#1f2937}
+.h{font-size:15px;font-weight:600;fill:#1f2937}
+.ti{font-size:20px;font-weight:600;fill:#1f2937}
+.m{text-anchor:middle}
+.box{fill:#ffffff;stroke:#2563eb;stroke-width:1.5}
+.step{fill:#ffffff;stroke:#2563eb;stroke-width:1.5}
+.dec{fill:#fffbeb;stroke:#d97706;stroke-width:1.5}
+.ok{fill:#f0fdf4;stroke:#16a34a;stroke-width:1.5}
+.note{fill:#f1f5f9;stroke:#cbd5e1;stroke-width:1}
+.flow{fill:none;stroke:#2563eb;stroke-width:1.5;marker-end:url(#ab)}
+.flowp{fill:none;stroke:#2563eb;stroke-width:1.5}
+.flowr{fill:none;stroke:#d97706;stroke-width:1.5;marker-end:url(#ao)}
+.flowg{fill:none;stroke:#16a34a;stroke-width:1.5;marker-end:url(#ag)}
+</style>
+<marker id="ab" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#2563eb"/></marker>
+<marker id="ao" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#d97706"/></marker>
+<marker id="ag" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#16a34a"/></marker>
+</defs>
+<rect x="0.5" y="0.5" width="979" height="1209" rx="14" fill="#f8fafc" stroke="#d0d7de"/>
+<text x="24" y="38" class="ti">Как узлы находят друг друга</text>
+<text x="24" y="60" class="s">Обнаружение (src/net/discovery.js, src/cluster/peers.js, src/cluster/directory.js) — от выбора сетей до звания шлюза.</text>
+
+<!-- 1. Выбор сетей -->
+<rect x="24" y="84" width="450" height="86" rx="8" class="step"/>
+<text x="40" y="108" class="nb">1 · Выбор сетей (interfaces.resolveNetworks)</text>
+<text x="40" y="128" class="sd">«автоматически» → все настоящие карты с адресом</text>
+<text x="40" y="146" class="sd">(кроме виртуальных и 169.254; исключённые — мимо)</text>
+<text x="40" y="162" class="sd">явный CIDR → ровно одна сеть</text>
+
+<!-- 2. Ноги -->
+<rect x="514" y="84" width="442" height="86" rx="8" class="step"/>
+<text x="530" y="108" class="nb">2 · Ноги Discovery — по одной на сеть</text>
+<text x="530" y="128" class="sd">приём: один сокет 0.0.0.0, членство в multicast-</text>
+<text x="530" y="146" class="sd">группе на каждом интерфейсе; отправка: свой сокет</text>
+<text x="530" y="162" class="sd">у карты → multicast 239.255.77.66 + broadcast подсети</text>
+
+<line x1="249" y1="170" x2="249" y2="190" class="flowp"/>
+<line x1="735" y1="170" x2="735" y2="190" class="flowp"/>
+<line x1="249" y1="190" x2="735" y2="190" class="flowp"/>
+<line x1="490" y1="190" x2="490" y2="198" class="flow"/>
+
+<!-- 3. Анонсы -->
+<rect x="24" y="200" width="932" height="100" rx="8" class="step"/>
+<text x="40" y="224" class="nb">3 · Анонсы (UDP 47811)</text>
+<text x="40" y="244" class="sd">Темп адаптивный: изменение состояния → 3 с; в покое интервал удваивается до 30 с. Следующий интервал едет в пакете (поле next) —</text>
+<text x="40" y="260" class="sd">по нему соседи считают таймаут (3 пропуска + запас). QUERY от новичка отвечает немедленно, темп не трогая.</text>
+<text x="40" y="280" class="sd">В пакете: nodeId, имя, порты, stateHash, отпечаток каталога (dir) и nets — число живых сетей (по нему видно шлюз).</text>
+<text x="40" y="296" class="sd">Пакет подписывается ключом каждого своего круга доверия: один анонс на круг.</text>
+
+<line x1="490" y1="300" x2="490" y2="326" class="flow"/>
+
+<!-- 4. Приём -->
+<rect x="24" y="330" width="932" height="118" rx="8" class="dec"/>
+<text x="40" y="354" class="nb">4 · Входящий пакет — фильтры по порядку</text>
+<text x="40" y="374" class="sd">① источник в наших подсетях? нет → «вне сети», счётчик outOfNet · иначе нога помечена «слышно» (lastHeardAt)</text>
+<text x="40" y="392" class="sd">② круг доверия по метке из пакета, подпись его ключом → чужой круг или плохая подпись — прочь</text>
+<text x="40" y="410" class="sd">③ nodeId наш? свой адрес → эхо · чужой адрес → клон (предупреждение) · источник — адрес этой машины, а nodeId чужой</text>
+<text x="40" y="428" class="sd">→ второй экземпляр приложения (в интерфейсе: «Задвоение узла»)</text>
+<text x="40" y="446" class="sd">④ дальше: ANNOUNCE / BYE / QUERY</text>
+
+<line x1="490" y1="448" x2="490" y2="474" class="flow"/>
+
+<!-- 5. Реестр -->
+<rect x="24" y="478" width="932" height="118" rx="8" class="step"/>
+<text x="40" y="502" class="nb">5 · Реестр узлов (PeerRegistry) — одна запись на nodeId</text>
+<text x="40" y="522" class="sd">Адрес соседа — из источника пакета; «в какой сети услышан» (heardOn) — по нашим подсетям. Узел, слышный с двух адресов,</text>
+<text x="40" y="538" class="sd">одна запись с двумя маршрутами; основной адрес держится, пока жив. Круг записи не скачет: приоритет у ключевого круга.</text>
+<text x="40" y="558" class="sd">stateHash из анонса разошёлся → полный список устройств по HTTP (GET /api/v1/peer/state) напрямую у владельца.</text>
+<text x="40" y="578" class="sd">Тишина дольше таймаута → «не отвечает»; дольше Forget → запись удалена. BYE убирает сразу.</text>
+
+<line x1="490" y1="596" x2="490" y2="610" class="flowp"/>
+<line x1="249" y1="610" x2="735" y2="610" class="flowp"/>
+<line x1="249" y1="610" x2="249" y2="624" class="flow"/>
+<line x1="735" y1="610" x2="735" y2="624" class="flow"/>
+
+<!-- 6. Живые сети / шлюз -->
+<rect x="24" y="626" width="450" height="128" rx="8" class="dec"/>
+<text x="40" y="650" class="nb">6 · Живые сети → звание шлюза</text>
+<text x="40" y="670" class="sd">Сеть «живая», если в ней слышен хоть один сосед.</text>
+<text x="40" y="688" class="sd">Живых сетей ≥ 2 → узел шлюз 🌉: nets=2 в анонсе</text>
+<text x="40" y="704" class="sd">и метка в списках.</text>
+<text x="40" y="724" class="sd">Пересчёт раз в 5 с и на каждом событии соседей;</text>
+<text x="40" y="740" class="sd">изменилось — немедленный анонс (discovery.refresh).</text>
+
+<!-- 7. Пересказ -->
+<rect x="514" y="626" width="442" height="128" rx="8" class="ok"/>
+<text x="530" y="650" class="nb">7 · Пересказ каталога (у шлюза)</text>
+<text x="530" y="670" class="sd">Анонс с непустым dir (отпечаток) приглашает соседей</text>
+<text x="530" y="688" class="sd">забрать каталог по HTTP. Отдаём: себя с адресом сети</text>
+<text x="530" y="706" class="sd">собеседника + слышных в ДРУГИХ сетях. Пересказ</text>
+<text x="530" y="724" class="sd">пересказа исключён: relay дальше не идёт, лавины нет.</text>
+<text x="530" y="744" class="sd">Данные всё равно идут к владельцу напрямую.</text>
+
+<!-- 8. Seeds -->
+<line x1="249" y1="754" x2="249" y2="780" class="flow"/>
+<line x1="735" y1="754" x2="735" y2="780" class="flow"/>
+<rect x="24" y="782" width="450" height="96" rx="8" class="step"/>
+<text x="40" y="806" class="nb">8 · Другие сегменты — «Узлы в других сетях»</text>
+<text x="40" y="826" class="sd">Раз в 20 с обмен каталогом с настроенным адресом</text>
+<text x="40" y="844" class="sd">(HTTP, подпись круга). Такие узлы — origin seed;</text>
+<text x="40" y="860" class="sd">их состояние опрашивается напрямую, раз в 15 с.</text>
+
+<!-- 9. Слежение -->
+<rect x="514" y="782" width="442" height="96" rx="8" class="step"/>
+<text x="530" y="806" class="nb">9 · Слежение (каждые 5 с)</text>
+<text x="530" y="826" class="sd">Список интерфейсов изменился → перенастроить ноги,</text>
+<text x="530" y="844" class="sd">объявиться и опросить соседей. Нога глухая (сокет,</text>
+<text x="530" y="860" class="sd">каналы) → ремонт с растущей паузой 10 с…5 мин.</text>
+
+<line x1="249" y1="878" x2="249" y2="910" class="flowp"/>
+<line x1="735" y1="878" x2="735" y2="910" class="flowp"/>
+<line x1="249" y1="910" x2="735" y2="910" class="flowp"/>
+<line x1="490" y1="910" x2="490" y2="932" class="flow"/>
+
+<!-- Итог -->
+<rect x="24" y="934" width="932" height="86" rx="8" class="ok"/>
+<text x="40" y="958" class="nb">Итог: соседи видят друг друга в каждой настоящей сети; шлюз сводит сегменты без настройки</text>
+<text x="40" y="978" class="sd">Куда смотреть, если «узлов не видно»: Настройки → состояние обнаружения — слышимость по каждой сети (тихо?), каналы,</text>
+<text x="40" y="994" class="sd">счётчики отброшенного, клоны nodeId и вторые экземпляры на этой машине; вкладка «Сеть» → сетевые экраны и профиль сети.</text>
+
+<!-- Примечания -->
+<rect x="24" y="1044" width="932" height="140" rx="8" class="note"/>
+<text x="40" y="1068" class="nb">Почему именно так</text>
+<text x="40" y="1088" class="sd">· Broadcast и multicast не выходят за подсеть — чужие сегменты приходят только через каталог (шлюз или seed-адрес).</text>
+<text x="40" y="1106" class="sd">· Адрес берётся из источника пакета: «в какой сети услышан» определяется само, без настройки.</text>
+<text x="40" y="1124" class="sd">· Оба канала нужны: где-то режут multicast (Wi-Fi-точки), broadcast не маршрутизируется вовсе. Нога здорова, если работает</text>
+<text x="40" y="1140" class="sd">  хоть один канал: вечный ремонт рабочей ноги глушил сеть каждые 10 с и выглядел как «обнаружение не работает».</text>
+<text x="40" y="1158" class="sd">· Круги доверия разделяют сети: метка круга едет в пакете, ключевые круги проверяются первыми, открытый принимает только неподписанное.</text>
+<text x="40" y="1176" class="sd">· Один node = одна запись: второй адрес — маршрут, а не дубль. Дубли дают клоны nodeId и вторые экземпляры на одной машине.</text>
+</svg>

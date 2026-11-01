@@ -81,6 +81,7 @@ export class Discovery extends EventEmitter {
     this.lastSendError = null;
     this.warnedAt = new Map();
     this.cloneSeen = new Set();
+    this.selfMachineSeen = new Set();
     this.socketDead = false;
     this.repairs = 0;
     this.repairGap = REPAIR_GAP_MS;
@@ -152,6 +153,12 @@ export class Discovery extends EventEmitter {
       log.trace('пакет вне рабочей сети от', from);
       return;
     }
+    // Отметка «эта сеть живая»: любой пакет из нашей подсети — даже чужой
+    // круг или с плохой подписью — доказывает, что через адаптер что-то
+    // приходит. Без неё «соседей не видно» не отличить от «сеть глухая».
+    for (const leg of this.legs.values()) {
+      if (ipInCidr(from, leg.net.cidr)) { leg.lastHeardAt = Date.now(); break; }
+    }
 
     // Ключ выбирается по метке круга доверия из самого пакета. Круг, в
     // котором мы не состоим, отсекается здесь же — и это единственное, что
@@ -177,6 +184,18 @@ export class Discovery extends EventEmitter {
       this._onOwnId(from);
       return;
     }
+    // Чужой узел с АДРЕСА этой машины — второй экземпляр приложения (свой
+    // профиль, свой nodeId). В списке он выглядит задвоением этого узла,
+    // поэтому о нём надо сказать один раз внятно, а не молча заводить запись.
+    // НЕ отбрасываем: стенд поднимает много узлов на одной машине, и они
+    // обязаны друг друга видеть.
+    if (this._isOwnAddress(from)) {
+      if (!this.selfMachineSeen.has(from) && this.selfMachineSeen.size < 64) {
+        this.selfMachineSeen.add(from);
+        this._warnLimited(`self:${from}`, `с адреса ${from} этой машины анонсируется ЧУЖОЙ узел «${message.name || message.nodeId.slice(0, 8)}» — `
+          + 'здесь работает ещё один экземпляр приложения со своим nodeId: в списке узлов он выглядит задвоением этого узла');
+      }
+    }
 
     switch (message.type) {
       case MSG.ANNOUNCE:
@@ -196,14 +215,18 @@ export class Discovery extends EventEmitter {
     }
   }
 
+  /** Адрес одного из наших интерфейсов: свой пакет или второй экземпляр на этой машине. */
+  _isOwnAddress(from) {
+    return this._nets().some((n) => n.address === from) || listNetworks().some((n) => n.address === from);
+  }
+
   /**
    * Пакет с нашим nodeId: свой же broadcast (идёт с нашего адреса) или чужой
    * узел с тем же идентификатором. Второе — клон профиля или виртуальной
    * машины: для соседей это один и тот же узел, и один из двух невидим.
    */
   _onOwnId(from) {
-    const mine = this._nets().some((n) => n.address === from) || listNetworks().some((n) => n.address === from);
-    if (mine) {
+    if (this._isOwnAddress(from)) {
       this.dropped.echo++;
       return;
     }
@@ -259,7 +282,7 @@ export class Discovery extends EventEmitter {
 
   async _openLeg(net) {
     const { port } = this.opts;
-    const leg = { net, sock: null, multicastOk: false, broadcastAddr: null, broken: false };
+    const leg = { net, sock: null, multicastOk: false, broadcastAddr: null, broken: false, lastHeardAt: 0 };
     try {
       leg.sock = dgram.createSocket({ type: 'udp4', reuseAddr: true });
       leg.sock.on('error', (e) => {
@@ -481,11 +504,11 @@ export class Discovery extends EventEmitter {
   }
 
   /**
-   * Нужна ли починка: ножка не открылась или сломалась, multicast не вступил
-   * в группу, принимающий сокет умер. Сменить подпись «интерфейс|адрес» это
-   * не заставляет — после сна или выдернутого кабеля Windows сбрасывает
-   * членство в группе при том же адресе, и без явной проверки узел оставался
-   * бы глухим до перезапуска.
+   * Нужна ли починка: ножка не открылась или сломалась, при одном канале не
+   * работает именно он, принимающий сокет умер. Сменить подпись
+   * «интерфейс|адрес» это не заставляет — после сна или выдернутого кабеля
+   * Windows сбрасывает членство в группе при том же адресе, и без явной
+   * проверки узел оставался бы глухим до перезапуска.
    */
   needsRepair() {
     if (this.stopped || !this.socket) return false;
@@ -496,11 +519,20 @@ export class Discovery extends EventEmitter {
     return false;
   }
 
+  /**
+   * Нога здорова, если работает ХОТЬ ОДИН её канал. Раньше «both» требовал
+   * оба, и на сети, где multicast не вступает в группу вовсе (Wi-Fi, часть
+   * драйверов), нога с рабочим broadcast оставалась вечно «сломанной»: узел
+   * переоткрывал её каждые 10 с — 5 мин, писал «обнаружение неисправно» и
+   * на каждое переоткрытие на мгновение глушил эту сеть. Выглядело это как
+   * «обнаружение через адаптер не работает», хотя broadcast исправно носил
+   * анонсы.
+   */
   _legHealthy(leg) {
     if (!leg || leg.broken) return false;
-    if (this.transport !== 'broadcast' && !leg.multicastOk) return false;
-    if (this.transport !== 'multicast' && !leg.broadcastAddr) return false;
-    return true;
+    if (this.transport === 'multicast') return leg.multicastOk;
+    if (this.transport === 'broadcast') return Boolean(leg.broadcastAddr);
+    return leg.multicastOk || Boolean(leg.broadcastAddr);
   }
 
   /**
@@ -595,7 +627,13 @@ export class Discovery extends EventEmitter {
       backoff: this.opts.announceBackoff !== false,
       multicast: [...this.legs.values()].some((l) => l.multicastOk),
       broadcast: [...this.legs.values()].some((l) => l.broadcastAddr),
-      interfaces: [...this.legs.values()].map((l) => ({ iface: l.net.iface, address: l.net.address, network: l.net.cidr })),
+      // lastHeardAt — когда в эту сеть последний раз приходил ЧУЖОЙ пакет.
+      // Ноль означает «не слышно вовсе»: по нему «узлы не видны» отличают
+      // от «анонсы не доходят до этой сети» (экран, кабель, не тот канал).
+      interfaces: [...this.legs.values()].map((l) => ({
+        iface: l.net.iface, address: l.net.address, network: l.net.cidr,
+        multicastOk: l.multicastOk, broadcastAddr: l.broadcastAddr, lastHeardAt: l.lastHeardAt || 0,
+      })),
       sent: this.sent,
       // Почему пакеты не дошли до соседей: без этих счётчиков «узел не виден»
       // нельзя отличить от «пакеты приходят, но отбрасываются».
@@ -603,6 +641,8 @@ export class Discovery extends EventEmitter {
       sendErrors: this.sendErrors,
       lastSendError: this.lastSendError,
       clones: [...this.cloneSeen],
+      // Чужие узлы с адресов этой машины: второй экземпляр приложения.
+      selfMachine: [...this.selfMachineSeen],
       repairs: this.repairs,
       needsRepair: this.needsRepair(),
       // Пакетов на один анонс: кругов доверия × каналов. Полезно видеть,

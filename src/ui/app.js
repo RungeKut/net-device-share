@@ -1365,6 +1365,12 @@ $('#btnSettings').addEventListener('click', () => {
   sel.innerHTML = '<option value="auto">автоматически</option>'
     + state.networks.map((n) => `<option value="${esc(n.cidr)}">${esc(n.cidr)} — ${esc(n.iface)} (${esc(n.address)})</option>`).join('');
   sel.value = c.network;
+  // Почему автовыбор не берёт все карты: исключённые видны только здесь,
+  // галочки о них живут у карт в «Моих устройствах» и при ручной сети скрыты.
+  const excl = state.discoveryExclude || [];
+  $('#setNetworkNote').textContent = c.network === 'auto'
+    ? `Идёт поиск во всех настоящих сетях.${excl.length ? ` Исключённые карты: ${excl.join(', ')}.` : ''}`
+    : 'Поиск узлов только в этой сети; карты остальных можно пробрасывать.';
 
   $('#setTypes').innerHTML = (state.deviceTypes || []).map((t) => `
     <label class="member">
@@ -1599,9 +1605,18 @@ function renderFederation() {
 
   const per = a.intervalMs ? Math.round(a.intervalMs / 1000) : null;
   const channels = [a.multicast ? 'multicast' : null, a.broadcast ? 'broadcast' : null].filter(Boolean);
+  const legs = (a.interfaces || []).map((l) => {
+    const heard = l.lastHeardAt ? `${esc(duration(Date.now() - l.lastHeardAt))} назад` : '<b class="err">тихо</b>';
+    return `${esc(l.iface)} (${esc(l.address)}) — ${heard}`;
+  });
+  const twins = []
+    .concat((a.clones || []).length ? [`узел с нашим nodeId: ${a.clones.join(', ')}`] : [])
+    .concat((a.selfMachine || []).length ? [`чужой узел с адреса этого компьютера: ${a.selfMachine.join(', ')}`] : []);
   $('#announceState').innerHTML = per
     ? `<div class="fed-row muted">Сейчас: раз в ${per} с, отправлено ${a.sent || 0};
        каналы: ${channels.length ? esc(channels.join(' + ')) : '<b class="err">ни одного</b>'}.</div>`
+    + (legs.length ? `<div class="fed-row muted">Слышимость по сетям: ${legs.join('; ')}.</div>` : '')
+    + (twins.length ? `<div class="fed-row err">Задвоение узла: ${esc(twins.join('; '))}.</div>` : '')
     : '';
 }
 
