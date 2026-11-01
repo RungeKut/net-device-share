@@ -198,8 +198,9 @@ export class Discovery extends EventEmitter {
     if (!this.selfMachineSeen.has(from) && this._nets().some((n) => n.address === from)
       && this.selfMachineSeen.size < 64) {
       this.selfMachineSeen.add(from);
-      this._warnLimited(`self:${from}`, `с адреса ${from} этой машины анонсируется ЧУЖОЙ узел «${who}» — `
-        + 'здесь работает ещё один экземпляр приложения со своим nodeId: в списке узлов он выглядит задвоением этого узла');
+      this._warnLimited(`self:${from}`, `с адреса ${from} анонсируется ЧУЖОЙ узел «${who}», хотя адрес принадлежит этой машине: `
+        + 'либо здесь работает второй экземпляр приложения, либо другая машина заняла тот же адрес (конфликт IP) — '
+        + 'в списке узлов он выглядит задвоением этого узла');
     }
 
     switch (message.type) {
