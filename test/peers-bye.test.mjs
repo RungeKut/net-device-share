@@ -86,3 +86,54 @@ test('пересказ, о котором давно никто не расск�
   reg.onBye({ nodeId: 'a1', realm: 'open' });
   assert.equal(reg.get('a1'), undefined, 'зомби-запись не остаётся');
 });
+
+test('узел, объявленный не из той сети, где слышен, помечен «за NAT»', () => {
+  const reg = registry();
+  reg.opts.networkOf = (ip) => (ip.startsWith('10.0.3.') ? NET_A : null);
+  reg.onAnnounce({
+    nodeId: 'vm', name: 'VM', address: '10.0.3.46', realm: 'open', apiPort: 47812, usbipPort: 3240,
+    stateHash: 'h', next: 3000, network: '192.168.137.0/24',
+  });
+  assert.deepEqual(reg.get('vm').redirected, { network: '192.168.137.0/24', heardOn: NET_A }, 'анонс из чужой подсети');
+
+  reg.onAnnounce({
+    nodeId: 'vm', name: 'VM', address: '10.0.3.46', realm: 'open', apiPort: 47812, usbipPort: 3240,
+    stateHash: 'h', next: 3000, network: NET_A,
+  });
+  assert.equal(reg.get('vm').redirected, null, 'анонс из своей сети — пометка снята');
+});
+
+test('noteSeedSelf: рабочий адрес от обмена становится основным маршрутом узла', () => {
+  const reg = registry();
+  reg.onDirectory(
+    [{ nodeId: 'vm', name: 'VM', address: '192.168.137.9', apiPort: 47812, usbipPort: 3240, network: '192.168.137.0/24' }],
+    { origin: 'seed', realm: 'open', viaNodeId: 'vm', viaName: 'VM', via: { nodeId: 'vm', name: 'VM', address: '10.0.3.46', apiPort: 47822 } },
+  );
+  const peer = reg.get('vm');
+  assert.equal(peer.routes.get(peer.routeKey).address, '192.168.137.9', 'внутренний адрес из каталога');
+
+  reg.noteSeedSelf('vm', '10.0.3.46', 47822);
+  const main = peer.routes.get(peer.routeKey);
+  assert.equal(main.address, '10.0.3.46');
+  assert.equal(main.apiPort, 47822, 'достижимый через проброс адрес:порт');
+  assert.equal(main.mode, 'direct', 'мы только что успешно поговорили по нему');
+});
+
+test('noteGhosts: нашли себя — узел знает, что его видно под чужим адресом', () => {
+  const reg = registry('vm-node');
+  const events = [];
+  reg.on('changed', () => events.push(1));
+
+  reg.noteGhosts([{ nodeId: 'other', address: '10.0.3.46' }]);
+  assert.equal(reg.ghosted, null, 'нас в списке нет');
+
+  reg.noteGhosts([{ nodeId: 'vm-node', address: '10.0.3.46' }]);
+  assert.equal(reg.ghosted.address, '10.0.3.46');
+  const marks = events.length;
+
+  reg.noteGhosts([{ nodeId: 'vm-node', address: '10.0.3.46' }]);
+  assert.equal(events.length, marks, 'повторное подтверждение не дёргает интерфейс');
+
+  reg.noteGhosts([]);
+  assert.equal(reg.ghosted, null, 'отражение пропало — знак снят');
+});

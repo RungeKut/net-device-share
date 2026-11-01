@@ -81,7 +81,8 @@ export class Discovery extends EventEmitter {
     this.lastSendError = null;
     this.warnedAt = new Map();
     this.cloneSeen = new Set();
-    this.selfMachineSeen = new Set();
+    /** @type {Map<string, {nodeId: string, name: string, address: string, at: number}>} адрес → отражение */
+    this.selfMachines = new Map();
     this.socketDead = false;
     this.repairs = 0;
     this.repairGap = REPAIR_GAP_MS;
@@ -184,23 +185,39 @@ export class Discovery extends EventEmitter {
       this._onOwnId(from);
       return;
     }
-    // Чужой узел с АДРЕСА этой машины — второй экземпляр приложения (свой
-    // профиль, свой nodeId). В списке он выглядит задвоением этого узла,
-    // поэтому о нём надо сказать один раз внятно, а не молча заводить запись.
-    // НЕ отбрасываем: стенд поднимает много узлов на одной машине, и они
-    // обязаны друг друга видеть. Проверка — только по своим адресам и без
-    // os.networkInterfaces(): путь горячий (каждый анонс каждого соседа),
-    // а набор сетей и так освежается раз в 5 с. Имя из пакета режется:
-    // журнал не должен есть строку любого размера, даже раз в полминуты.
+    // Чужой узел с АДРЕСА этой машины. Два случая:
+    //   — объявился с нашего же apiPort: отражение (виртуалка за NAT
+    //     гипервизора с копией конфига, клон с тем же адресом). За адресом:
+    //     портом — мы сами, и узла там нет. В список соседей отражение не
+    //     заводится вовсе: запись мелькала бы онлайн/офлайн, а занятие её
+    //     устройств уходило бы в нас же. Оно живёт в настройках («Задвоение
+    //     узла») и уходит с обменом каталога тому, кто в нём нашёл себя.
+    //   — порт другой: честный сосед на нашем адресе со своим портом
+    //     (второй экземпляр, виртуалка с пробросом) — работает как обычный.
+    // Проверка адреса — только по своим сетям и без os.networkInterfaces():
+    // путь горячий (каждый анонс каждого соседа), а набор сетей освежается
+    // раз в 5 с. Имя из пакета режется: журнал не должен есть строку любого
+    // размера, даже раз в полминуты.
     const who = typeof message.name === 'string' && message.name
       ? message.name.slice(0, 64)
       : (typeof message.nodeId === 'string' ? message.nodeId.slice(0, 8) : '?');
-    if (!this.selfMachineSeen.has(from) && this._nets().some((n) => n.address === from)
-      && this.selfMachineSeen.size < 64) {
-      this.selfMachineSeen.add(from);
-      this._warnLimited(`self:${from}`, `с адреса ${from} анонсируется ЧУЖОЙ узел «${who}», хотя адрес принадлежит этой машине: `
-        + 'либо здесь работает второй экземпляр приложения, либо другая машина заняла тот же адрес (конфликт IP) — '
-        + 'в списке узлов он выглядит задвоением этого узла');
+    if (this._nets().some((n) => n.address === from) && Number(message.apiPort) === this.opts.apiPort) {
+      const known = this.selfMachines.get(from);
+      this.selfMachines.delete(from);
+      this.selfMachines.set(from, {
+        nodeId: String(message.nodeId || ''),
+        // Имя берём из анонса; в прощании его нет — остаётся прежнее.
+        name: typeof message.name === 'string' && message.name ? who : (known?.name || who),
+        address: from,
+        at: Date.now(),
+      });
+      if (this.selfMachines.size > 64) this.selfMachines.delete(this.selfMachines.keys().next().value);
+      if (!known) {
+        this._warnLimited(`self:${from}`, `с адреса ${from} анонсируется ЧУЖОЙ узел «${who}» с нашим же портом, хотя адрес принадлежит этой машине: `
+          + 'это отражение — виртуалка за NAT с копией конфига или клон. В список узлов оно не попадает; '
+          + 'связь с ним — через проброс порта и «Узлы в других сетях»');
+      }
+      return;
     }
 
     switch (message.type) {
@@ -652,8 +669,9 @@ export class Discovery extends EventEmitter {
       sendErrors: this.sendErrors,
       lastSendError: this.lastSendError,
       clones: [...this.cloneSeen],
-      // Чужие узлы с адресов этой машины: второй экземпляр приложения.
-      selfMachine: [...this.selfMachineSeen],
+      // Отражения — чужие узлы, анонсирующиеся с адреса этой машины нашим же
+      // портом (виртуалка за NAT с копией конфига). В списке соседей их нет.
+      selfMachine: [...this.selfMachines.values()],
       repairs: this.repairs,
       needsRepair: this.needsRepair(),
       // Пакетов на один анонс: кругов доверия × каналов. Полезно видеть,
@@ -662,6 +680,15 @@ export class Discovery extends EventEmitter {
       perAnnounce: this.opts.realms.announcing().length
         * [...this.legs.values()].reduce((n, l) => n + this._targets(l).length, 0),
     };
+  }
+
+  /**
+   * Свежие отражения — для обмена каталогом: узел, нашедший в списке себя,
+   * узнаёт, что его видно в чужой сети под чужим адресом (он за NAT).
+   */
+  selfMachineNodes(maxAgeMs = 10 * 60_000) {
+    const now = Date.now();
+    return [...this.selfMachines.values()].filter((n) => now - n.at <= maxAgeMs);
   }
 
   async stop() {

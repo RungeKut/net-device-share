@@ -66,6 +66,8 @@ export class PeerRegistry extends EventEmitter {
     this.probeLogged = new Map();
     /** @type {Map<string, string>} узел → хеш, пришедший, пока шёл запрос состояния: нужен повтор */
     this.stateRetry = new Map();
+    /** Адрес, под который нас видно в чужой сети (мы за NAT), — подтверждается обменом. */
+    this.ghostedNotice = null;
   }
 
   start() {
@@ -257,10 +259,20 @@ export class PeerRegistry extends EventEmitter {
       address = existing.address;
     }
 
+    const heardOn = this.opts.networkOf?.(msg.address) || null;
+    // Объявляется из одной сети, а слышен в другой: за NAT, за туннелем или
+    // с неверной маской. Прямо его порты из нашей сети недоступны, и об этом
+    // надо сказать сразу, а не давать гадать по «не отвечает».
+    if (msg.network && heardOn && msg.network !== heardOn) {
+      peer.redirected = { network: msg.network, heardOn };
+    } else if (peer.redirected && (!msg.network || msg.network === heardOn)) {
+      peer.redirected = null;
+    }
+
     this._touchRoute(peer, {
       kind: 'direct', origin: 'local', address: msg.address,
       apiPort: msg.apiPort, usbipPort: msg.usbipPort, trafficPort: msg.trafficPort, netLinkPort: msg.netLinkPort,
-      network: msg.network || null, heardOn: this.opts.networkOf?.(msg.address) || null, via: null, mode: 'direct',
+      network: msg.network || null, heardOn, via: null, mode: 'direct',
     }, now);
     peer.routeKey = this._routeKey({ address, via: null });
 
@@ -604,6 +616,56 @@ export class PeerRegistry extends EventEmitter {
       for (const r of p.routes.values()) if (r.address === ip) return true;
     }
     return false;
+  }
+
+  // -------------------------------------------------- узел за NAT (отражение)
+
+  /**
+   * Рабочий адрес узла, выясненный обменом: мы только что успешно поговорили
+   * с ним по host:port. Узел за пробросом портов называет в каталоге свой
+   * внутренний адрес — единственный маршрут, по которому он реально
+   * достижим, именно этот, поэтому он становится основным.
+   */
+  noteSeedSelf(nodeId, host, port) {
+    const peer = this.peers.get(nodeId);
+    if (!peer || !host || !Number.isInteger(port) || port < 1 || port > 65535) return;
+    this._touchRoute(peer, {
+      kind: 'seed', origin: 'seed', address: host, apiPort: port,
+      usbipPort: peer.usbipPort, trafficPort: peer.trafficPort, netLinkPort: peer.netLinkPort,
+      network: null, heardOn: null, via: null, mode: 'direct',
+    });
+    peer.routeKey = this._routeKey({ address: host, via: null });
+    this.emit('changed');
+  }
+
+  /**
+   * Сведения об отражениях из каталога соседа. Нашли себя — нас видно в той
+   * сети под чужим адресом (мы за NAT): интерфейсу нужен знак, а признак
+   * держится, пока обмен продолжает подтверждать. Пропали из списка — утечка
+   * закрыта, знак снимается.
+   */
+  noteGhosts(ghosts) {
+    if (!Array.isArray(ghosts)) return;
+    const mine = ghosts.find((g) => g && g.nodeId === this.opts.nodeId);
+    if (mine) {
+      const was = this.ghostedNotice;
+      this.ghostedNotice = { address: mine.address || null, at: Date.now() };
+      if (!was || was.address !== this.ghostedNotice.address) {
+        log.warn(`нас видно в соседней сети под чужим адресом ${this.ghostedNotice.address || '?'} — мы за NAT: `
+          + 'нужен проброс порта на хосте и связь через «Узлы в других сетях», а утечку анонсов (UDP 47811) закрыть');
+        this.emit('changed');
+      }
+    } else if (this.ghostedNotice) {
+      this.ghostedNotice = null;
+      log.info('обмен подтвердил: нас больше не видно под чужим адресом');
+      this.emit('changed');
+    }
+  }
+
+  /** Под каким адресом нас сейчас видно в чужой сети (null — ни под каким). */
+  get ghosted() {
+    const n = this.ghostedNotice;
+    return n && Date.now() - n.at <= 30 * 60_000 ? n : null;
   }
 
   // ------------------------------------------------------------- маршруты

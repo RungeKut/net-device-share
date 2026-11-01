@@ -192,6 +192,11 @@ export class DirectoryService extends EventEmitter {
       realm,
       ts: Date.now(),
       peers: [self, ...this.peers.directoryEntries(realm, { forNetwork })],
+      // Отражения: чужие узлы, чьи анонсы приходят с адреса этого компьютера
+      // нашим же портом. Тот, кто найдёт себя в списке, виден в чужой сети
+      // под чужим адресом (за NAT) — ему нужен проброс портов и seed, а не
+      // анонсы. Обмен — единственный канал, по которому об этом узнает он сам.
+      ghosts: this.opts.ghosts?.() || [],
     };
   }
 
@@ -251,6 +256,7 @@ export class DirectoryService extends EventEmitter {
         // соединение пойдёт туннелем через него.
         via: { nodeId: peer.nodeId, name: peer.name, address: peer.address, apiPort: peer.apiPort },
       });
+      this.peers.noteGhosts?.(res?.ghosts);
       if (this.peers.get(nodeId) === peer) this.pulled.set(nodeId, dir);
       if (added) log.info(`от соседа "${peer.name}" получены узлы из других сетей: ${added}`);
     } catch (e) {
@@ -371,6 +377,10 @@ export class DirectoryService extends EventEmitter {
         viaName: res?.name || raw,
         via: res?.nodeId ? { nodeId: res.nodeId, name: res.name || raw, address: host, apiPort: port } : null,
       });
+      // Мы только что успешно поговорили с узлом по host:port — это его
+      // рабочий адрес, даже если в каталоге он назвал внутренний (за NAT).
+      this.peers.noteGhosts?.(res?.ghosts);
+      if (res?.nodeId) this.peers.noteSeedSelf(res.nodeId, host, port);
 
       this.seedState.set(raw, {
         address: raw,

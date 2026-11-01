@@ -14,7 +14,7 @@ function make(extra = {}) {
     keyFor: (r) => (r === 'open' ? '' : r === 'keyed' ? 'secret' : undefined),
   };
   const d = new Discovery({
-    nodeId: 'me', networks: [NET], port: 0, realms, multicastAddress: '239.0.0.1',
+    nodeId: 'me', networks: [NET], port: 0, apiPort: 0, realms, multicastAddress: '239.0.0.1',
     announceIntervalMs: 3000, announceIdleIntervalMs: 30000, announceTransport: 'both',
     getSnapshot: () => ({ stateHash: 'h1', name: 'me', version: '1' }),
     ...extra,
@@ -242,16 +242,30 @@ test('пакет из нашей сети помечает ногу «слышн
   assert.equal(d.stats().interfaces[0].lastHeardAt > 0, true);
 });
 
-test('чужой узел с адреса этой машины: предупреждение один раз, в списке соседей его нет', () => {
+test('отражение (наш адрес и наш порт) не заводится в соседей, но остаётся в настройках', () => {
+  const d = make();
+  const events = [];
+  d.on('announce', (m) => events.push(['announce', m]));
+  d.on('bye', (m) => events.push(['bye', m]));
+  // apiPort совпадает с нашим (make() слушает порт 0) — виртуалка за NAT с копией конфига
+  d._onMessage(pkt({ type: MSG.ANNOUNCE, nodeId: 'ghost', name: 'Двойник', apiPort: 0 }), { address: NET.address });
+  d._onMessage(pkt({ type: MSG.ANNOUNCE, nodeId: 'ghost', name: 'Двойник', apiPort: 0 }), { address: NET.address });
+  d._onMessage(pkt({ type: MSG.BYE, nodeId: 'ghost', apiPort: 0 }), { address: NET.address });
+  assert.equal(events.length, 0, 'ни анонс, ни прощание отражения не доходят до реестра');
+  const st = d.stats();
+  assert.deepEqual(st.selfMachine.map((n) => n.address), [NET.address]);
+  assert.equal(st.selfMachine[0].name, 'Двойник');
+  assert.equal(st.selfMachine[0].nodeId, 'ghost');
+  assert.deepEqual(d.selfMachineNodes().map((n) => n.nodeId), ['ghost'], 'детали едут с обменом каталога');
+});
+
+test('чужой порт на нашем адресе — обычный сосед: второй экземпляр и стенд так живут', () => {
   const d = make();
   const announces = [];
   d.on('announce', (m) => announces.push(m));
-  d._onMessage(pkt({ type: MSG.ANNOUNCE, nodeId: 'ghost', name: 'Двойник' }), { address: '10.99.99.5' });
-  d._onMessage(pkt({ type: MSG.ANNOUNCE, nodeId: 'ghost', name: 'Двойник' }), { address: '10.99.99.5' });
-  assert.equal(announces.length, 2, 'не отбрасываем: стенд со многими узлами на одной машине так живёт');
-  const st = d.stats();
-  assert.deepEqual(st.selfMachine, ['10.99.99.5']);
-  assert.match(String(st.selfMachine), /10\.99\.99\.5/);
+  d._onMessage(pkt({ type: MSG.ANNOUNCE, nodeId: 'ghost', name: 'Двойник', apiPort: 9999 }), { address: NET.address });
+  assert.equal(announces.length, 1);
+  assert.equal(d.stats().selfMachine.length, 0, 'это не отражение — у него свой порт');
 });
 
 test('подделанный пакет: nodeId не строка и огромное имя не ломают разбор', () => {
@@ -260,9 +274,9 @@ test('подделанный пакет: nodeId не строка и огром�
   const announces = [];
   d.on('announce', (m) => announces.push(m));
   assert.doesNotThrow(() => {
-    d._onMessage(pkt({ type: MSG.ANNOUNCE, nodeId: 123, name: 'з'.repeat(100000) }), { address: NET.address });
+    d._onMessage(pkt({ type: MSG.ANNOUNCE, nodeId: 123, name: 'з'.repeat(100000), apiPort: 0 }), { address: NET.address });
     d._onMessage(pkt({ type: MSG.ANNOUNCE, nodeId: 123 }), { address: NET.address });
   });
-  assert.deepEqual(d.stats().selfMachine, [NET.address], 'адрес записан один раз — предупреждение тоже');
-  assert.equal(announces.length, 2, 'пакет не отброшен: узлам на одной машине друг друга видно');
+  assert.equal(d.stats().selfMachine.length, 1, 'первый пакет (с нашим портом) — отражение, второй (без порта) — нет');
+  assert.equal(announces.length, 1, 'пакет без порта проходит: узлам на одной машине друг друга видно');
 });

@@ -212,6 +212,9 @@ export class App extends EventEmitter {
       defaultPort: () => this.config.get('apiPort'),
       selfEntry: () => this._selfEntry(),
       networks: () => this.networks,
+      // Отражения для обмена: тот, кто найдёт себя в списке, узнает, что его
+      // видно в чужой сети под чужим адресом (за NAT).
+      ghosts: () => this.discovery?.selfMachineNodes() || [],
     });
 
     this.share.on('changed', () => this.onStateChanged());
@@ -1239,6 +1242,9 @@ export class App extends EventEmitter {
         // Все сети узла: в автовыборе он объявляется в каждой настоящей.
         networks: this.networks.map((n) => ({ cidr: n.cidr, iface: n.iface, address: n.address })),
         gateway: this.liveNetworks().length > 1,
+        // Под каким адресом нас сейчас видно в чужой сети (мы за NAT) —
+        // подтверждается обменом каталога; интерфейс показывает инструкцию.
+        ghosted: this.peers?.ghosted || null,
         apiPort: this.config.get('apiPort'),
         usbipPort: this.config.get('usbipPort'),
         discoveryPort: this.config.get('discoveryPort'),
@@ -1310,6 +1316,8 @@ export class App extends EventEmitter {
       viaName: p.viaName || null,
       // Адреса узла в разных сетях: см. cluster/peers.js, «Маршруты».
       routes: this.peers.routesOf(p),
+      // Объявляется не из той сети, где слышен: за NAT/туннелем или с неверной маской.
+      redirected: p.redirected || null,
       nets: p.nets || 1,
       // Из какой сети узел. Когда сетей несколько, без подписи в списке
       // не разобрать, почему одно устройство занимается, а другое нет.
@@ -1366,6 +1374,7 @@ export class App extends EventEmitter {
       ownerAddress: owner.address,
       ownerRoutes: owner.routes || [],
       ownerGateway: (owner.nets || 1) > 1,
+      ownerRedirected: Boolean(owner.redirected),
       ownerOnline: owner.online !== false,
       ownerSelf: owner.nodeId === selfId,
       claim: d.claim || null,
@@ -1411,6 +1420,7 @@ export class App extends EventEmitter {
       ownerAddress: owner.address,
       ownerRoutes: owner.routes || [],
       ownerGateway: (owner.nets || 1) > 1,
+      ownerRedirected: Boolean(owner.redirected),
       ownerOnline: owner.online !== false,
       ownerSelf: owner.nodeId === selfId,
       claim: g.claim || null,

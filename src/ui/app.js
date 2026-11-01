@@ -172,9 +172,18 @@ function handleIncomingRequests() {
 
 // --------------------------------------------------------------- отрисовка
 
+/** Пометка «за NAT» у владельца в каталоге: объявляется не из той сети, где слышен. */
+function natMark(e) {
+  return e.ownerRedirected
+    ? ' <span class="pill warn" title="Этот узел объявляется из другой сети, а слышен здесь: он за NAT, за туннелем или с неверной маской. '
+      + 'Прямо его порты недоступны — свяжитесь с ним через «Узлы в других сетях» и проброс портов на его хосте">за NAT</span>'
+    : '';
+}
+
 function render() {
   if (!state) return;
   renderHeader();
+  renderGhosted();
   renderCatalog();
   renderMine();
   renderGroups();
@@ -317,6 +326,30 @@ function renderNotes(notes) {
   if (!notes.length) { box.hidden = true; return; }
   box.hidden = false;
   box.innerHTML = notes.map((n) => `<div class="note-line">ℹ ${esc(n)}</div>`).join('');
+}
+
+/**
+ * Полоса «вас видно под чужим адресом»: узел стоит за NAT (например,
+ * виртуалка, чьи UDP-анонсы выходят в сеть с адреса хоста, а TCP — нет).
+ * Висит, пока обмен каталогом подтверждает отражение; уходит, когда утечку
+ * закрыли или появился рабочий проброс портов.
+ */
+function renderGhosted() {
+  let box = $('#ghostBar');
+  if (!box) {
+    box = document.createElement('div');
+    box.id = 'ghostBar';
+    box.className = 'banner warn';
+    $('#banner').after(box);
+  }
+  const g = state.self?.ghosted;
+  if (!g) { box.hidden = true; return; }
+  box.hidden = false;
+  box.innerHTML = `<b>Этот узел видно в соседней сети под чужим адресом ${esc(g.address || '—')}.</b>
+    <p class="banner-hint">Вы за NAT: соседи слышат ваши анонсы, но дотянуться до портов не могут, и в их списках
+    узел мельтешит как двойник. Связь настраивается так: на хосте пробросьте TCP-порт на 47812 этой машины и добавьте
+    адрес «хост:порт» соседям в «Узлы в других сетях»; чтобы не мельтешить, закройте исходящий UDP 47811
+    (в Proxifier — правило Block, или брандмауэром). Полоса исчезнет, когда обмен подтвердит, что отражения больше нет.</p>`;
 }
 
 // ------------------------------------------------------------------ каталог
@@ -569,7 +602,7 @@ function deviceCard(d, { insideGroup = false } = {}) {
         </div>
         ${d.purpose ? `<div class="purpose">${esc(d.purpose)}</div>` : ''}
         <div class="card-meta">
-          ${insideGroup ? '' : `<span>владелец: <b>${esc(d.ownerName)}</b>${gatewayMark(d)} ${ownerAddresses(d)}${remoteMark(d.ownerId)}</span>`}
+          ${insideGroup ? '' : `<span>владелец: <b>${esc(d.ownerName)}</b>${gatewayMark(d)}${natMark(d)} ${ownerAddresses(d)}${remoteMark(d.ownerId)}</span>`}
           <span>${esc(d.typeTitle)}: <span class="mono">${esc(d.subtitle)}</span></span>
           ${meta.map((b) => `<span>${b}</span>`).join('')}
           ${d.connectedSince ? `<span>подключено: ${esc(since(d.connectedSince))} (${esc(at(d.connectedSince))})</span>` : ''}
@@ -604,7 +637,7 @@ function groupCard(g) {
           </div>
           ${g.purpose ? `<div class="purpose">${esc(g.purpose)}</div>` : ''}
           <div class="card-meta">
-            <span>владелец: <b>${esc(g.ownerName)}</b>${gatewayMark(g)} ${ownerAddresses(g)}${remoteMark(g.ownerId)}</span>
+            <span>владелец: <b>${esc(g.ownerName)}</b>${gatewayMark(g)}${natMark(g)} ${ownerAddresses(g)}${remoteMark(g.ownerId)}</span>
             <span>занимается целиком</span>
           </div>
         </div>
@@ -937,10 +970,12 @@ function renderPeers() {
         <div class="card-title">${url ? `<a class="node-name" href="${esc(url)}" target="_blank" rel="noopener">${esc(p.name)}</a>` : esc(p.name)}
           <span class="pill ${p.online ? 'free' : 'err'}">${p.online ? 'в сети' : 'не отвечает'}</span>${gatewayMark(p)}
           ${p.origin && p.origin !== 'local' ? `<span class="pill remote" title="${esc(remoteHint(p))}">другая сеть</span>` : ''}
+          ${p.redirected ? natMark({ ownerRedirected: true }) : ''}
           ${p.realmLabel ? `<span class="pill plain" title="круг доверия ${esc(p.realm || '')}">${esc(p.realmLabel)}</span>` : ''}</div>
         <div class="card-meta">
           <span>адрес: <b>${esc(p.address)}</b>:${esc(p.apiPort)}</span>
           ${p.origin !== 'local' && p.network ? `<span>сеть: ${esc(p.network)}</span>` : ''}
+          ${p.redirected ? `<span>объявляется из ${esc(p.redirected.network)}, слышен в ${esc(p.redirected.heardOn)}</span>` : ''}
           <span>платформа: ${esc(p.platform || '—')}</span>
           <span>версия: ${esc(p.version || '—')}</span>
           <span>устройств: <b>${esc(p.deviceCount)}</b> (занято ${esc(p.busyCount)})</span>
@@ -1611,7 +1646,10 @@ function renderFederation() {
   });
   const twins = []
     .concat((a.clones || []).length ? [`узел с нашим nodeId: ${a.clones.join(', ')}`] : [])
-    .concat((a.selfMachine || []).length ? [`чужой узел с адреса этого компьютера: ${a.selfMachine.join(', ')}`] : []);
+    .concat((a.selfMachine || []).length
+      ? [`отражение с адреса этой машины (за NAT, в списке узлов не показывается): ${
+        a.selfMachine.map((n) => `«${n.name || n.nodeId.slice(0, 8)}» (${n.address})`).join(', ')}`]
+      : []);
   $('#announceState').innerHTML = per
     ? `<div class="fed-row muted">Сейчас: раз в ${per} с, отправлено ${a.sent || 0};
        каналы: ${channels.length ? esc(channels.join(' + ')) : '<b class="err">ни одного</b>'}.</div>`
