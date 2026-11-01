@@ -18,10 +18,12 @@ export class DeviceHub {
    * @param {import('./backend.js').UsbBackend} o.backend — бэкенд USB/IP
    * @param {() => string[]} o.enabledTypes — какие типы показывать
    * @param {import('../core/netShare.js').NetShare} [o.net] — проброс сетевых карт
+   * @param {import('../core/serialShare.js').SerialShare} [o.serial] — проброс COM
    */
-  constructor({ backend, enabledTypes, net = null, slow = {} }) {
+  constructor({ backend, enabledTypes, net = null, serial = null, slow = {} }) {
     this.backend = backend;
     this.net = net;
+    this.serial = serial;
     this.enabledTypes = enabledTypes || (() => ['usb', 'com', 'lpt', 'net']);
     /**
      * Кеш медленных источников. ts — когда их проверяли, fullDue — до какого
@@ -71,12 +73,25 @@ export class DeviceHub {
 
     const out = usb.map(fromUsb);
     for (const p of slow.ports) {
-      if (this._enabled(p.type)) out.push(fromPort(p));
+      if (this._enabled(p.type)) out.push(this._fromPort(p));
     }
     if (wantNet) {
       for (const n of slow.nets) out.push(this._fromNet(n));
     }
     return out;
+  }
+
+  /**
+   * COM пробрасывается, только если у SerialShare есть канал; LPT — нет.
+   * От доступности зависит и каталог, и кнопка занятия, поэтому признак
+   * считается при каждом опросе, как у сетевых карт.
+   */
+  _fromPort(p) {
+    const d = fromPort(p);
+    if (p.type === 'com') {
+      d.hasTransport = Boolean(this.serial?.supported && this.serial.server);
+    }
+    return d;
   }
 
   /**
@@ -198,6 +213,11 @@ export class DeviceHub {
       const link = await this.net.lend(device, holder);
       return { ok: true, link };
     }
+    if (device.type === 'com') {
+      if (!this.serial) throw new Error('проброс COM-портов недоступен');
+      const link = await this.serial.lend(device, holder);
+      return { ok: true, link };
+    }
     return this.backend.bind(device.key);
   }
 
@@ -206,6 +226,9 @@ export class DeviceHub {
       // Проброс мог исчезнуть, пока карта отдана (сменились права, пропал
       // драйвер), — вернуть её всё равно нужно.
       return this.net ? this.net.unlend(device, holder) : { ok: true };
+    }
+    if (device.type === 'com') {
+      return this.serial ? this.serial.unlend(device) : { ok: true };
     }
     if (!device.hasTransport) return { ok: true, reservationOnly: true };
     return this.backend.unbind(device.key);

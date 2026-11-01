@@ -143,6 +143,7 @@ export class App extends EventEmitter {
       backend: this.backend,
       enabledTypes: () => this.config.get('enabledTypes') || ['usb'],
       net: this.net,
+      serial: this.serial,
     });
 
     this.drivers = new DriverShare();
@@ -190,6 +191,7 @@ export class App extends EventEmitter {
       // менеджер подключений спрашивает его по узлу, а не хранит у себя.
       keyFor: (nodeId) => this.keyForNode(nodeId),
       net: this.net,
+      serial: this.serial,
       // Подключение, которое пережило перезапуск, привязываем к владельцу по адресу.
       resolvePort: async (nodeId, routeKey, port) => {
         const peer = this.peers.get(nodeId);

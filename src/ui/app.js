@@ -526,7 +526,9 @@ function entryActions(entry) {
         ? reserveWhy
         : entry.type === 'net'
           ? 'На этом компьютере появится сетевой адаптер, подключённый к сети за картой владельца. Первое занятие занимает до минуты: владелец собирает мост'
-          : 'Устройство появится в «Диспетчере устройств» этого компьютера'}"
+          : entry.type === 'com'
+            ? 'У владельца откроется настоящий COM-порт, а на этом компьютере появится виртуальный порт с тем же именем: приложение будет работать с ним, как с локальным. Параметры возьмутся как у владельца'
+            : 'Устройство появится в «Диспетчере устройств» этого компьютера'}"
       >${reserve ? 'Забронировать' : 'Занять'}</button>`);
   }
   return acts.join('');
@@ -893,7 +895,7 @@ function renderAttached() {
           ${a.lastError ? `<span class="pill err">${esc(a.lastError)}</span>` : ''}
         </div>
         <div class="card-meta">
-          ${a.parts.map((p) => `<span>${esc(p.description || p.deviceId)}${partState(p)} ${p.traffic ? trafficPill(p.traffic) : ''}</span>`).join('')}
+          ${a.parts.map((p) => `<span>${esc(p.description || p.deviceId)}${partState(p)} ${p.comNote ? `<span class="pill warn" title="Имя порта владельца здесь занято">${esc(p.comNote)}</span>` : ''} ${p.traffic ? trafficPill(p.traffic) : ''}</span>`).join('')}
         </div>
         ${a.parts.filter((p) => p.adapter && (p.ip || p.ipNote)).map((p) => `<div class="card-meta"><span>${
           p.ip ? adapterIpText(p.ip, p.ipApplied) : `<span class="pill warn">${esc(p.ipNote)}</span>`}</span>${
@@ -942,6 +944,7 @@ function driverNotes(a) {
 /** Во что превратилось устройство занятия на этом компьютере. */
 function partState(p) {
   if (!p.hasTransport) return ' → бронь';
+  if (p.comPort) return ` → порт «${esc(p.comPort)}»`;
   if (p.adapter) return ` → адаптер «${esc(p.adapter)}»`;
   if (p.vhciPort !== null && p.vhciPort !== undefined) return ` → порт VHCI ${esc(p.vhciPort)}`;
   return ' → подключается';

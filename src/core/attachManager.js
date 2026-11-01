@@ -34,8 +34,9 @@ export class AttachManager extends EventEmitter {
    *   в котором услышан этот узел. Кругов у нас может быть несколько, и
    *   подписывать вызов надо тем ключом, который примет именно он.
    * @param {import('./netShare.js').NetShare} [o.net] — сетевые карты
+   * @param {import('./serialShare.js').SerialShare} [o.serial] — COM-порты
    */
-  constructor({ backend, config, share, keyFor, net = null, peerByAddress = null, resolvePort = null }) {
+  constructor({ backend, config, share, keyFor, net = null, serial = null, peerByAddress = null, resolvePort = null }) {
     super();
     /**
      * (узел, маршрут, порт владельца) → куда подключаться. Прямо или туннелем
@@ -46,6 +47,7 @@ export class AttachManager extends EventEmitter {
     this.peerByAddress = peerByAddress;
     this.backend = backend;
     this.net = net;
+    this.serial = serial;
     this.config = config;
     this.share = share;
     this.keyFor = keyFor;
@@ -215,6 +217,9 @@ export class AttachManager extends EventEmitter {
         ipApplied: null,
         // Почему владелец не прислал настройки (карта в его коммутаторе).
         ipNote: null,
+        // COM-порт: имя виртуального порта у нас и что с ним не так, если не так.
+        comPort: null,
+        comNote: null,
         // Свободный адрес, который предложил владелец (мост в сети со статикой).
         suggest: null,
         usedIps: null,
@@ -261,6 +266,10 @@ export class AttachManager extends EventEmitter {
           await this._attachNet(rec, part, grant);
           continue;
         }
+        if (part.type === 'com') {
+          await this._attachSerial(rec, part, grant);
+          continue;
+        }
         this._stage(rec, `подключение ${part.description || part.key}`);
         const result = await this.backend.attach({ host: rec.host, busid: part.key, port: rec.usbipPort });
         part.vhciPort = result.vhciPort;
@@ -285,7 +294,10 @@ export class AttachManager extends EventEmitter {
       // Откат: отцепляем то, что успели, и возвращаем право — иначе цель
       // останется занятой из-за нашей же неудачи.
       for (const part of rec.parts) {
-        if (part.netKey) await this.net?.giveBack(part.netKey).catch(() => {});
+        if (part.netKey) {
+          const back = part.type === 'net' ? this.net?.giveBack(part.netKey) : this.serial?.giveBack(part.netKey);
+          await back?.catch(() => {});
+        }
         if (part.vhciPort === null || part.vhciPort === undefined) continue;
         await this.backend.detach(part.vhciPort).catch(() => {});
       }
@@ -306,7 +318,8 @@ export class AttachManager extends EventEmitter {
 
     for (const part of rec.parts) {
       if (part.netKey) {
-        await this.net?.giveBack(part.netKey).catch((e) => log.warn(`адаптер ${part.adapter} не отключён: ${e.message}`));
+        const back = part.type === 'net' ? this.net?.giveBack(part.netKey) : this.serial?.giveBack(part.netKey);
+        await back?.catch((e) => log.warn(`взятое ${part.comPort || part.adapter || part.key} не отключено: ${e.message}`));
         part.netKey = null;
         continue;
       }
@@ -415,6 +428,36 @@ export class AttachManager extends EventEmitter {
     part.neighbors = link.neighbors || null;
   }
 
+  /**
+   * COM-порт: пара com0com, соединённая каналом байтов с портом владельца.
+   * Порт у нас называется так же, как у владельца, — приложение человека
+   * открывает его, как открыло бы локальный.
+   */
+  async _attachSerial(rec, part, grant) {
+    if (!this.serial) throw new Error('проброс COM-портов на этом компьютере недоступен');
+    const link = (grant.links || []).find((l) => l.deviceId === part.deviceId);
+    if (!link) throw new Error(`владелец не выдал канал для «${part.description}» — возможно, у него старая версия приложения`);
+
+    const key = `${rec.id}|${part.deviceId}`;
+    const ep = rec.tunnel && this.resolvePort && !rec.self
+      ? await this.resolvePort(rec.nodeId, rec.routeKey, link.port)
+      : { host: rec.host, port: link.port };
+    const res = await this.serial.borrow({
+      key,
+      host: ep.host,
+      port: ep.port,
+      token: link.token,
+      com: link.com || part.key,
+      params: link.params || null,
+      label: `${part.title || part.key} от ${rec.nodeName}`,
+      onStage: (s) => this._stage(rec, s),
+    });
+    part.netKey = key;
+    part.comPort = res.com;
+    part.comNote = res.note || null;
+    part.params = link.params || null;
+  }
+
   /** Держатель поменял настройки IP карты — запомнить, что теперь на ней. */
   setPartIp(attachmentId, deviceId, { ip, ipApplied }) {
     const rec = this.attachments.get(attachmentId);
@@ -442,8 +485,9 @@ export class AttachManager extends EventEmitter {
       });
     }
     // Сетевую карту владелец готовит секундами: собирает мост, а при первом
-    // занятии ещё и создаёт TAP-адаптер. Пятнадцати секунд на это мало.
-    const slow = (t.devices || []).some((d) => d.type === 'net' && d.hasTransport);
+    // занятии ещё и создаёт TAP-адаптер. COM — тоже: заводится насос и пара
+    // портов. Пятнадцати секунд на это мало.
+    const slow = (t.devices || []).some((d) => (d.type === 'net' || d.type === 'com') && d.hasTransport);
     try {
       return await rpc({
         host: t.host,

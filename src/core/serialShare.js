@@ -29,9 +29,13 @@ import { EventEmitter } from 'node:events';
 import { logger } from '../log.js';
 import { run, psQuote } from '../devices/backend.js';
 import { configDir } from '../config.js';
+import { LinkClient } from '../net/tapLink.js';
 import {
   PKT, PacketCutter, packetFrame, encodePortParams, parsePortParams,
+  CTRL_RTS_ON, CTRL_RTS_OFF, CTRL_DTR_ON, CTRL_DTR_OFF,
+  MSR_CTS, MSR_DSR,
 } from '../net/serialLink.js';
+import { createPair, removePair, setupcPresent } from '../net/com0com.js';
 
 const log = logger('serial-share');
 
@@ -384,28 +388,39 @@ export class SerialShare extends EventEmitter {
    * @param {{ compile?: () => Promise<string>, spawn?: (exe: string, com: string) => object }} [o.pump]
    *   подмена насоса для тестов (эмуляция пайпами вместо процесса)
    */
-  constructor({ config, supported, pump = {} } = {}) {
+  constructor({ config, supported, pump = {}, com0com = null } = {}) {
     super();
     this.config = config;
     this.supported = supported ?? process.platform === 'win32';
     this.server = null;
     /** @type {Map<string, object>} deviceId → отданный порт */
     this.lends = new Map();
+    /** @type {Map<string, object>} ключ занятия → взятый порт */
+    this.borrows = new Map();
     this._compile = pump.compile || buildPump;
     this._spawn = pump.spawn || spawnPump;
+    this._com0com = com0com || { createPair, removePair, present: setupcPresent };
   }
 
   /** Канал берётся у NetShare (его LinkServer): свой порт заводить не нужно. */
   async start({ server }) {
     this.server = server || null;
-    if (!this.supported || !this.server) return this;
+    if (!this.supported) return this;
+    // Насос собирается заранее: к моменту занятия он нужен мгновенно, а
+    // первая сборка через csc занимает десятки секунд.
+    this._compile().catch((e) => log.debug(`насос заранее не собран: ${e.message}`));
+    if (!this.server) return this;
     await this._recover();
+    await this._recoverPairs();
     return this;
   }
 
   async stop() {
     for (const lend of [...this.lends.values()]) {
       await this._teardown(lend).catch((e) => log.warn(`при выходе: ${e.message}`));
+    }
+    for (const b of [...this.borrows.values()]) {
+      await this._stopBorrow(b).catch((e) => log.warn(`при выходе: ${e.message}`));
     }
   }
 
@@ -475,15 +490,21 @@ export class SerialShare extends EventEmitter {
     return { ok: true };
   }
 
-  async _startPump(lend) {
+  /** Запустить насос на порту и дождаться, когда он его откроет. */
+  async _openPump(com) {
     const exe = await this._compile();
-    const pump = new PumpProc(this._spawn(exe, lend.com));
+    const pump = new PumpProc(this._spawn(exe, com));
     const ready = await new Promise((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error('насос не открыл порт')), PUMP_TIMEOUT_MS);
       pump.once('ready', (params, msr) => { clearTimeout(timer); resolve({ params, msr }); });
       pump.once('pumpError', (m) => { clearTimeout(timer); reject(new Error(m)); });
       pump.once('exit', (code, err) => { clearTimeout(timer); reject(new Error(`насос завершился (${code}): ${err || 'без сообщений'}`)); });
     });
+    return { pump, ready };
+  }
+
+  async _startPump(lend) {
+    const { pump, ready } = await this._openPump(lend.com);
     lend.params = ready.params;
 
     pump.on('data', (bytes) => {
@@ -544,6 +565,7 @@ export class SerialShare extends EventEmitter {
       port: this.config.get('netLinkPort'),
       token: lend.session.token,
       mode: 'serial',
+      com: lend.com,
       params: lend.params,
     };
   }
@@ -631,6 +653,195 @@ export class SerialShare extends EventEmitter {
     }
   }
 
+  // ------------------------------------------------------ сторона занявшего
+
+  /** Почему этот компьютер не может занять чужой COM-порт (null — может). */
+  borrowBlocker() {
+    if (!this.supported) return 'подключать чужие COM-порты пока можно только на Windows';
+    if (!this._com0com.present()) return 'нет com0com — доустановите компоненты приложения';
+    return null;
+  }
+
+  /**
+   * Взять чужой COM-порт: пара com0com, наш конец под насосом, второй —
+   * под именем порта владельца.
+   *
+   * Линии едут через штатную перекрёстную проводку пары: CTS владельца
+   * выставляет наш RTS (у человека это CTS его порта), человек выставляет
+   * RTS — у владельца уходит CTRL на настоящий RTS. DCD и RING так не
+   * передаются.
+   *
+   * @param {object} o
+   * @param {string} o.key — ключ занятия (узел + устройство)
+   * @param {string} o.host — адрес владельца
+   * @param {number} o.port — порт канала у владельца
+   * @param {string} o.token — пропуск, выданный владельцем
+   * @param {string} [o.com] — имя порта владельца («COM12»), под ним появится наш
+   * @param {object|null} [o.params] — параметры порта владельца; применяются нашему концу
+   * @param {string} [o.label]
+   * @param {(stage: string) => void} [o.onStage]
+   * @returns {Promise<{ com: string, params: object|null, note: string|null }>}
+   */
+  async borrow({ key, host, port, token, com = null, params = null, label = 'порт', onStage = () => {} }) {
+    const blocker = this.borrowBlocker();
+    if (blocker) throw errWith('unavailable', blocker);
+    if (this.borrows.has(key)) await this.giveBack(key);
+
+    const b = {
+      key, pair: null, pump: null, client: null, stopped: false, label,
+      params: null, failed: null, note: null, ownerLines: null, localLines: null,
+    };
+    this.borrows.set(key, b);
+    try {
+      onStage('создаётся пара виртуальных портов');
+      b.pair = await this._com0com.createPair(com || null);
+      this._rememberPair(b);
+      // Имя владельца могло не достаться: рядом с парой живёт объяснение.
+      b.note = b.pair.theirsNote || null;
+
+      onStage('открывается наш конец пары');
+      const { pump } = await this._openPump(b.pair.ours);
+      b.pump = pump;
+      // Насос начинается слушать раньше сети: байты из порта человека не
+      // теряются за время подключения к владельцу.
+      pump.on('data', (bytes) => {
+        if (b.stopped) return;
+        if (!b.client?.send(PKT.DATA, bytes)) {
+          pump.stdout.pause();
+          b.client?.onceDrain(() => pump.stdout.resume());
+        }
+      });
+      // Человек выставил линии на своём порту: доезжают до владельца как RTS/DTR.
+      pump.on('msr', (mask) => this._localLinesChanged(b, mask));
+      pump.on('exit', (code, err) => {
+        if (b.stopped) return;
+        b.failed = `насос порта завершился (${code})${err ? `: ${err}` : ''}`;
+        log.warn(`порт «${b.pair.theirs}»: ${b.failed} — соединение с владельцем закрыто`);
+        b.client?.stop();
+        this.emit('changed');
+      });
+
+      if (params) {
+        await this._applyParams(pump, params);
+        b.params = params;
+      }
+
+      onStage('подключение к порту владельца');
+      b.client = new LinkClient({ host, port, token, label: `порт «${b.pair.theirs}»`, serial: true, onPacket: (t, p) => this._netPacket(b, t, p) });
+      b.client.on('connected', () => this.emit('changed'));
+      b.client.on('disconnected', () => this.emit('changed'));
+      b.client.on('rejected', () => this.emit('changed'));
+      await this._connect(b.client);
+
+      log.info(`чужой порт подключён как «${b.pair.theirs}» (наш конец «${b.pair.ours}»), канал на ${host}:${port}`);
+      this.emit('changed');
+      return { com: b.pair.theirs, params: b.params, note: b.note };
+    } catch (e) {
+      await this._stopBorrow(b);
+      throw e;
+    }
+  }
+
+  /** Первое подключение к каналу — с повторами, как у сетевых карт. */
+  async _connect(client, attempts = 4) {
+    for (let i = 1; ; i++) {
+      try {
+        await client.start();
+        return;
+      } catch (e) {
+        if (e.code === 'rejected' || i >= attempts) throw e;
+        log.debug(`${client.label}: канал не ответил (${e.message}), попытка ${i} из ${attempts}`);
+        await new Promise((r) => setTimeout(r, 1500 * i));
+      }
+    }
+  }
+
+  _netPacket(b, type, payload) {
+    if (b.stopped) return;
+    switch (type) {
+      case PKT.DATA:
+        if (payload.length && !b.pump.write(payload)) {
+          b.client?.pause();
+          b.pump.stdin.once('drain', () => b.client?.resume());
+        }
+        break;
+      // Линии владельца — к перекрёстной проводке нашего конца: CTS владельца
+      // станет RTS у нас, и человек увидит его как CTS своего порта.
+      case PKT.MSR: {
+        const want = { rts: Boolean(payload[0] & MSR_CTS), dtr: Boolean(payload[0] & MSR_DSR) };
+        const sig = `${want.rts ? 1 : 0}${want.dtr ? 1 : 0}`;
+        if (sig !== b.ownerLines) {
+          b.ownerLines = sig;
+          b.pump.ctrl((want.rts ? CTRL_RTS_ON : CTRL_RTS_OFF) | (want.dtr ? CTRL_DTR_ON : CTRL_DTR_OFF));
+        }
+        break;
+      }
+      case PKT.ERROR:
+        b.failed = payload.toString('utf8');
+        log.warn(`порт владельца: ${b.failed}`);
+        this.emit('changed');
+        break;
+      // PARAMS, PARAMS_RESULT от владельца не приходят: параметры — слово клиента.
+    }
+  }
+
+  _localLinesChanged(b, mask) {
+    if (b.stopped) return;
+    const want = { rts: Boolean(mask & MSR_CTS), dtr: Boolean(mask & MSR_DSR) };
+    const sig = `${want.rts ? 1 : 0}${want.dtr ? 1 : 0}`;
+    if (sig === b.localLines) return;
+    b.localLines = sig;
+    b.client?.send(PKT.CTRL, Buffer.from([(want.rts ? CTRL_RTS_ON : CTRL_RTS_OFF) | (want.dtr ? CTRL_DTR_ON : CTRL_DTR_OFF)]));
+  }
+
+  _rememberPair(b) {
+    const held = { ...(this.config.get('serialPairs') || {}) };
+    held[b.key] = { id: b.pair.id, ours: b.pair.ours, theirs: b.pair.theirs };
+    this.config.set({ serialPairs: held });
+  }
+
+  async giveBack(key) {
+    const b = this.borrows.get(key);
+    if (!b) return;
+    await this._stopBorrow(b);
+    log.info(`порт «${b.pair?.theirs}» отключён`);
+    this.emit('changed');
+  }
+
+  async _stopBorrow(b) {
+    b.stopped = true;
+    this.borrows.delete(b.key);
+    const held = { ...(this.config.get('serialPairs') || {}) };
+    delete held[b.key];
+    this.config.set({ serialPairs: held });
+    b.client?.stop();
+    if (b.pump) {
+      b.pump.close();
+      await this._waitExit(b.pump);
+      b.pump = null;
+    }
+    if (b.pair) {
+      await this._com0com.removePair(b.pair.id).catch((e) => log.warn(`пара портов ${b.pair.id} не убрана: ${e.message}`));
+      b.pair = null;
+    }
+    this.emit('changed');
+  }
+
+  /** Пары, оставшиеся от прошлого запуска: приложение могло упасть с занятым портом. */
+  async _recoverPairs() {
+    const held = { ...(this.config.get('serialPairs') || {}) };
+    for (const [key, rec] of Object.entries(held)) {
+      delete held[key];
+      this.config.set({ serialPairs: held });
+      try {
+        await this._com0com.removePair(rec.id);
+        log.info(`убрана пара портов прошлого запуска (${rec.theirs})`);
+      } catch (e) {
+        log.warn(`пара ${rec.id} (${rec.theirs}) не убрана: ${e.message}`);
+      }
+    }
+  }
+
   describe() {
     return {
       lends: [...this.lends.values()].map((l) => ({
@@ -640,6 +851,14 @@ export class SerialShare extends EventEmitter {
         connected: Boolean(l.session?.connected()),
         params: l.params,
         failed: l.failed || null,
+      })),
+      borrows: [...this.borrows.values()].map((b) => ({
+        key: b.key,
+        com: b.pair?.theirs || null,
+        ours: b.pair?.ours || null,
+        connected: Boolean(b.client?.connected),
+        params: b.params,
+        failed: b.failed || null,
       })),
     };
   }
