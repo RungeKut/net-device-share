@@ -19,6 +19,11 @@
 //
 // Дальше — кадры в обе стороны.
 //
+// Тот же порт несёт и байтовый режим для COM-портов (см. serialLink.js):
+// приветствие «NDS1» означает пакеты порта вместо кадров. Токен одного
+// режима не открывает другой — сеансы хранятся в одной карте, но при входе
+// режим сверяется с тем, для которого сеанс открыт.
+//
 // ОДИН ПОРТ НА ВСЕ ЗАНЯТИЯ. Сервер слушает один порт и по токену понимает,
 // к какому адаптеру относится соединение. Правило брандмауэра нужно одно, и
 // его не надо переоткрывать на каждое занятие.
@@ -31,10 +36,13 @@ import crypto from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { logger } from '../log.js';
 import { FrameCutter } from './tapRelay.js';
+import { PacketCutter, packetFrame } from './serialLink.js';
 
 const log = logger('tap-link');
 
 const MAGIC = Buffer.from('NDL1', 'ascii');
+/** Приветствие байтового режима (COM-порты), см. serialLink.js. */
+export const SERIAL_MAGIC = Buffer.from('NDS1', 'ascii');
 export const TOKEN_BYTES = 32;
 const HELLO_TIMEOUT_MS = 8000;
 /** Проверка живости соединения: мёртвый собеседник обнаружится за ~20 с. */
@@ -115,6 +123,33 @@ function splice(relay, socket, rest, label) {
   socket.resume();
 }
 
+/**
+ * Сращивание байтового сеанса: пакеты из сокета — обработчику сеанса.
+ * Обработчик сам решает, что писать в сокет (session.send), и сам несёт
+ * ответственность за напор: при паузе стека — pause() и onceDrain().
+ */
+function splicePackets(session, socket, rest) {
+  socket.setNoDelay(true);        // пакеты мелкие, задержка важнее упаковки
+  socket.setKeepAlive(true, KEEPALIVE_MS);
+
+  const cutter = new PacketCutter();
+  const onData = (chunk) => {
+    let packets;
+    try {
+      packets = cutter.push(chunk);
+    } catch (e) {
+      log.warn(`${session.label}: ${e.message} — соединение закрыто`);
+      socket.destroy();
+      return;
+    }
+    for (const p of packets) session.onPacket(p.type, p.payload);
+  };
+
+  socket.on('data', onData);
+  if (rest && rest.length) onData(rest);
+  socket.resume();
+}
+
 // ------------------------------------------------------------------ сервер
 
 export class LinkServer extends EventEmitter {
@@ -147,8 +182,16 @@ export class LinkServer extends EventEmitter {
     });
   }
 
+  _close(session) {
+    this.sessions.delete(session.key);
+    if (session.socket) {
+      session.socket.destroy();
+      session.socket = null;
+    }
+  }
+
   /**
-   * Открыть сеанс для одного занятия.
+   * Открыть сеанс для одного занятия сетевой карты (кадры L2).
    *
    * @param {object} o
    * @param {import('./tapRelay.js').TapRelay} o.relay
@@ -158,12 +201,10 @@ export class LinkServer extends EventEmitter {
    *   setRelay: (relay: object) => void }}
    */
   open({ relay, allowAddress = null, label = 'канал', deviceId = null }) {
-    const token = newToken();
-    const key = tokenKey(Buffer.from(token, 'hex'));
-    const session = { key, relay, allowAddress: allowAddress ? normalizeIp(allowAddress) : null, label, socket: null, deviceId };
-    this.sessions.set(key, session);
+    const session = { kind: 'l2', relay, ...this._session(allowAddress, label, deviceId) };
+    this.sessions.set(session.key, session);
     return {
-      token,
+      token: session.token,
       close: () => this._close(session),
       connected: () => Boolean(session.socket),
       // Посредник подняли заново: текущее соединение закрываем, держатель
@@ -175,12 +216,44 @@ export class LinkServer extends EventEmitter {
     };
   }
 
-  _close(session) {
-    this.sessions.delete(session.key);
-    if (session.socket) {
-      session.socket.destroy();
-      session.socket = null;
-    }
+  /**
+   * Открыть байтовый сеанс для занятия COM-порта. Правила входа те же, что
+   * у кадров: токен занятия и, при желании, адрес держателя. Обработчик
+   * получает пакеты клиента (serialLink.PKT); отвечать — send().
+   *
+   * @param {object} o
+   * @param {(type: number, payload: Buffer) => void} o.onPacket
+   * @param {string|null} [o.allowAddress]
+   * @param {string} [o.label]
+   * @returns {{ token: string, close: () => void, connected: () => boolean,
+   *   send: (type: number, payload?: Buffer) => boolean,
+   *   pause: () => void, resume: () => void, onceDrain: (cb: () => void) => void }}
+   */
+  openSerial({ onPacket, allowAddress = null, label = 'порт', deviceId = null }) {
+    const session = { kind: 'serial', onPacket, ...this._session(allowAddress, label, deviceId) };
+    this.sessions.set(session.key, session);
+    return {
+      token: session.token,
+      close: () => this._close(session),
+      connected: () => Boolean(session.socket),
+      send: (type, payload) => (session.socket ? session.socket.write(packetFrame(type, payload)) : false),
+      // Напор от насоса к сети: сеть не успевает — останавливаем источник.
+      pause: () => session.socket?.pause(),
+      resume: () => session.socket?.resume(),
+      onceDrain: (cb) => session.socket?.once('drain', cb),
+    };
+  }
+
+  _session(allowAddress, label, deviceId) {
+    const token = newToken();
+    return {
+      key: tokenKey(Buffer.from(token, 'hex')),
+      token,
+      allowAddress: allowAddress ? normalizeIp(allowAddress) : null,
+      label,
+      deviceId,
+      socket: null,
+    };
   }
 
   async _accept(socket) {
@@ -188,13 +261,23 @@ export class LinkServer extends EventEmitter {
     socket.on('error', (e) => log.debug(`канал: ${from} — ${e.message}`));
 
     const { hello, rest } = await readHello(socket, MAGIC.length + TOKEN_BYTES, HELLO_TIMEOUT_MS);
-    const session = hello.subarray(0, MAGIC.length).equals(MAGIC)
+    const head = hello.subarray(0, MAGIC.length);
+    const serial = head.equals(SERIAL_MAGIC);
+    const session = serial || head.equals(MAGIC)
       ? this.sessions.get(tokenKey(hello.subarray(MAGIC.length)))
       : null;
 
+    // Токен одного режима не работает в другом: сеанс карт не примет пакеты
+    // COM и наоборот.
+    if (session && (serial ? session.kind !== 'serial' : session.kind === 'serial')) {
+      log.warn(`канал: отказ ${from} — токен другого режима канала`);
+      socket.end(Buffer.concat([head, Buffer.from([0])]));
+      return;
+    }
+
     if (!session || (session.allowAddress && session.allowAddress !== from)) {
       log.warn(`канал: отказ ${from} — ${session ? `ожидался адрес ${session.allowAddress}` : 'неизвестный токен'}`);
-      socket.end(Buffer.concat([MAGIC, Buffer.from([0])]));
+      socket.end(Buffer.concat([head, Buffer.from([0])]));
       return;
     }
 
@@ -207,7 +290,7 @@ export class LinkServer extends EventEmitter {
       oldSocket.destroy();
     }
     session.socket = socket;
-    socket.write(Buffer.concat([MAGIC, Buffer.from([1])]));
+    socket.write(Buffer.concat([head, Buffer.from([1])]));
     socket.once('close', () => {
       if (session.socket === socket) {
         session.socket = null;
@@ -215,7 +298,8 @@ export class LinkServer extends EventEmitter {
         this.emit('disconnected', { label: session.label, address: from, deviceId: session.deviceId });
       }
     });
-    splice(session.relay, socket, rest, session.label);
+    if (serial) splicePackets(session, socket, rest);
+    else splice(session.relay, socket, rest, session.label);
     log.info(`${session.label}: подключён ${from}`);
     this.emit('connected', { label: session.label, address: from, deviceId: session.deviceId });
   }
@@ -240,13 +324,20 @@ export class LinkServer extends EventEmitter {
  * действует: право отозвано, и heartbeat сейчас это же и подтвердит).
  */
 export class LinkClient extends EventEmitter {
-  constructor({ relay, host, port, token, label = 'канал' }) {
+  /**
+   * @param {object} o
+   * @param {boolean} [o.serial] — байтовый режим (COM-порт), а не кадры L2
+   * @param {(type: number, payload: Buffer) => void} [o.onPacket] — для serial
+   */
+  constructor({ relay = null, host, port, token, label = 'канал', serial = false, onPacket = null }) {
     super();
     this.relay = relay;
     this.host = host;
     this.port = port;
     this.token = Buffer.from(token, 'hex');
     this.label = label;
+    this.serial = serial;
+    this.onPacket = onPacket;
     this.socket = null;
     this.stopped = false;
     this.retryMs = 1000;
@@ -293,15 +384,16 @@ export class LinkClient extends EventEmitter {
       socket.once('error', (e) => fail(e));
 
       socket.once('connect', async () => {
-        socket.write(Buffer.concat([MAGIC, this.token]));
+        const magic = this.serial ? SERIAL_MAGIC : MAGIC;
+        socket.write(Buffer.concat([magic, this.token]));
         let reply;
         try {
-          reply = await readHello(socket, MAGIC.length + 1, HELLO_TIMEOUT_MS);
+          reply = await readHello(socket, magic.length + 1, HELLO_TIMEOUT_MS);
         } catch (e) {
           fail(e);
           return;
         }
-        if (!reply.hello.subarray(0, MAGIC.length).equals(MAGIC) || reply.hello[MAGIC.length] !== 1) {
+        if (!reply.hello.subarray(0, magic.length).equals(magic) || reply.hello[magic.length] !== 1) {
           const e = new Error('владелец не принял соединение — право на интерфейс больше не действует');
           e.code = 'rejected';
           fail(e);
@@ -316,13 +408,32 @@ export class LinkClient extends EventEmitter {
         this.socket = socket;
         this.connectedAt = Date.now();
         this.retryMs = 1000;
-        splice(this.relay, socket, reply.rest, this.label);
+        if (this.serial) splicePackets(this, socket, reply.rest);
+        else splice(this.relay, socket, reply.rest, this.label);
         socket.once('close', () => this._lost(socket));
         log.info(`${this.label}: соединение с ${this.host}:${this.port} установлено`);
         this.emit('connected');
         resolve();
       });
     });
+  }
+
+  /** Пакет владельцу (только serial-режим). false — буфер полон, нужен пауза/onceDrain. */
+  send(type, payload) {
+    const s = this.socket;
+    return s ? s.write(packetFrame(type, payload)) : false;
+  }
+
+  pause() {
+    this.socket?.pause();
+  }
+
+  resume() {
+    this.socket?.resume();
+  }
+
+  onceDrain(cb) {
+    this.socket?.once('drain', cb);
   }
 
   _lost(socket) {

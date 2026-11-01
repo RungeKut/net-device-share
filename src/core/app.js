@@ -26,6 +26,7 @@ import { Realms } from '../net/realms.js';
 import { TrafficProxy } from '../net/trafficProxy.js';
 import { TunnelServer } from '../net/tunnels.js';
 import { NetShare } from './netShare.js';
+import { SerialShare } from './serialShare.js';
 import { DriverShare } from './driverShare.js';
 import { readVersion } from './paths.js';
 import { Updater } from '../update/updater.js';
@@ -127,6 +128,11 @@ export class App extends EventEmitter {
     });
     await this.net.start();
     await this.netManager.start();
+    // Проброс COM-портов идёт через канал сетевых карт (тот же порт, своё
+    // приветствие): запускается после него и умирает раньше него.
+    this.serial = new SerialShare({ config: this.config });
+    await this.serial.start({ server: this.net.server });
+    this.serial.on('changed', () => this.onStateChanged());
     this.net.on('changed', () => this.onStateChanged());
     this.net.on('traffic', () => this.api?.pushState());
     // Карта сети в снимок не входит (её опись — секунда PowerShell); здесь
@@ -1457,6 +1463,7 @@ export class App extends EventEmitter {
     this.share?.stop();
     // Отданную карту — системе. Иначе компьютер остался бы без неё до
     // следующего запуска.
+    await this.serial?.stop().catch((e) => log.warn('COM-порты:', e.message));
     await this.netManager?.stop().catch((e) => log.warn('коммутаторы:', e.message));
     await this.net?.stop().catch((e) => log.warn('сетевые карты:', e.message));
     this.directory?.stop();
