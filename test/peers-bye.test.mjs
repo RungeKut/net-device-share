@@ -60,7 +60,7 @@ test('прощание узла, о котором ещё рассказывае
   assert.equal(peer.address, '10.0.6.9', 'основной адрес — пересказанный');
   assert.equal(peer.via, 'gw');
   assert.equal(peer.viaName, 'GW');
-  assert.equal(peer.routeKey, '10.0.6.9|gw');
+  assert.equal(peer.routeKey, '10.0.6.9:47812|gw');
   assert.deepEqual(peer.realmSeen, {}, 'в нашей подсети узла больше не слышно');
   assert.equal(peer.online, false, 'прямого доказательства жизни нет — присутствие подтвердится каталогом или опросом');
   assert.ok(peer.timeoutMs > 0);
@@ -136,4 +136,40 @@ test('noteGhosts: нашли себя — узел знает, что его в�
 
   reg.noteGhosts([]);
   assert.equal(reg.ghosted, null, 'отражение пропало — знак снят');
+});
+
+test('разные маски у соседей — не «чужая сеть»: источник внутри объявленной сети', () => {
+  const reg = registry();
+  reg.onAnnounce({
+    nodeId: 'm', name: 'M', address: '10.0.3.46', realm: 'open', apiPort: 47812, usbipPort: 3240,
+    stateHash: 'h', next: 3000, network: '10.0.3.0/24',   // сосед считает свою подсеть /24, у нас /21
+  });
+  assert.equal(reg.get('m').redirected, null, 'источник внутри своей сети — честный узел');
+});
+
+test('пересказанный узел с нашим же адресом не заводится', () => {
+  const reg = registry();
+  reg.opts.isOwnAddress = (ip) => ip === '200.100.1.1';
+  reg.onDirectory(
+    [{ nodeId: 'vm', name: 'VM', address: '200.100.1.1', apiPort: 47812, usbipPort: 3240, network: '192.168.52.0/24' }],
+    { origin: 'relay', realm: 'open', viaNodeId: 'nb', viaName: 'NB', via: { nodeId: 'nb', name: 'NB', address: '10.0.3.5', apiPort: 47812 } },
+  );
+  assert.equal(reg.get('vm'), undefined, 'отражение от соседа — в список не попадает');
+});
+
+test('узел, весь транспорт которого — отражённые анонсы, не пересказывается', () => {
+  const reg = registry();
+  reg.opts.networkOf = (ip) => (ip.startsWith('10.0.3.') ? NET_A : null);
+  reg.onAnnounce({
+    nodeId: 'vm', name: 'VM', address: '10.0.3.46', realm: 'open', apiPort: 47812, usbipPort: 3240,
+    stateHash: 'h', next: 3000, network: '192.168.52.0/24',
+  });
+  assert.ok(reg.get('vm').redirected, 'помечен: источник вне объявленной сети');
+  assert.deepEqual(reg.directoryEntries('open', { forNetwork: '10.0.9.0/24' }), [], 'не рассказываем');
+
+  reg.noteSeedSelf('vm', '10.0.3.46', 47822);   // появился рабочий проброс + seed
+  const out = reg.directoryEntries('open', { forNetwork: '10.0.9.0/24' });
+  assert.equal(out.length, 1, 'рабочий маршрут — снова рассказываем');
+  assert.equal(out[0].address, '10.0.3.46');
+  assert.equal(out[0].apiPort, 47822, 'адрес:порт из основного маршрута, не из отражённого');
 });

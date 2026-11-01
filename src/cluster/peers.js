@@ -32,6 +32,7 @@ import { jittered } from '../core/jitter.js';
 import { rpc } from '../net/rpc.js';
 import crypto from 'node:crypto';
 import { OPEN_REALM } from '../net/realms.js';
+import { ipInCidr } from '../net/interfaces.js';
 
 const log = logger('peers');
 
@@ -230,6 +231,7 @@ export class PeerRegistry extends EventEmitter {
       /** @type {Map<string, object>} ключ → маршрут (адрес в какой-то из сетей) */
       routes: new Map(),
       routeKey: null,
+      redirected: null,
       // Круг доверия, в котором узел услышан. По нему выбирается ключ
       // для вызовов к нему и понятное название сети в списке.
       realm: null,
@@ -260,12 +262,13 @@ export class PeerRegistry extends EventEmitter {
     }
 
     const heardOn = this.opts.networkOf?.(msg.address) || null;
-    // Объявляется из одной сети, а слышен в другой: за NAT, за туннелем или
-    // с неверной маской. Прямо его порты из нашей сети недоступны, и об этом
-    // надо сказать сразу, а не давать гадать по «не отвечает».
-    if (msg.network && heardOn && msg.network !== heardOn) {
+    // Источник пакета вне сети, от имени которой он объявляется: анонсы идут
+    // через NAT или туннель, и напрямую его порты из нашей сети недоступны.
+    // Сравнивать строку сети с нашей нельзя — маски у соседей отличаются, и
+    // честный узел выглядел бы «за NAT».
+    if (msg.network && !ipInCidr(msg.address, msg.network)) {
       peer.redirected = { network: msg.network, heardOn };
-    } else if (peer.redirected && (!msg.network || msg.network === heardOn)) {
+    } else if (peer.redirected && (!msg.network || ipInCidr(msg.address, msg.network))) {
       peer.redirected = null;
     }
 
@@ -274,7 +277,7 @@ export class PeerRegistry extends EventEmitter {
       apiPort: msg.apiPort, usbipPort: msg.usbipPort, trafficPort: msg.trafficPort, netLinkPort: msg.netLinkPort,
       network: msg.network || null, heardOn, via: null, mode: 'direct',
     }, now);
-    peer.routeKey = this._routeKey({ address, via: null });
+    peer.routeKey = this._routeKey({ address, apiPort: msg.apiPort, via: null });
 
     const renamed = existing && existing.name !== msg.name;
     const moved = existing && existing.address !== address;
@@ -423,6 +426,9 @@ export class PeerRegistry extends EventEmitter {
     for (const e of entries) {
       if (!e || typeof e.nodeId !== 'string' || !e.address || !e.apiPort) continue;
       if (e.nodeId === this.opts.nodeId) continue; // мы сами
+      // Пересказ узла с нашим же адресом — отражение (виртуалка за NAT):
+      // соединение с таким адресом привело бы в нас самих.
+      if (this.opts.isOwnAddress?.(e.address)) continue;
 
       const existing = this.peers.get(e.nodeId);
 
@@ -526,17 +532,29 @@ export class PeerRegistry extends EventEmitter {
       // рассказывать мосту из «Лаборатории» об узлах «Цеха» значило бы
       // склеить обратно то, что ключи разделяют.
       if (p.realm !== realm) continue;
+      // Узел, весь транспорт которого — отражённые анонсы (за NAT), для
+      // соседей этой сети недостижим: пересказывать его — распространять
+      // шум. Появился рабочий маршрут (проброс + seed) — снова рассказываем.
+      if (p.redirected && ![...p.routes.values()].some((r) => r.kind !== 'direct')) continue;
       const via = forNetwork && p.origin === 'local'
-        ? [...p.routes.values()].find((r) => r.kind === 'direct' && r.heardOn && r.heardOn !== forNetwork) : null;
+        ? [...p.routes.values()].find((r) => r.kind === 'direct' && r.heardOn && r.heardOn !== forNetwork
+          // Отражённый маршрут (источник вне объявленной сети) рабочим не
+          // является: пересказанный по нему адрес недостижим.
+          && !(r.network && !ipInCidr(r.address, r.network)))
+        : null;
+      // Основной маршрут знает рабочий адрес:port — у узла за пробросом
+      // это единственное, до чего дотянуться, внутренний адрес из каталога
+      // мёртв.
+      const main = p.routes.get(p.routeKey);
       out.push({
         nodeId: p.nodeId,
         name: p.name,
-        address: via?.address || p.address,
-        apiPort: via?.apiPort || p.apiPort,
-        usbipPort: via?.usbipPort || p.usbipPort,
-        trafficPort: via?.trafficPort ?? p.trafficPort,
-        netLinkPort: via?.netLinkPort ?? p.netLinkPort,
-        network: via?.network || p.network,
+        address: via?.address || main?.address || p.address,
+        apiPort: via?.apiPort || main?.apiPort || p.apiPort,
+        usbipPort: via?.usbipPort || main?.usbipPort || p.usbipPort,
+        trafficPort: via?.trafficPort ?? main?.trafficPort ?? p.trafficPort,
+        netLinkPort: via?.netLinkPort ?? main?.netLinkPort ?? p.netLinkPort,
+        network: via?.network || main?.network || p.network,
         platform: p.platform,
         version: p.version,
         startedAt: p.startedAt,
@@ -634,7 +652,7 @@ export class PeerRegistry extends EventEmitter {
       usbipPort: peer.usbipPort, trafficPort: peer.trafficPort, netLinkPort: peer.netLinkPort,
       network: null, heardOn: null, via: null, mode: 'direct',
     });
-    peer.routeKey = this._routeKey({ address: host, via: null });
+    peer.routeKey = this._routeKey({ address: host, apiPort: port, via: null });
     this.emit('changed');
   }
 
@@ -671,7 +689,10 @@ export class PeerRegistry extends EventEmitter {
   // ------------------------------------------------------------- маршруты
 
   _routeKey(r) {
-    return `${r.address}|${r.via?.nodeId || ''}`;
+    // Порт — часть конечной точки: у узла за пробросом один адрес отвечает
+    // и «протёкшим» анонсом (порт хозяина), и рабочим маршрутом (порт
+    // проброса). Без порта в ключе они затирали бы друг друга.
+    return `${r.address}:${r.apiPort ?? ''}|${r.via?.nodeId || ''}`;
   }
 
   /** Добавить или обновить маршрут. @returns {boolean} появился новый или изменился адрес сети. */

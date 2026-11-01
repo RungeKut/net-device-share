@@ -202,6 +202,7 @@ export class App extends EventEmitter {
       remotePollIntervalMs: this.config.get('remotePollIntervalMs'),
       timerJitter: this.config.get('timerJitter'),
       networkOf: (ip) => this.networkOf(ip),
+      isOwnAddress: (ip) => this.networks.some((n) => n.address === ip),
     });
     this.directory = new DirectoryService({
       peers: this.peers,
