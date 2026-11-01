@@ -62,7 +62,15 @@ test('прощание узла, о котором ещё рассказывае
   assert.equal(peer.viaName, 'GW');
   assert.equal(peer.routeKey, '10.0.6.9|gw');
   assert.deepEqual(peer.realmSeen, {}, 'в нашей подсети узла больше не слышно');
+  assert.equal(peer.online, false, 'прямого доказательства жизни нет — присутствие подтвердится каталогом или опросом');
   assert.ok(peer.timeoutMs > 0);
+
+  // Каталог всё ещё рассказывает о узле — запись возвращается в сеть.
+  reg.onDirectory(
+    [{ nodeId: 'a1', name: 'A1', address: '10.0.6.9', apiPort: 47812, usbipPort: 3240, network: NET_B, stateHash: 'h' }],
+    { origin: 'relay', realm: 'open', viaNodeId: 'gw', viaName: 'GW', via: { nodeId: 'gw', name: 'GW', address: '10.0.3.1', apiPort: 47812 } },
+  );
+  assert.equal(reg.get('a1').online, true, 'пересказ подтвердился — узел снова в сети');
 });
 
 test('пересказ, о котором давно никто не рассказывал, прощание не спасает', () => {

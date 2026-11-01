@@ -253,3 +253,16 @@ test('чужой узел с адреса этой машины: предупр�
   assert.deepEqual(st.selfMachine, ['10.99.99.5']);
   assert.match(String(st.selfMachine), /10\.99\.99\.5/);
 });
+
+test('подделанный пакет: nodeId не строка и огромное имя не ломают разбор', () => {
+  const d = make();
+  d.legs.set(NET.address, healthyLeg());
+  const announces = [];
+  d.on('announce', (m) => announces.push(m));
+  assert.doesNotThrow(() => {
+    d._onMessage(pkt({ type: MSG.ANNOUNCE, nodeId: 123, name: 'з'.repeat(100000) }), { address: NET.address });
+    d._onMessage(pkt({ type: MSG.ANNOUNCE, nodeId: 123 }), { address: NET.address });
+  });
+  assert.deepEqual(d.stats().selfMachine, [NET.address], 'адрес записан один раз — предупреждение тоже');
+  assert.equal(announces.length, 2, 'пакет не отброшен: узлам на одной машине друг друга видно');
+});

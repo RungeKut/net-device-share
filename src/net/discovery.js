@@ -188,13 +188,18 @@ export class Discovery extends EventEmitter {
     // профиль, свой nodeId). В списке он выглядит задвоением этого узла,
     // поэтому о нём надо сказать один раз внятно, а не молча заводить запись.
     // НЕ отбрасываем: стенд поднимает много узлов на одной машине, и они
-    // обязаны друг друга видеть.
-    if (this._isOwnAddress(from)) {
-      if (!this.selfMachineSeen.has(from) && this.selfMachineSeen.size < 64) {
-        this.selfMachineSeen.add(from);
-        this._warnLimited(`self:${from}`, `с адреса ${from} этой машины анонсируется ЧУЖОЙ узел «${message.name || message.nodeId.slice(0, 8)}» — `
-          + 'здесь работает ещё один экземпляр приложения со своим nodeId: в списке узлов он выглядит задвоением этого узла');
-      }
+    // обязаны друг друга видеть. Проверка — только по своим адресам и без
+    // os.networkInterfaces(): путь горячий (каждый анонс каждого соседа),
+    // а набор сетей и так освежается раз в 5 с. Имя из пакета режется:
+    // журнал не должен есть строку любого размера, даже раз в полминуты.
+    const who = typeof message.name === 'string' && message.name
+      ? message.name.slice(0, 64)
+      : (typeof message.nodeId === 'string' ? message.nodeId.slice(0, 8) : '?');
+    if (!this.selfMachineSeen.has(from) && this._nets().some((n) => n.address === from)
+      && this.selfMachineSeen.size < 64) {
+      this.selfMachineSeen.add(from);
+      this._warnLimited(`self:${from}`, `с адреса ${from} этой машины анонсируется ЧУЖОЙ узел «${who}» — `
+        + 'здесь работает ещё один экземпляр приложения со своим nodeId: в списке узлов он выглядит задвоением этого узла');
     }
 
     switch (message.type) {
@@ -215,7 +220,12 @@ export class Discovery extends EventEmitter {
     }
   }
 
-  /** Адрес одного из наших интерфейсов: свой пакет или второй экземпляр на этой машине. */
+  /**
+   * Адрес одного из наших интерфейсов — полный список, включая появившиеся
+   * после запуска. os.networkInterfaces() здесь позволителен: путь редкий
+   * (свой nodeId в пакете — только эхо и клоны), в отличие от проверки
+   * «призрака» выше, которая идёт на каждом анонсе.
+   */
   _isOwnAddress(from) {
     return this._nets().some((n) => n.address === from) || listNetworks().some((n) => n.address === from);
   }

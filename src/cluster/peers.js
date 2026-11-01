@@ -376,6 +376,9 @@ export class PeerRegistry extends EventEmitter {
       peer.routeKey = told.key;
       peer.seenAt = {};
       peer.realmSeen = {};
+      // Прямого доказательства жизни больше нет: присутствие подтверждается
+      // заново — каталогом (onDirectory) или прямым опросом (_pollRemote).
+      peer.online = false;
       // Таймаут теперь по обмену, а не по анонсам, которых больше не будет.
       peer.timeoutMs = this._timeoutFor(peer);
       log.info(`узел "${peer.name}" покинул нашу подсеть — остался в списке по пересказу шлюза «${peer.viaName || '—'}»`);
