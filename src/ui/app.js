@@ -9,6 +9,7 @@
 // права проверяет сервер, здесь лишь убираем заведомо бесполезные кнопки.
 
 import { initNet } from './net.js';
+import { getLang, setLang, startI18n } from './i18n.js';
 
 const $ = (sel) => document.querySelector(sel);
 let state = null;
@@ -1712,6 +1713,12 @@ fetch('/api/v1/session')
   .catch(() => {});
 
 net = initNet({ $, esc, post, action, toast, canEdit, getState: () => state, routeWarning });
+// Язык интерфейса: по умолчанию английский, выбор живёт в этом браузере.
+// Смена перезагружает страницу (i18n.setLang) — слушать нужно до startI18n.
+const langSelect = $('#langSelect');
+langSelect.value = getLang();
+langSelect.addEventListener('change', () => setLang(langSelect.value));
+startI18n();
 connect();
 ensureNotificationPermission();
 
