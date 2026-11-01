@@ -232,7 +232,11 @@ export class Installer extends EventEmitter {
 
     const failed = [];
     for (const { component } of work) {
-      const ok = component.role === 'server' ? info.server : info.client;
+      // Роли server/client подтверждаются пробой бэкенда; остальным (Node.js,
+      // com0com) хватит проверки путей из манифеста — у них своей пробы нет.
+      const ok = component.role === 'server' ? info.server
+        : component.role === 'client' ? info.client
+        : (component.verifyPaths || []).some((p) => fs.existsSync(p));
       if (ok) this._step('info', `  ${component.id}: установлен`);
       else {
         failed.push(component.id);

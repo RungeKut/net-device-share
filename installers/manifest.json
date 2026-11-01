@@ -87,6 +87,32 @@
         "C:\\Program Files\\usbip-win\\usbip.exe"
       ],
       "requiresReboot": false
+    },
+    {
+      "id": "com0com",
+      "platform": "win32",
+      "role": "serial",
+      "title": "com0com — виртуальная пара COM-портов",
+      "description": "Драйвер виртуальных портов: у занявшего чужой COM-порт появляется локальная пара с тем же именем порта. Нужен только тому, кто занимает порты; владельцу он не требуется.",
+      "version": "3.0.0.0",
+      "file": "windows/com0com-3.0.0.0/Setup_com0com_v3.0.0.0_W7_x64_signed.exe",
+      "sha256": "26486b28604b49a9008c54feb11b9ece0008a8287ee5caf0bcf2a62f4317128f",
+      "sourceUrl": "https://sourceforge.net/projects/com0com/files/com0com/3.0.0.0/com0com-3.0.0.0-i386-and-x64-signed.zip",
+      "sourceNote": "zip с sourceUrl содержит установщики обеих разрядностей; здесь лежит извлечённый x64-установщик, его SHA-256 и есть контрольная сумма. Рядом COPYING — GPL-2.0 того же релиза; исходники релиза: https://sourceforge.net/p/com0com/code/ci/rel-3-0-0-0/",
+      "project": "https://sourceforge.net/projects/com0com/",
+      "license": "GPL-2.0",
+      "expectedSigner": "CyberCircuits",
+      "signerThumbprint": "24d85dc7025d8bbe83778c6bff78e715f4e59cd0",
+      "signerNote": "Установщик переподписан сторонней компанией (CyberCircuits, NZ), а не автором проекта; сертификат с таймштампом истёк в 2018. Файл закреплён SHA-256. Драйвер этой сборки грузится только при включённой тестовой подписи (код 52) — так же, как принято для драйверов этого проекта.",
+      "command": "{file}",
+      "args": [
+        "/S"
+      ],
+      "verifyPaths": [
+        "C:Program Filescom0comsetupc.exe",
+        "C:Program Files (x86)com0comsetupc.exe"
+      ],
+      "requiresReboot": false
     }
   ]
 }
