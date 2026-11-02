@@ -1,19 +1,14 @@
-// Языки веб-интерфейса.
-//
-// Исходный язык — русский: он стоит в разметке и в шаблонах app.js/net.js.
-// Английский — перевод; по умолчанию включён он. Перевод применяется прямо
-// к готовому DOM: словарь («русская фраза» → английская) накладывается на
-// текстовые узлы и атрибуты title/placeholder/aria-label, длинные фразы —
-// раньше коротких, замены не заходят внутрь слов. Так не нужно обкладывать
-// шаблоны вызовами t(): интерфейс и так перерисовывается целиком при каждом
-// обновлении состояния, а наблюдатель за изменениями переводит новое сразу.
-//
-// Цена подхода: фразы, которых нет в словаре, остаются по-русски. Они
-// собираются в missingStrings() — список показывается в консоли (и его же
-// смотрят при разборе, что забыли перевести).
-//
-// Выбор языка хранится в localStorage, по умолчанию английский. Смена языка
-// перезагружает страницу: русский текст в DOM обратно не собирается.
+// Языки интерфейса, ключевая схема: разметка и шаблоны ссылаются на ключи,
+// тексты живут в src/ui/i18n/<код>.js. Код языка попадает в import(), поэтому
+// берётся только из реестра LANGS — путь нельзя собрать из данных пользователя.
+// Нет перевода в словаре языка — берётся русский, нет ключа — сам ключ, не
+// загрузился словарь — работа на английском. Пока переходный период, поверх
+// ключей работает прежнее наложение словаря на кириллицу готового DOM (DICT
+// ниже) — оно не трогает уже переведённое. Смена языка перезагружает страницу:
+// русский текст в DOM обратно не собирается.
+
+import en from './i18n/en.js';
+import ru from './i18n/ru.js';
 
 const DICT = {
   // -------------------------------------------------------------- шапка, вкладки
@@ -763,9 +758,56 @@ export function dictEntries() {
   return Object.entries(DICT);
 }
 
+// ------------------------------------------------------------- реестр языков
+const LANGS = {
+  en: 'English',
+  ru: 'Русский',
+  'zh-Hans': '简体中文',
+  'zh-Hant': '繁體中文',
+  ja: '日本語',
+  ko: '한국어',
+  de: 'Deutsch',
+  fr: 'Français',
+  es: 'Español',
+  'es-MX': 'Español (Latinoamérica)',
+  it: 'Italiano',
+  'pt-BR': 'Português (Brasil)',
+  'pt-PT': 'Português',
+  nl: 'Nederlands',
+  pl: 'Polski',
+  tr: 'Türkçe',
+  sv: 'Svenska',
+  nb: 'Norsk bokmål',
+  da: 'Dansk',
+  fi: 'Suomi',
+  uk: 'Українська',
+  ar: 'العربية',
+  hi: 'हिन्दी',
+  bn: 'বাংলা',
+  id: 'Bahasa Indonesia',
+  ms: 'Bahasa Melayu',
+  vi: 'Tiếng Việt',
+  th: 'ไทย',
+  fil: 'Filipino',
+  sw: 'Kiswahili',
+};
+const RTL = new Set(['ar']);
+
+const dicts = { en, ru };
+
+function isLang(code) {
+  return typeof code === 'string' && Object.hasOwn(LANGS, code);
+}
+
+/** Реестр для переключателя языка в шапке. */
+export function languages() {
+  return Object.entries(LANGS).map(([code, name]) => ({ code, name, dir: RTL.has(code) ? 'rtl' : 'ltr' }));
+}
+
 let lang = 'en';
 try {
-  lang = localStorage.getItem('nds-lang') || 'en';
+  const saved = localStorage.getItem('nds-lang');
+  lang = isLang(saved) ? saved : 'en';
 } catch { /* приватный режим — просто язык по умолчанию */ }
 
 /** Перевод готовой строки. Вне английского текст не трогается. */
@@ -794,15 +836,25 @@ export function getLang() {
  * шаблонов вернёт исходное.
  */
 export function setLang(next) {
-  try {
-    localStorage.setItem('nds-lang', next);
-  } catch { /* приватный режим — язык доживёт до перезагрузки */ }
+  if (isLang(next)) {
+    try {
+      localStorage.setItem('nds-lang', next);
+    } catch { /* приватный режим — язык доживёт до перезагрузки */ }
+  }
   location.reload();
 }
 
-/** Перевести статичную строку шаблона (для тех мест, где walker не успевает). */
-export function t(s) {
-  return translateText(s);
+// hasOwn: ключ вроде 'constructor' не должен вытянуть метод прототипа.
+function pick(dict, key) {
+  return dict && Object.hasOwn(dict, key) ? dict[key] : undefined;
+}
+
+export function t(key, params) {
+  const text = pick(dicts[lang], key) ?? pick(dicts.ru, key) ?? key;
+  if (!params) return text;
+  return text.replace(/\{(\w+)\}/g, (token, name) => (
+    Object.hasOwn(params, name) && params[name] != null ? String(params[name]) : token
+  ));
 }
 
 function walkText(root) {
@@ -835,12 +887,35 @@ export function translateDom(root = document.body) {
 let observer = null;
 let scheduled = false;
 
+/** Ключи из разметки: data-i18n="ключ" и data-i18n-placeholder/title/aria-label. */
+function applyStatic(root = document) {
+  for (const el of root.querySelectorAll('[data-i18n]')) {
+    const key = el.getAttribute('data-i18n');
+    if (key) el.textContent = t(key);
+  }
+  for (const attr of ['placeholder', 'title', 'aria-label']) {
+    for (const el of root.querySelectorAll(`[data-i18n-${attr}]`)) {
+      const key = el.getAttribute(`data-i18n-${attr}`);
+      if (key) el.setAttribute(attr, t(key));
+    }
+  }
+}
+
 /**
  * Следить за изменениями DOM и переводить появляющееся. Свои правки не
  * зацикливаются: на время прохода наблюдатель отключается.
  */
-export function startI18n() {
-  document.documentElement.lang = lang === 'en' ? 'en' : 'ru';
+export async function startI18n() {
+  if (!dicts[lang]) {
+    try {
+      dicts[lang] = (await import('./i18n/' + lang + '.js')).default;
+    } catch {
+      lang = 'en';
+    }
+  }
+  document.documentElement.lang = lang;
+  document.documentElement.dir = RTL.has(lang) ? 'rtl' : 'ltr';
+  applyStatic();
   translateDom();
   if (lang !== 'en') return;
   observer = new MutationObserver(() => {
