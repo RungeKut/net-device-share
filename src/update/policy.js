@@ -11,7 +11,7 @@ const hash32 = (s) => crypto.createHash('sha256').update(s).digest().readUInt32B
 
 /**
  * Можно ли перезапускаться прямо сейчас.
- * @returns {{ok: boolean, reasons: string[]}}  reasons — по-русски, для интерфейса
+ * @returns {{ok: boolean, reasons: {text: string, code: string}[]}}
  */
 export function safeToRestart(app, { transfersActive = 0 } = {}) {
   const reasons = [];
@@ -20,18 +20,18 @@ export function safeToRestart(app, { transfersActive = 0 } = {}) {
   // Чужие аренды наших устройств.
   const foreign = [...(app.share?.claims?.values?.() || [])].filter((c) => c.holderId !== selfId);
   if (foreign.length) {
-    reasons.push(`наши устройства заняты другими (${foreign.length}): они потеряют соединение`);
+    reasons.push({ text: `наши устройства заняты другими (${foreign.length}): они потеряют соединение`, code: 'UPDATE_BLOCK_FOREIGN_CLAIMS', params: { count: foreign.length } });
   }
 
   // Наши подключения к чужим устройствам.
   const held = app.attach?.attachments?.size || 0;
-  if (held) reasons.push(`вы занимаете чужие устройства (${held}): подключения оборвутся`);
+  if (held) reasons.push({ text: `вы занимаете чужие устройства (${held}): подключения оборвутся`, code: 'UPDATE_BLOCK_HELD_DEVICES', params: { count: held } });
 
   // Чужая сетевая карта у нас в роли адаптера — разбирается при остановке.
-  if (app.config.get('netLent')) reasons.push('отдана сетевая карта: при перезапуске она вернётся системе');
+  if (app.config.get('netLent')) reasons.push({ text: 'отдана сетевая карта: при перезапуске она вернётся системе', code: 'UPDATE_BLOCK_NET_LENT', params: {} });
 
-  if (app.installer?.state === 'running') reasons.push('идёт установка компонентов');
-  if (transfersActive > 0) reasons.push(`соседи скачивают обновление с этого узла (${transfersActive})`);
+  if (app.installer?.state === 'running') reasons.push({ text: 'идёт установка компонентов', code: 'UPDATE_BLOCK_INSTALLING', params: {} });
+  if (transfersActive > 0) reasons.push({ text: `соседи скачивают обновление с этого узла (${transfersActive})`, code: 'UPDATE_BLOCK_TRANSFERS', params: { count: transfersActive } });
 
   return { ok: reasons.length === 0, reasons };
 }

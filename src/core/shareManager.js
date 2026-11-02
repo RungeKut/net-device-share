@@ -22,6 +22,7 @@ import crypto from 'node:crypto';
 import { logger } from '../log.js';
 import { BIND_STATE, CLAIM_MODE, stateHash } from '../net/protocol.js';
 import { typeInfo } from '../devices/types.js';
+import { fail } from './fail.js';
 
 const log = logger('share');
 
@@ -177,16 +178,16 @@ export class ShareManager extends EventEmitter {
 
   async setShared(deviceId, shared) {
     const dev = this.devices.get(deviceId);
-    if (!dev) throw errWith('device_not_found', `устройство ${deviceId} не найдено`);
-    if (dev.unavailableReason) throw errWith('unavailable', dev.unavailableReason);
+    if (!dev) throw fail('DEVICE_NOT_FOUND', `устройство ${deviceId} не найдено`);
+    if (dev.unavailableReason) throw fail('UNAVAILABLE', dev.unavailableReason);
 
     if (!shared && this._held(deviceId)) {
-      throw errWith('busy', 'устройство сейчас занято — сначала освободите его');
+      throw fail('DEVICE_BUSY', 'устройство сейчас занято — сначала освободите его');
     }
     if (!shared) {
       const group = this.publishedGroupOf(deviceId);
       if (group) {
-        throw errWith('in_group', `устройство отдано группой «${group.name}» — снимите с публикации саму группу`);
+        throw fail('IN_GROUP', `устройство отдано группой «${group.name}» — снимите с публикации саму группу`);
       }
     }
 
@@ -251,9 +252,9 @@ export class ShareManager extends EventEmitter {
   /** Публикация группы целиком. */
   setGroupShared(groupId, shared) {
     const group = this.groups().find((g) => g.id === groupId);
-    if (!group) throw errWith('not_found', 'группа не найдена');
+    if (!group) throw fail('GROUP_NOT_FOUND', 'группа не найдена');
     if (!shared && group.members.some((m) => this._held(m))) {
-      throw errWith('busy', 'группа сейчас занята — сначала освободите её');
+      throw fail('GROUP_BUSY', 'группа сейчас занята — сначала освободите её');
     }
     const groups = this.groups().map((g) => (g.id === groupId ? { ...g, shared: Boolean(shared) } : g));
     this.config.set({ groups });
@@ -264,7 +265,7 @@ export class ShareManager extends EventEmitter {
 
   saveGroup({ id, name, description, members }) {
     const clean = (members || []).filter((m) => this.devices.has(m));
-    if (clean.length < 1) throw errWith('bad_request', 'в группе должно быть хотя бы одно устройство');
+    if (clean.length < 1) throw fail('BAD_REQUEST', 'в группе должно быть хотя бы одно устройство');
 
     const groupId = id || `g_${crypto.randomUUID().slice(0, 8)}`;
     const others = this.groups().filter((g) => g.id !== groupId);
@@ -274,11 +275,11 @@ export class ShareManager extends EventEmitter {
     for (const g of others) {
       const overlap = g.members.filter((m) => clean.includes(m));
       if (overlap.length) {
-        throw errWith('conflict', `устройства уже состоят в группе «${g.name}»: ${overlap.join(', ')}`);
+throw fail('GROUP_CONFLICT', `устройства уже состоят в группе «${g.name}»: ${overlap.join(', ')}`);
+        }
       }
-    }
-    for (const m of clean) {
-      if (this._held(m)) throw errWith('busy', 'нельзя менять состав, пока устройства группы заняты');
+      for (const m of clean) {
+        if (this._held(m)) throw fail('GROUP_MEMBER_BUSY', 'нельзя менять состав, пока устройства группы заняты');
     }
 
     const existing = this.groups().find((g) => g.id === groupId);
@@ -301,9 +302,9 @@ export class ShareManager extends EventEmitter {
 
   deleteGroup(groupId) {
     const group = this.groups().find((g) => g.id === groupId);
-    if (!group) throw errWith('not_found', 'группа не найдена');
+    if (!group) throw fail('GROUP_NOT_FOUND', 'группа не найдена');
     if (group.members.some((m) => this._held(m))) {
-      throw errWith('busy', 'группа сейчас занята — сначала освободите её');
+      throw fail('GROUP_BUSY', 'группа сейчас занята — сначала освободите её');
     }
     this.config.set({ groups: this.groups().filter((g) => g.id !== groupId) });
     log.info(`группа «${group.name}» удалена`);
@@ -321,18 +322,18 @@ export class ShareManager extends EventEmitter {
     if (String(target).startsWith('group:')) {
       const id = String(target).slice(6);
       const group = this.groups().find((g) => g.id === id);
-      if (!group) throw errWith('not_found', 'группа не найдена');
+      if (!group) throw fail('GROUP_NOT_FOUND', 'группа не найдена');
       const devices = group.members.map((m) => this.devices.get(m)).filter(Boolean);
       if (devices.length !== group.members.length) {
-        throw errWith('device_not_found', 'не все устройства группы сейчас доступны');
+        throw fail('GROUP_DEVICES_UNAVAILABLE', 'не все устройства группы сейчас доступны');
       }
       return { kind: 'group', id: target, group, devices };
     }
     const dev = this.devices.get(target);
-    if (!dev) throw errWith('device_not_found', `устройство ${target} не найдено`);
+    if (!dev) throw fail('DEVICE_NOT_FOUND', `устройство ${target} не найдено`);
     const group = this.publishedGroupOf(target);
     if (group) {
-      throw errWith('in_group', `устройство входит в группу «${group.name}» — занимайте группу целиком`);
+      throw fail('IN_GROUP', `устройство входит в группу «${group.name}» — занимайте группу целиком`);
     }
     return { kind: 'device', id: target, group: null, devices: [dev] };
   }
@@ -347,8 +348,8 @@ export class ShareManager extends EventEmitter {
   async claim(target, { holderId, holderName, force = false, holderAddress = null }) {
     const { kind, group, devices } = this._resolve(target);
     const busyPreparing = devices.find((d) => this.preparing.has(d.deviceId));
-    if (busyPreparing) {
-      throw errWith('busy', `${busyPreparing.title} прямо сейчас занимается — попробуйте через несколько секунд`);
+if (busyPreparing) {
+	      throw fail('DEVICE_PREPARING', `${busyPreparing.title} прямо сейчас занимается — попробуйте через несколько секунд`);
     }
     for (const d of devices) this.preparing.add(d.deviceId);
     // Каталог сразу видит «готовится»: и владелец у себя, и соседи — иначе
@@ -366,13 +367,13 @@ export class ShareManager extends EventEmitter {
     const isOwner = holderId === this.config.get('nodeId');
     const preempt = force && isOwner;
 
-    if (kind === 'group') {
-      if (!group.shared) throw errWith('not_shared', `группа «${group.name}» не опубликована`);
-    } else {
-      for (const dev of devices) {
-        if (!dev.shared) throw errWith('not_shared', `устройство ${dev.title} не опубликовано`);
-      }
-    }
+if (kind === 'group') {
+	      if (!group.shared) throw fail('GROUP_NOT_SHARED', `группа «${group.name}» не опубликована`);
+	    } else {
+	      for (const dev of devices) {
+	        if (!dev.shared) throw fail('DEVICE_NOT_SHARED', `устройство ${dev.title} не опубликовано`);
+	      }
+	    }
     // Проверяем ВСЕ устройства до того, как трогать хоть одно: группа
     // занимается целиком или не занимается вовсе.
     const blocking = [];
@@ -397,12 +398,12 @@ export class ShareManager extends EventEmitter {
       const who = first.claim ? first.claim.holderName
         : first.joined ? first.joined.map((j) => j.holderName).join(', ')
         : first.reserved.nodeName;
-      throw errWith('busy',
-        kind === 'group'
-          ? `группа занята: ${first.dev.title} — у узла "${who}"`
-          : first.joined ? `в мост карты подключены узлы: ${who} — целиком её занять нельзя, пока они не выйдут`
-          : `устройство занято узлом "${who}"`,
-        { claim: first.claim ? { ...first.claim } : null, blocking: blocking.map((b) => b.dev.title) });
+throw fail('CLAIM_BLOCKED',
+	        kind === 'group'
+	          ? `группа занята: ${first.dev.title} — у узла "${who}"`
+	          : first.joined ? `в мост карты подключены узлы: ${who} — целиком её занять нельзя, пока они не выйдут`
+	          : `устройство занято узлом "${who}"`,
+	        { claim: first.claim ? { ...first.claim } : null, blocking: blocking.map((b) => b.dev.title) });
     }
 
     // Владелец забирает своё: снимаем чужие аренды перед захватом.
@@ -442,7 +443,7 @@ export class ShareManager extends EventEmitter {
       const failed = devices[prepared.length];
       if (failed) { failed.bindState = BIND_STATE.ERROR; failed.lastError = e.message; failed.stateStamp = Date.now(); }
       this._emitIfChanged(true);
-      throw errWith('bind_failed', `не удалось подготовить ${failed ? failed.title : 'устройство'}: ${e.message}`);
+      throw fail('BIND_FAILED', `не удалось подготовить ${failed ? failed.title : 'устройство'}: ${e.message}`);
     }
 
     const now = Date.now();
@@ -494,16 +495,16 @@ export class ShareManager extends EventEmitter {
   async join(target, who) {
     // Карта внутри группы тоже подключается в мост отдельно: группа при этом
     // целиком занята быть не может (см. _claim), а остальные участники — могут.
-    if (String(target).startsWith('group:')) throw errWith('not_joinable', 'в мост подключают сетевую карту, а не группу');
+    if (String(target).startsWith('group:')) throw fail('NOT_JOINABLE', 'в мост подключают сетевую карту, а не группу');
     const dev = this.devices.get(target);
-    if (!dev) throw errWith('device_not_found', `устройство ${target} не найдено`);
-    if (dev.type !== 'net') throw errWith('not_joinable', 'в мост подключают только сетевую карту');
-    if (!dev.shared) throw errWith('not_shared', `устройство ${dev.title} не опубликовано`);
+    if (!dev) throw fail('DEVICE_NOT_FOUND', `устройство ${target} не найдено`);
+    if (dev.type !== 'net') throw fail('NOT_JOINABLE', 'в мост подключают только сетевую карту');
+    if (!dev.shared) throw fail('DEVICE_NOT_SHARED', `устройство ${dev.title} не опубликовано`);
     if (!dev.hasTransport || !dev.meta?.bridgeJoin) {
-      throw errWith('not_joinable', dev.meta?.joinNote || 'эту карту в мост подключить нельзя');
+      throw fail('NOT_JOINABLE', dev.meta?.joinNote || 'эту карту в мост подключить нельзя');
     }
     if (who.holderId === this.config.get('nodeId')) {
-      throw errWith('not_joinable', 'свою карту в мост подключать незачем: она и так в вашей сети');
+      throw fail('OWN_CARD_NO_BRIDGE_NEEDED', 'свою карту в мост подключать незачем: она и так в вашей сети');
     }
     // Мост собирается один раз, дальше подключения идут по очереди.
     const prev = this.joinChains.get(dev.deviceId) || Promise.resolve();
@@ -515,14 +516,14 @@ export class ShareManager extends EventEmitter {
   async _join(dev, { holderId, holderName, holderAddress = null }) {
     const id = dev.deviceId;
     const taker = this.claims.get(id);
-    if (taker) {
-      throw errWith('busy', `карта занята целиком узлом "${taker.holderName}" — в мост её сейчас не подключить`, { claim: { ...taker } });
-    }
-    if (this.preparing.has(id)) throw errWith('busy', `${dev.title} прямо сейчас готовится — попробуйте через несколько секунд`);
-    const reserved = this.reservations.get(id);
-    if (reserved && reserved.nodeId !== holderId && reserved.until > Date.now()) {
-      throw errWith('busy', `карта забронирована узлом "${reserved.nodeName}"`);
-    }
+if (taker) {
+	      throw fail('CARD_BUSY', `карта занята целиком узлом "${taker.holderName}" — в мост её сейчас не подключить`, { claim: { ...taker } });
+	    }
+	    if (this.preparing.has(id)) throw fail('DEVICE_PREPARING', `${dev.title} прямо сейчас готовится — попробуйте через несколько секунд`);
+	    const reserved = this.reservations.get(id);
+	    if (reserved && reserved.nodeId !== holderId && reserved.until > Date.now()) {
+	      throw fail('RESERVED', `карта забронирована узлом "${reserved.nodeName}"`);
+	    }
 
     let r;
     try {
@@ -532,7 +533,7 @@ export class ShareManager extends EventEmitter {
       dev.lastError = e.message;
       dev.stateStamp = Date.now();
       this._emitIfChanged(true);
-      throw errWith('bind_failed', `не удалось подключить в мост ${dev.title}: ${e.message}`);
+      throw fail('JOIN_FAILED', `не удалось подключить в мост ${dev.title}: ${e.message}`);
     }
 
     const now = Date.now();
@@ -598,13 +599,13 @@ export class ShareManager extends EventEmitter {
       }
       const claim = this.claims.get(dev.deviceId);
       if (!claim) continue;
-      if (claim.holderId !== holderId) throw errWith('forbidden', 'занято другим узлом');
+      if (claim.holderId !== holderId) throw fail('FORBIDDEN', 'занято другим узлом');
       claim.expiresAt = Date.now() + lease;
       claim.renewedAt = Date.now();
       claim.silentWarned = false;
       renewed++;
     }
-    if (!renewed) throw errWith('no_claim', 'не занято');
+    if (!renewed) throw fail('NO_CLAIM', 'не занято');
     // Ответ на heartbeat — надёжный способ донести до держателя запросы:
     // он приходит регулярно и не требует, чтобы владелец умел достучаться
     // до клиента сам.
@@ -693,9 +694,9 @@ export class ShareManager extends EventEmitter {
     for (const dev of resolved.devices) {
       const claim = this.claims.get(dev.deviceId);
       if (!claim) continue;
-      if (claim.holderId !== holderId && !force) {
-        throw errWith('forbidden', `устройство занято узлом "${claim.holderName}"`);
-      }
+if (claim.holderId !== holderId && !force) {
+	        throw fail('FORBIDDEN', `устройство занято узлом "${claim.holderName}"`);
+	      }
       this.claims.delete(dev.deviceId);
       this.onDataOpened(dev.deviceId);
       released++;
@@ -752,8 +753,8 @@ export class ShareManager extends EventEmitter {
   createRequest({ target, requesterId, requesterName, message }) {
     const { kind, group, devices } = this._resolve(target);
     const holder = this.holderOf(target);
-    if (!holder) throw errWith('not_busy', 'цель свободна — занимайте без запроса');
-    if (holder.holderId === requesterId) throw errWith('already_yours', 'вы и так держите эту цель');
+    if (!holder) throw fail('NOT_BUSY', 'цель свободна — занимайте без запроса');
+    if (holder.holderId === requesterId) throw fail('ALREADY_YOURS', 'вы и так держите эту цель');
 
     const existing = [...this.requests.values()].find(
       (r) => r.target === target && r.requesterId === requesterId && r.state === 'pending');
@@ -785,9 +786,9 @@ export class ShareManager extends EventEmitter {
   /** Ответ держателя. Освобождение и бронь за просителем — здесь же. */
   async answerRequest(requestId, holderId, accept) {
     const req = this.requests.get(requestId);
-    if (!req) throw errWith('not_found', 'запрос не найден');
-    if (req.state !== 'pending') throw errWith('closed', 'на запрос уже ответили');
-    if (req.holderId !== holderId) throw errWith('forbidden', 'отвечать может только держатель');
+    if (!req) throw fail('NOT_FOUND', 'запрос не найден');
+    if (req.state !== 'pending') throw fail('REQUEST_CLOSED', 'на запрос уже ответили');
+    if (req.holderId !== holderId) throw fail('FORBIDDEN', 'отвечать может только держатель');
 
     req.state = accept ? 'accepted' : 'declined';
     req.answeredAt = Date.now();
@@ -828,7 +829,7 @@ export class ShareManager extends EventEmitter {
   cancelRequest(requestId, requesterId) {
     const req = this.requests.get(requestId);
     if (!req) return { ok: true, already: true };
-    if (req.requesterId !== requesterId) throw errWith('forbidden', 'отменить может только автор запроса');
+    if (req.requesterId !== requesterId) throw fail('FORBIDDEN', 'отменить может только автор запроса');
     req.state = 'cancelled';
     req.answeredAt = Date.now();
     this._emitIfChanged(true);
@@ -1014,11 +1015,4 @@ export class ShareManager extends EventEmitter {
       this.emit('changed', h);
     }
   }
-}
-
-function errWith(code, message, extra = {}) {
-  const e = new Error(message);
-  e.code = code;
-  Object.assign(e, extra);
-  return e;
 }

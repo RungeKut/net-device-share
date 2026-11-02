@@ -98,7 +98,8 @@ test('политика: чужие аренды, свои подключения
   }), { transfersActive: 1 });
   assert.equal(r.ok, false);
   assert.equal(r.reasons.length, 5);
-  assert.match(r.reasons[0], /заняты другими \(1\)/);
+  assert.match(r.reasons[0].text, /заняты другими \(1\)/);
+  assert.equal(r.reasons[0].code, 'UPDATE_BLOCK_FOREIGN_CLAIMS');
 });
 
 test('волна: канарейка, порядок по хешу, у каждой версии свой', () => {

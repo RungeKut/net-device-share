@@ -89,9 +89,23 @@ function pick(dict, key) {
 export function t(key, params) {
   const text = pick(dicts[lang], key) ?? pick(dicts.ru, key) ?? key;
   if (!params) return text;
-  return text.replace(/\{(\w+)\}/g, (token, name) => (
-    Object.hasOwn(params, name) && params[name] != null ? String(params[name]) : token
+  return text.replace(/\{(\w+(?:\.\w+)*)\}/g, (token, name) => (
+    (() => {
+      const v = Object.hasOwn(params, name) ? params[name] : name.includes('.') && Object.hasOwn(params, name.split('.').pop()) ? params[name.split('.').pop()] : null;
+      return v != null ? String(v) : token;
+    })()
   ));
+}
+
+/**
+ * Перевести серверную ошибку по коду srv.*.
+ * Приоритет у srvCode (CAPS-код для перевода), затем legacy code.
+ * Иначе возвращает err.message или строковое представление.
+ */
+export function srv(err) {
+  const c = err && (err.srvCode || err.code);
+  if (c) return t('srv.' + c, err.params);
+  return (err && err.message) || String(err);
 }
 
 /** Ключи из разметки: data-i18n="ключ" и data-i18n-placeholder/title/aria-label. */

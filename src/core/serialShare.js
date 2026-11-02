@@ -30,6 +30,7 @@ import { logger } from '../log.js';
 import { run, psQuote } from '../devices/backend.js';
 import { configDir } from '../config.js';
 import { LinkClient } from '../net/tapLink.js';
+import { fail } from './fail.js';
 import {
   PKT, PacketCutter, packetFrame, encodePortParams, parsePortParams,
   CTRL_RTS_ON, CTRL_RTS_OFF, CTRL_DTR_ON, CTRL_DTR_OFF,
@@ -273,7 +274,7 @@ export async function buildPump() {
     const script = `Add-Type -Path ${psQuote(cs)} -OutputAssembly ${psQuote(exe)} -OutputType ConsoleApplication`;
     const r = await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { timeoutMs: 180000 });
     if (!r.ok || !fs.existsSync(exe)) {
-      throw new Error(`насос не собрался: ${(r.stderr || r.stdout || '').trim().slice(-200) || 'PowerShell ничего не ответил'}`);
+      throw fail('PUMP_ASSEMBLY_FAILED', `насос не собрался: ${(r.stderr || r.stdout || '').trim().slice(-200) || 'PowerShell ничего не ответил'}`, { detail: (r.stderr || r.stdout || '').trim().slice(-200) });
     }
     // Прошлые версии насоса больше не нужны.
     for (const f of fs.readdirSync(dir)) {
@@ -426,9 +427,9 @@ export class SerialShare extends EventEmitter {
 
   /** Почему этот порт нельзя пробросить (null — можно). */
   lendBlocker(dev) {
-    if (!this.supported) return 'проброс COM-портов пока есть только на Windows';
-    if (dev.type !== 'com') return 'по сети пробрасываются только последовательные порты';
-    if (!this.server) return 'канал для байтов не запущен';
+    if (!this.supported) return { text: 'проброс COM-портов пока есть только на Windows', code: 'SERIAL_BLOCK_NOT_WINDOWS', params: {} };
+    if (dev.type !== 'com') return { text: 'по сети пробрасываются только последовательные порты', code: 'SERIAL_BLOCK_NOT_COM', params: {} };
+    if (!this.server) return { text: 'канал для байтов не запущен', code: 'SERIAL_BLOCK_NO_CHANNEL', params: {} };
     return null;
   }
 
@@ -444,7 +445,7 @@ export class SerialShare extends EventEmitter {
    */
   async lend(dev, { holderId, holderAddress = null } = {}) {
     const blocker = this.lendBlocker(dev);
-    if (blocker) throw errWith('unavailable', blocker);
+    if (blocker) throw fail(blocker.code, blocker.text, blocker.params);
 
     const existing = this.lends.get(dev.deviceId);
     if (existing) {
@@ -605,7 +606,7 @@ export class SerialShare extends EventEmitter {
       pump.once('params', (good) => { clearTimeout(timer); resolve(good); });
       pump.setParams(params);
     });
-    if (!ok) throw new Error('параметры порта не применены');
+    if (!ok) throw fail('SERIAL_PARAMS_FAILED', 'параметры порта не применены');
   }
 
   _waitExit(pump, ms = 3000) {
@@ -657,8 +658,8 @@ export class SerialShare extends EventEmitter {
 
   /** Почему этот компьютер не может занять чужой COM-порт (null — может). */
   borrowBlocker() {
-    if (!this.supported) return 'подключать чужие COM-порты пока можно только на Windows';
-    if (!this._com0com.present()) return 'нет com0com — доустановите компоненты приложения';
+    if (!this.supported) return { text: 'подключать чужие COM-порты пока можно только на Windows', code: 'SERIAL_BORROW_BLOCK_NOT_WINDOWS', params: {} };
+    if (!this._com0com.present()) return { text: 'нет com0com — доустановите компоненты приложения', code: 'SERIAL_BORROW_BLOCK_NO_COM0COM', params: {} };
     return null;
   }
 
@@ -684,7 +685,7 @@ export class SerialShare extends EventEmitter {
    */
   async borrow({ key, host, port, token, com = null, params = null, label = 'порт', onStage = () => {} }) {
     const blocker = this.borrowBlocker();
-    if (blocker) throw errWith('unavailable', blocker);
+    if (blocker) throw fail(blocker.code, blocker.text, blocker.params);
     if (this.borrows.has(key)) await this.giveBack(key);
 
     const b = {

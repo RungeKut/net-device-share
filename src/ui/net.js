@@ -10,7 +10,7 @@
 // компьютера или после входа по паролю. Сервер проверяет это сам; здесь
 // лишь не рисуем бесполезных кнопок.
 
-import { t } from './i18n.js';
+import { t, srv } from './i18n.js';
 
 /** Как часто перечитывать карту, пока вкладка открыта. */
 const POLL_MS = 6000;
@@ -65,7 +65,7 @@ export function initNet(h) {
       map = d;
       error = null;
     } catch (e) {
-      error = e.message;
+      error = srv(e);
     } finally {
       loading = false;
     }
@@ -613,13 +613,13 @@ export function initNet(h) {
     try {
       v = pending.ed.read();
     } catch (e) {
-      toast(e.message, 'err');
+      toast(srv(e), 'err');
       return;
     }
     toast(t('common.applying'));
     pending.save(v)
       .then((r) => { toast(r?.pending ? r.note : t('common.settingsApplied'), 'ok'); if (r?.routeWarn?.length) routeWarning(r); load(); })
-      .catch((e) => toast(e.message, 'err'));
+      .catch((e) => toast(srv(e), 'err'));
   });
 
   // ----------------------------------------------------------- коммутатор
@@ -676,7 +676,7 @@ export function initNet(h) {
         else toast(t('common.switchCreated'), 'ok');
         load();
       })
-      .catch((e) => toast(e.message, 'err'));
+      .catch((e) => toast(srv(e), 'err'));
   });
 
   // ------------------------------------------------------------- адаптер
@@ -771,17 +771,17 @@ export function initNet(h) {
       toast(bridging ? t('common.changingTheBridgeUpTo') : t('common.changingTheAdapter'));
       post('/api/v1/net/adapter/update', { guid: was.guid, ...patch })
         .then(() => { toast(t('common.done'), 'ok'); load(); })
-        .catch((e) => toast(e.message, 'err'));
+        .catch((e) => toast(srv(e), 'err'));
       return;
     }
     let v;
-    try { v = vnicIp.read(); } catch (e) { toast(e.message, 'err'); return; }
+    try { v = vnicIp.read(); } catch (e) { toast(srv(e), 'err'); return; }
     toast(t('common.creatingTheAdapterUpTo'));
     post('/api/v1/net/vnic/create', {
       name: $('#vnicName').value, switchId: $('#vnicSwitch').value || null, mac: mac || null, ip: v.ip, category: v.category || 'Private',
     })
       .then(() => { toast(t('common.adapterCreated'), 'ok'); load(); })
-      .catch((e) => toast(e.message, 'err'));
+      .catch((e) => toast(srv(e), 'err'));
   });
 
   // ------------------------------------------------------------- действия

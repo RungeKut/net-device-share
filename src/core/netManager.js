@@ -53,6 +53,7 @@ import { EventEmitter } from 'node:events';
 import { logger } from '../log.js';
 import { VSwitch, garpFrame, macBytes } from '../net/vswitch.js';
 import { keepRelay, plugRelay } from '../net/relayKeeper.js';
+import { fail } from './fail.js';
 import {
   createTap, removeTap, removeAdapter, renameAdapter, friendlyName, setTapMac, setAdapterMac, setAdapterEnabled,
   macProblem, normalizeMac, formatMac, randomMac, driverFilesPresent,
@@ -354,7 +355,7 @@ export class NetManager extends EventEmitter {
   async _adapter(guid) {
     const g = String(guid || '').replace(/[{}]/g, '').toUpperCase();
     const a = (await this.inventory(true)).adapters.find((x) => x.guid === g);
-    if (!a) throw errWith('not_found', 'адаптер не найден — возможно, его уже удалили');
+    if (!a) throw fail('ADAPTER_NOT_FOUND', 'адаптер не найден — возможно, его уже удалили');
     return a;
   }
 
@@ -545,7 +546,7 @@ export class NetManager extends EventEmitter {
 
   async _buildUplinkLocked(rec, adapters) {
     if (this._bridgeSwitchRec()) {
-      throw errWith('bridge_busy', `мост Windows уже у коммутатора «${this._bridgeSwitchRec().name}», а мост в Windows один — добавьте карту туда`);
+      throw fail('BRIDGE_ALREADY_EXISTS', `мост Windows уже у коммутатора «${this._bridgeSwitchRec().name}», а мост в Windows один — добавьте карту туда`);
     }
     for (const a of adapters) {
       const why = this._nicProblem(a);
@@ -553,9 +554,9 @@ export class NetManager extends EventEmitter {
     }
     const members = await bridgeMembers();
     if (members.length) {
-      throw errWith('bridge_foreign', `на компьютере уже есть мост (${members.join(', ')}), собранный не приложением. Мост в Windows один — разберите его в «Сетевых подключениях»`);
+      throw fail('BRIDGE_FOREIGN_EXISTS', `на компьютере уже есть мост (${members.join(', ')}), собранный не приложением. Мост в Windows один — разберите его в «Сетевых подключениях»`);
     }
-    if (!driverFilesPresent()) throw errWith('unavailable', 'нет файлов драйвера TAP (installers/windows/tap-windows6-9.27.0)');
+    if (!driverFilesPresent()) throw fail('TAP_DRIVER_MISSING', 'нет файлов драйвера TAP (installers/windows/tap-windows6-9.27.0)');
 
     // Настройки карты — до моста: они переедут на адаптер моста.
     const nicIp = rec.hostAccess ? await readIpConfig(adapters[0].guid).catch(() => null) : null;
@@ -714,7 +715,7 @@ export class NetManager extends EventEmitter {
       const wantMac = mac === 'random' ? randomMac() : (mac ? normalizeMac(mac) || mac : null);
       if (wantMac && macProblem(wantMac)) throw errWith('bad_request', macProblem(wantMac));
       const cfg = ip ? validateIpConfig(ip) : { dhcp: true, addresses: [], gateways: [], dns: [] };
-      if (!driverFilesPresent()) throw errWith('unavailable', 'нет файлов драйвера TAP (installers/windows/tap-windows6-9.27.0)');
+      if (!driverFilesPresent()) throw fail('TAP_DRIVER_MISSING', 'нет файлов драйвера TAP (installers/windows/tap-windows6-9.27.0)');
 
       const tap = await createTap();
       this._setTap(tap.guid, { role: 'vnic', switchId, category: category === 'Public' ? 'Public' : 'Private', last: null });
@@ -1036,7 +1037,7 @@ export class NetManager extends EventEmitter {
    */
   async map() {
     if (!this.supported) {
-      return { supported: false, reason: 'настройка сети есть только на Windows' };
+      return { supported: false, reason: 'настройка сети есть только на Windows', code: 'NET_SETUP_WINDOWS_ONLY' };
     }
     const inv = await this.inventory();
     const ctx = this._context();

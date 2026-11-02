@@ -16,6 +16,7 @@ import { EventEmitter } from 'node:events';
 import { logger } from '../log.js';
 import { jittered } from './jitter.js';
 import { rpc, RpcError } from '../net/rpc.js';
+import { fail } from './fail.js';
 
 const log = logger('attach');
 
@@ -176,14 +177,14 @@ export class AttachManager extends EventEmitter {
    */
   async attach(t, { force = false, mode = 'exclusive' } = {}) {
     const bridgeMode = mode === 'bridge';
-    if (bridgeMode && t.nodeId === this.config.get('nodeId')) {
-      throw new Error('свою карту в мост подключать незачем: она и так в вашей сети');
-    }
-    const id = attachKey(t.nodeId, t.target);
-    const current = this.attachments.get(id);
-    if (current && (current.state === 'attached' || current.state === 'attaching')) {
-      throw new Error('цель уже занята этим компьютером');
-    }
+if (bridgeMode && t.nodeId === this.config.get('nodeId')) {
+	      throw fail('OWN_CARD_NO_BRIDGE_NEEDED', 'свою карту в мост подключать незачем: она и так в вашей сети');
+	    }
+	    const id = attachKey(t.nodeId, t.target);
+	    const current = this.attachments.get(id);
+	    if (current && (current.state === 'attached' || current.state === 'attaching')) {
+	      throw fail('ALREADY_HELD', 'цель уже занята этим компьютером');
+	    }
 
     const rec = {
       id,
@@ -241,14 +242,15 @@ export class AttachManager extends EventEmitter {
 
     try {
       const net = rec.parts.some((p) => p.type === 'net' && p.hasTransport);
-      this._stage(rec, net
-        ? 'владелец готовит карту: адаптер и мост, до минуты'
-        : 'запрос права у владельца');
+this._stage(rec, net
+	        ? 'владелец готовит карту: адаптер и мост, до минуты'
+	        : 'запрос права у владельца',
+	        net ? 'STAGE_PREPARING_NET' : 'STAGE_REQUESTING_CLAIM');
       const grant = await this._requestClaim(t, force, mode);
       if (bridgeMode && grant.mode !== 'bridge') {
         // Узел старой версии не знает про мост и занял карту целиком.
         await this._requestRelease(rec).catch(() => {});
-        throw new Error('у владельца версия приложения без подключения в мост — обновите его, и кнопка заработает');
+        throw fail('OWNER_NO_BRIDGE_MODE', 'у владельца версия приложения без подключения в мост — обновите его, и кнопка заработает');
       }
       rec.usbipPort = grant.usbipPort || rec.usbipPort;
       if (rec.tunnel && this.resolvePort && !rec.self) {
@@ -270,7 +272,7 @@ export class AttachManager extends EventEmitter {
           await this._attachSerial(rec, part, grant);
           continue;
         }
-        this._stage(rec, `подключение ${part.description || part.key}`);
+        this._stage(rec, `подключение ${part.description || part.key}`, 'STAGE_ATTACHING_DEVICE', { description: part.description || part.key });
         const result = await this.backend.attach({ host: rec.host, busid: part.key, port: rec.usbipPort });
         part.vhciPort = result.vhciPort;
       }
@@ -289,7 +291,11 @@ export class AttachManager extends EventEmitter {
       rec.stage = null;
       rec.lastError = e.message;
       log.error(`не удалось занять ${rec.title} у "${rec.nodeName}"${at ? ` (шаг: ${at})` : ''}: ${e.message}`);
-      if (at) e.message = `${e.message} — на шаге «${at}»`;
+      if (at) {
+	        e.message = `${e.message} — на шаге «${at}»`;
+	        if (!e.code) e.code = 'ATTACH_FAILED';
+	        if (!e.params) e.params = { attachStage: at };
+	      }
 
       // Откат: отцепляем то, что успели, и возвращаем право — иначе цель
       // останется занятой из-за нашей же неудачи.
@@ -311,7 +317,7 @@ export class AttachManager extends EventEmitter {
   /** Отцепить и вернуть право. */
   async detach(id, { keepClaim = false } = {}) {
     const rec = this.attachments.get(id);
-    if (!rec) throw new Error('занятие не найдено');
+    if (!rec) throw fail('ATTACHMENT_NOT_FOUND', 'занятие не найдено');
 
     rec.state = 'detaching';
     this.emit('changed');
@@ -355,7 +361,7 @@ export class AttachManager extends EventEmitter {
   /** Ответ на запрос: отдать цель просителю или отказать. */
   async answerRequest(requestId, accept) {
     const req = this.incomingRequests.get(requestId);
-    if (!req) throw new Error('запрос не найден');
+    if (!req) throw fail('REQUEST_NOT_FOUND', 'запрос не найден');
 
     const isOurs = req.ownerNodeId === this.config.get('nodeId');
     // Владелец мог рассказать о себе адрес из своей сети, до которого нам не
@@ -399,9 +405,9 @@ export class AttachManager extends EventEmitter {
    * «Сетевых подключениях».
    */
   async _attachNet(rec, part, grant) {
-    if (!this.net) throw new Error('проброс сетевых карт на этом компьютере недоступен');
-    const link = (grant.links || []).find((l) => l.deviceId === part.deviceId);
-    if (!link) throw new Error(`владелец не выдал канал для «${part.description}» — возможно, у него старая версия приложения`);
+if (!this.net) throw fail('NET_BRIDGE_UNAVAILABLE', 'проброс сетевых карт на этом компьютере недоступен');
+	    const link = (grant.links || []).find((l) => l.deviceId === part.deviceId);
+	    if (!link) throw fail('NO_LINK_FROM_OWNER', `владелец не выдал канал для «${part.description}» — возможно, у него старая версия приложения`, { description: part.description });
 
     const key = `${rec.id}|${part.deviceId}`;
     const owner = String(rec.nodeName || '').replace(/\s*\(этот компьютер\)$/, '');
@@ -434,9 +440,9 @@ export class AttachManager extends EventEmitter {
    * открывает его, как открыло бы локальный.
    */
   async _attachSerial(rec, part, grant) {
-    if (!this.serial) throw new Error('проброс COM-портов на этом компьютере недоступен');
-    const link = (grant.links || []).find((l) => l.deviceId === part.deviceId);
-    if (!link) throw new Error(`владелец не выдал канал для «${part.description}» — возможно, у него старая версия приложения`);
+if (!this.serial) throw fail('SERIAL_UNAVAILABLE', 'проброс COM-портов на этом компьютере недоступен');
+	    const link = (grant.links || []).find((l) => l.deviceId === part.deviceId);
+	    if (!link) throw fail('NO_SERIAL_LINK', `владелец не выдал канал для «${part.description}» — возможно, у него старая версия приложения`, { description: part.description });
 
     const key = `${rec.id}|${part.deviceId}`;
     const ep = rec.tunnel && this.resolvePort && !rec.self
@@ -469,10 +475,12 @@ export class AttachManager extends EventEmitter {
     this.emit('changed');
   }
 
-  _stage(rec, text) {
-    rec.stage = text;
-    this.emit('changed');
-  }
+_stage(rec, text, stageCode, stageParams) {
+	    rec.stage = text;
+	    if (stageCode) rec.stageCode = stageCode;
+	    if (stageParams) rec.stageParams = stageParams;
+	    this.emit('changed');
+	  }
 
   // --------------------------------------------------------------- вызовы
 
@@ -501,7 +509,7 @@ export class AttachManager extends EventEmitter {
       });
     } catch (e) {
       if (e instanceof RpcError && e.body) {
-        throw new Error(e.body.message || e.message);
+        throw fail('CLAIM_REJECTED', e.body.message || e.message);
       }
       throw e;
     }
@@ -562,9 +570,13 @@ export class AttachManager extends EventEmitter {
         });
       } catch (e) {
         const gone = e.code === 'no_claim' || e.code === 'forbidden';
-        rec.orphanNote = gone
-          ? `владелец «${peer.name}» не считает это подключение вашим (аренда истекла или устройство занято другим)`
-          : `владелец «${peer.name}» не ответил: ${e.message}`;
+rec.orphanNote = gone
+	          ? `владелец «${peer.name}» не считает это подключение вашим (аренда истекла или устройство занято другим)`
+	          : `владелец «${peer.name}» не ответил: ${e.message}`;
+	        rec.orphanNoteCode = gone ? 'ORPHAN_LEASE_EXPIRED' : 'ORPHAN_NO_RESPONSE';
+	        rec.orphanNoteParams = gone
+	          ? { peerName: peer.name }
+	          : { peerName: peer.name, errorMessage: e.message };
         continue;
       }
 

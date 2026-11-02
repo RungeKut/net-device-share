@@ -31,6 +31,7 @@ import { ipInCidr, normalizeIp, listNetworks } from '../net/interfaces.js';
 import { diagnoseRequest } from '../net/protocol.js';
 import { baseDir } from '../core/paths.js';
 import { renderMetrics } from '../core/metrics.js';
+import { fail } from '../core/fail.js';
 
 const log = logger('http');
 const UI_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'ui');
@@ -86,7 +87,7 @@ export class ApiServer {
     this.server = http.createServer((req, res) => {
       this._handle(req, res).catch((e) => {
         log.error('необработанная ошибка запроса:', e.message);
-        sendJson(res, 500, { error: 'internal', message: e.message });
+        sendJson(res, 500, { error: 'internal', message: e.message, code: 'INTERNAL_ERROR', params: { message: e.message } });
       });
     });
 
@@ -238,7 +239,7 @@ export class ApiServer {
       const m = /^Bearer\s+(.+)$/i.exec(String(req.headers.authorization || ''));
       if (!cfg.checkMetricsToken(m ? m[1].trim() : '')) {
         res.setHeader('www-authenticate', 'Bearer realm="net-device-share-metrics"');
-        return sendJson(res, 401, { error: 'unauthorized', message: 'нужен токен метрик: заголовок Authorization: Bearer <токен>' });
+        return sendJson(res, 401, { error: 'unauthorized', message: 'нужен токен метрик: заголовок Authorization: Bearer <токен>', code: 'METRICS_TOKEN_REQUIRED' });
       }
     } else {
       const local = isLoopback(remote) || this.app.isInWorkingNetwork(remote);
@@ -246,6 +247,7 @@ export class ApiServer {
         return sendJson(res, 403, {
           error: 'forbidden',
           message: 'метрики вне рабочей сети отдаются только с токеном — задайте его в настройках узла',
+          code: 'METRICS_OUTSIDE_NETWORK',
         });
       }
     }
@@ -255,7 +257,7 @@ export class ApiServer {
       body = renderMetrics(this.app);
     } catch (e) {
       log.warn(`метрики: ${e.message}`);
-      return sendJson(res, 500, { error: 'failed', message: e.message });
+      return sendJson(res, 500, { error: 'failed', message: e.message, code: 'METRICS_FAILED', params: { message: e.message } });
     }
     res.writeHead(200, {
       'content-type': 'text/plain; version=0.0.4; charset=utf-8',
@@ -318,7 +320,7 @@ export class ApiServer {
     if (!names.includes(want)) return sendJson(res, 404, { error: 'not_found' });
     if (this.downloads >= 2) {
       res.setHeader('retry-after', '15');
-      return sendJson(res, 503, { error: 'busy', message: 'узел сейчас отдаёт файл другим — повторите через несколько секунд' });
+      return sendJson(res, 503, { error: 'busy', message: 'узел сейчас отдаёт файл другим — повторите через несколько секунд', code: 'DOWNLOAD_BUSY' });
     }
     const file = path.join(dir, want);
     this.downloads++;
@@ -381,7 +383,7 @@ export class ApiServer {
       });
       if (why.reason === 'clock_skew') this._warnClockSkew(remote, route, why.message);
       else log.warn(`отклонён вызов ${route} (${remote}): ${why.message}`);
-      return sendJson(res, 401, { error: 'bad_signature', message: why.message });
+      return sendJson(res, 401, { error: 'bad_signature', message: why.message, code: 'SIGNATURE_FAILED', params: { message: why.message } });
     }
 
     const body = parseJson(raw);
@@ -440,6 +442,7 @@ export class ApiServer {
             return sendJson(res, 403, {
               error: 'other_realm',
               message: 'другой круг доверия — общие ключи не совпадают',
+              code: 'OTHER_REALM',
             });
           }
           // Кто принёс каталог, тем и определяется, рассказывать ли о нём
@@ -466,26 +469,26 @@ export class ApiServer {
           // Только к узлам из каталога, только к их же портам и только тому, кто
           // попросил: это не прокси «куда угодно».
           if (!body?.nodeId || !body?.address || !Number.isInteger(body.port)) {
-            return sendJson(res, 400, { error: 'bad_request', message: 'нужны nodeId, address и port' });
+            return sendJson(res, 400, { error: 'bad_request', message: 'нужны nodeId, address и port', code: 'TUNNEL_PARAMS_REQUIRED' });
           }
           const peers = this.app.peers;
           const peer = peers.get(body.nodeId);
           const route = peer && peer.online && peer.realm === circle.realm
             ? [...peer.routes.values()].find((r) => r.address === body.address && (r.kind === 'direct' || r.mode === 'direct'))
             : null;
-          if (!route) return sendJson(res, 404, { error: 'not_found', message: 'этот узел нам напрямую недоступен — туннель не открыть' });
+          if (!route) return sendJson(res, 404, { error: 'not_found', message: 'этот узел нам напрямую недоступен — туннель не открыть', code: 'TUNNEL_NOT_AVAILABLE' });
           // Порты приезжают из анонсов и каталога: мусор или 0/70000 в белом
           // списке не нужны, port там — целое 1..65535 (проверено выше).
           const allowed = new Set(['api', 'usbip', 'traffic', 'netlink']
             .map((n) => peers.portOf(peer, n, route.key))
             .filter((p) => Number.isInteger(p) && p >= 1 && p <= 65535));
-          if (!allowed.has(body.port)) return sendJson(res, 403, { error: 'forbidden', message: 'туннели открываются только к портам самого приложения' });
+          if (!allowed.has(body.port)) return sendJson(res, 403, { error: 'forbidden', message: 'туннели открываются только к портам самого приложения', code: 'TUNNEL_APP_PORTS_ONLY' });
           const port = await this.app.tunnels.open({ targetHost: route.address, targetPort: body.port, allowAddress: remote });
           return sendJson(res, 200, { ok: true, port });
         }
 
         case 'POST /api/v1/peer/claim': {
-          if (!body?.target || !callerId) return sendJson(res, 400, { error: 'bad_request', message: 'нужны target и идентификатор узла' });
+          if (!body?.target || !callerId) return sendJson(res, 400, { error: 'bad_request', message: 'нужны target и идентификатор узла', code: 'TARGET_AND_NODEID_REQUIRED' });
           // «В мост»: подключение, а не занятие — карта остаётся доступной остальным.
           if (body.mode === 'bridge') {
             const joined = await share.join(body.target, {
@@ -510,19 +513,19 @@ export class ApiServer {
         }
 
         case 'POST /api/v1/peer/release': {
-          if (!body?.target || !callerId) return sendJson(res, 400, { error: 'bad_request', message: 'нужны target и идентификатор узла' });
+          if (!body?.target || !callerId) return sendJson(res, 400, { error: 'bad_request', message: 'нужны target и идентификатор узла', code: 'TARGET_AND_NODEID_REQUIRED' });
           const result = await share.release(body.target, callerId);
           this.app.onStateChanged();
           return sendJson(res, 200, result);
         }
 
         case 'POST /api/v1/peer/heartbeat': {
-          if (!body?.target || !callerId) return sendJson(res, 400, { error: 'bad_request', message: 'нужны target и идентификатор узла' });
+          if (!body?.target || !callerId) return sendJson(res, 400, { error: 'bad_request', message: 'нужны target и идентификатор узла', code: 'TARGET_AND_NODEID_REQUIRED' });
           return sendJson(res, 200, share.renew(body.target, callerId));
         }
 
         case 'POST /api/v1/peer/request': {
-          if (!body?.target || !callerId) return sendJson(res, 400, { error: 'bad_request', message: 'нужны target и идентификатор узла' });
+          if (!body?.target || !callerId) return sendJson(res, 400, { error: 'bad_request', message: 'нужны target и идентификатор узла', code: 'TARGET_AND_NODEID_REQUIRED' });
           const r = share.createRequest({
             target: body.target,
             requesterId: callerId,
@@ -534,7 +537,7 @@ export class ApiServer {
         }
 
         case 'POST /api/v1/peer/request-answer': {
-          if (!body?.requestId || !callerId) return sendJson(res, 400, { error: 'bad_request', message: 'нужен requestId' });
+          if (!body?.requestId || !callerId) return sendJson(res, 400, { error: 'bad_request', message: 'нужен requestId', code: 'REQUEST_ID_REQUIRED' });
           const r = await share.answerRequest(body.requestId, callerId, Boolean(body.accept));
           this.app.onStateChanged();
           return sendJson(res, 200, r);
@@ -543,13 +546,13 @@ export class ApiServer {
         case 'POST /api/v1/peer/net-ip': {
           // Держатель брони меняет настройки карты под себя. Право — только
           // у того, кто её держит; вернутся настройки при освобождении.
-          if (!body?.target || !callerId) return sendJson(res, 400, { error: 'bad_request', message: 'нужны target и идентификатор узла' });
+          if (!body?.target || !callerId) return sendJson(res, 400, { error: 'bad_request', message: 'нужны target и идентификатор узла', code: 'TARGET_AND_NODEID_REQUIRED' });
           const claim = share.claims.get(body.target);
           if (!claim || claim.holderId !== callerId) {
-            return sendJson(res, 403, { error: 'forbidden', message: 'карта занята не вами — менять её настройки нельзя' });
+            return sendJson(res, 403, { error: 'forbidden', message: 'карта занята не вами — менять её настройки нельзя', code: 'NOT_YOUR_CARD' });
           }
           const dev = share.get(body.target);
-          if (!dev) return sendJson(res, 404, { error: 'not_found', message: 'карта не найдена' });
+          if (!dev) return sendJson(res, 404, { error: 'not_found', message: 'карта не найдена', code: 'CARD_NOT_FOUND' });
           const r = await this.app.net.holderSetIp(dev, body.ip);
           this.app.hub.invalidateSlow();
           await share.refresh();
@@ -563,7 +566,7 @@ export class ApiServer {
         case 'GET /api/v1/peer/release': {
           const seeder = this.app.updater?.seeder;
           const d = seeder?.describe();
-          if (!d) return sendJson(res, 404, { error: 'no_release', message: 'у этого узла нет версии для раздачи' });
+          if (!d) return sendJson(res, 404, { error: 'no_release', message: 'у этого узла нет версии для раздачи', code: 'NO_RELEASE' });
           return sendJson(res, 200, d);
         }
 
@@ -575,13 +578,13 @@ export class ApiServer {
         case 'POST /api/v1/peer/release/reserve': {
           const seeder = this.app.updater?.seeder;
           if (!seeder) return sendJson(res, 404, { error: 'no_release' });
-          if (!callerId || !body?.version || !body?.sha256) return sendJson(res, 400, { error: 'bad_request', message: 'нужны version, sha256 и идентификатор узла' });
+          if (!callerId || !body?.version || !body?.sha256) return sendJson(res, 400, { error: 'bad_request', message: 'нужны version, sha256 и идентификатор узла', code: 'RELEASE_PARAMS_REQUIRED' });
           const r = seeder.reserve({ callerId, ip: remote, version: String(body.version), sha256: String(body.sha256) });
           if (r.busy) {
             res.setHeader('retry-after', String(r.retryAfterSec));
-            return sendJson(res, 503, { error: 'busy', message: 'все слоты заняты', retryAfterSec: r.retryAfterSec });
+            return sendJson(res, 503, { error: 'busy', message: 'все слоты заняты', retryAfterSec: r.retryAfterSec, code: 'ALL_SLOTS_BUSY' });
           }
-          if (r.error === 'other_build') return sendJson(res, 409, { error: 'other_build', message: 'у этого узла другая сборка' });
+          if (r.error === 'other_build') return sendJson(res, 409, { error: 'other_build', message: 'у этого узла другая сборка', code: 'OTHER_BUILD' });
           if (r.error) return sendJson(res, 404, { error: r.error });
           return sendJson(res, 200, r);
         }
@@ -591,7 +594,7 @@ export class ApiServer {
           if (!seeder) return sendJson(res, 404, { error: 'no_release' });
           const token = new URL(req.url, 'http://x').searchParams.get('token') || '';
           const t = seeder.begin({ token, callerId, ip: remote });
-          if (t.error === 'forbidden') return sendJson(res, 403, { error: 'forbidden', message: 'слот не выдан этому узлу' });
+          if (t.error === 'forbidden') return sendJson(res, 403, { error: 'forbidden', message: 'слот не выдан этому узлу', code: 'SLOT_NOT_YOURS' });
           if (t.error) return sendJson(res, 404, { error: t.error });
           res.writeHead(200, {
             'content-type': 'application/octet-stream',
@@ -606,13 +609,13 @@ export class ApiServer {
         case 'POST /api/v1/peer/driver-package': {
           // Драйвер отдаём только тому, кто сейчас держит устройство:
           // это код для ядра, раздавать его всем подряд незачем.
-          if (!body?.target || !callerId) return sendJson(res, 400, { error: 'bad_request', message: 'нужны target и идентификатор узла' });
+          if (!body?.target || !callerId) return sendJson(res, 400, { error: 'bad_request', message: 'нужны target и идентификатор узла', code: 'TARGET_AND_NODEID_REQUIRED' });
           const claim = share.claims.get(body.target);
           if (!claim || claim.holderId !== callerId) {
-            return sendJson(res, 403, { error: 'forbidden', message: 'устройство занято не вами — драйвер отдаётся только занявшему' });
+            return sendJson(res, 403, { error: 'forbidden', message: 'устройство занято не вами — драйвер отдаётся только занявшему', code: 'DRIVER_NOT_YOUR_DEVICE' });
           }
           const dev = share.get(body.target);
-          if (!dev) return sendJson(res, 404, { error: 'not_found', message: 'устройство не найдено у владельца' });
+          if (!dev) return sendJson(res, 404, { error: 'not_found', message: 'устройство не найдено у владельца', code: 'DEVICE_NOT_FOUND_AT_OWNER' });
           return sendJson(res, 200, await this.app.drivers.exportFor(dev));
         }
 
@@ -640,7 +643,7 @@ export class ApiServer {
       const status = e.code === 'busy' ? 409
         : e.code === 'device_not_found' || e.code === 'not_found' ? 404
         : e.code === 'forbidden' ? 403 : 400;
-      return sendJson(res, status, { error: e.code || 'failed', message: e.message, claim: e.claim || null });
+      return sendJson(res, status, { error: e.code || 'failed', message: e.message, claim: e.claim || null, ...(e.code ? { code: e.code, params: e.params, ...(e.srvCode ? { srvCode: e.srvCode } : {}) } : {}) });
     }
   }
 
@@ -663,17 +666,17 @@ export class ApiServer {
       });
     }
     if (req.method === 'GET' && route === '/api/v1/logs') {
-      if (access !== 'full') return sendJson(res, 403, { error: 'forbidden', message: 'журнал доступен только при полном доступе' });
+      if (access !== 'full') return sendJson(res, 403, { error: 'forbidden', message: 'журнал доступен только при полном доступе', code: 'LOGS_FULL_ACCESS_ONLY' });
       return sendJson(res, 200, { records: recentLogs(Number(url.searchParams.get('limit')) || 200) });
     }
     if (req.method === 'GET' && route === '/api/v1/net/map') {
       if (access !== 'full') {
-        return sendJson(res, 403, { error: 'forbidden', message: 'карта сети доступна только при полном доступе — войдите по паролю' });
+        return sendJson(res, 403, { error: 'forbidden', message: 'карта сети доступна только при полном доступе — войдите по паролю', code: 'NET_MAP_FULL_ACCESS' });
       }
       try {
         return sendJson(res, 200, await this.app.netManager.map());
       } catch (e) {
-        return sendJson(res, 500, { error: 'failed', message: e.message });
+        return sendJson(res, 500, { error: 'failed', message: e.message, code: 'NET_MAP_FAILED', params: { message: e.message } });
       }
     }
     if (req.method === 'GET' && route === '/api/v1/networks') {
@@ -685,7 +688,7 @@ export class ApiServer {
 
     if (req.headers[UI_HEADER] !== '1') {
       log.warn(`отклонён ${route} без заголовка интерфейса (${normalizeIp(req.socket.remoteAddress || '')}, origin ${req.headers.origin || '—'})`);
-      return sendJson(res, 403, { error: 'foreign_page', message: 'запрос пришёл не из интерфейса приложения' });
+      return sendJson(res, 403, { error: 'foreign_page', message: 'запрос пришёл не из интерфейса приложения', code: 'FOREIGN_PAGE' });
     }
 
     const body = parseJson(await readBody(req)) || {};
@@ -694,13 +697,13 @@ export class ApiServer {
     // получить полный доступ.
     if (route === '/api/v1/login') {
       if (!this.app.config.hasWebPassword()) {
-        return sendJson(res, 400, { error: 'no_password', message: 'пароль удалённого доступа не задан — управление возможно только с этого компьютера' });
+        return sendJson(res, 400, { error: 'no_password', message: 'пароль удалённого доступа не задан — управление возможно только с этого компьютера', code: 'NO_WEB_PASSWORD' });
       }
       if (!this.app.config.checkWebPassword(body.password)) {
         log.warn(`неудачная попытка входа с ${normalizeIp(req.socket.remoteAddress || '')}`);
         // Задержка гасит перебор: сто попыток в секунду превращаются в две.
         await new Promise((r) => setTimeout(r, 500));
-        return sendJson(res, 401, { error: 'bad_password', message: 'неверный пароль' });
+        return sendJson(res, 401, { error: 'bad_password', message: 'неверный пароль', code: 'BAD_PASSWORD' });
       }
       log.info(`вход с ${normalizeIp(req.socket.remoteAddress || '')} — выдан полный доступ`);
       res.setHeader('set-cookie',
@@ -713,11 +716,13 @@ export class ApiServer {
     }
 
     if (MUTATING.has(route) && access !== 'full') {
+      const hasPwd = this.app.config.hasWebPassword();
       return sendJson(res, 403, {
         error: 'readonly',
-        message: this.app.config.hasWebPassword()
+        message: hasPwd
           ? 'нужен вход по паролю'
           : 'управление доступно только с компьютера, где запущено приложение',
+        code: hasPwd ? 'LOGIN_REQUIRED' : 'MANAGE_LOCAL_ONLY',
       });
     }
 
@@ -852,7 +857,7 @@ export class ApiServer {
     } catch (e) {
       log.warn(`${route}: ${e.message}`);
       const status = e.code === 'busy' ? 409 : e.code === 'forbidden' ? 403 : e.code === 'not_found' ? 404 : 400;
-      return sendJson(res, status, { error: e.code || 'failed', message: e.message, claim: e.claim || null });
+      return sendJson(res, status, { error: e.code || 'failed', message: e.message, claim: e.claim || null, ...(e.code ? { code: e.code, params: e.params, ...(e.srvCode ? { srvCode: e.srvCode } : {}) } : {}) });
     }
   }
 
@@ -916,7 +921,7 @@ function readBody(req, limit = 1024 * 256) {
     req.on('data', (c) => {
       data += c;
       if (data.length > limit) {
-        reject(new Error('тело запроса слишком велико'));
+        reject(fail('REQUEST_BODY_TOO_LARGE', 'тело запроса слишком велико'));
         req.destroy();
       }
     });

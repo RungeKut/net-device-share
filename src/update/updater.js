@@ -66,8 +66,12 @@ export class Updater extends EventEmitter {
     this.polling = false;
 
     this.phase = 'idle';
+    this.phaseCode = null;
     this.message = '';
+    this.messageCode = null;
+    this.messageParams = null;
     this.waiting = [];
+    this.waitingCodes = [];
     this.candidate = null;       // { version, sha256, from }
     this.staged = null;          // { version, sha256, at }
     this.needsInstaller = null;  // { version, reason, url, from, recheckAt }
@@ -123,9 +127,8 @@ export class Updater extends EventEmitter {
     this.trial = Boolean(st.pending) && st.pending === this.running;
     if (this.trial) {
       this.trialUntil = Date.now() + HEALTHY_AFTER_MS;
-      this.phase = 'trial';
-      this.message = `пробный запуск версии ${this.running}: подтверждение через ${Math.round(HEALTHY_AFTER_MS / 1000)} с`;
-      log.info(this.message);
+this._set('trial', `пробный запуск версии ${this.running}: подтверждение через ${Math.round(HEALTHY_AFTER_MS / 1000)} с`, 'UPDATE_TRIAL_MESSAGE', { version: this.running, seconds: Math.round(HEALTHY_AFTER_MS / 1000) });
+	      log.info(this.message);
     }
     if (isSupervised() && process.send) {
       this.timers.push(setTimeout(() => this._reportHealthy(), HEALTHY_AFTER_MS));
@@ -186,10 +189,13 @@ export class Updater extends EventEmitter {
     return lib ? lib.layout.readState(this.home) : {};
   }
 
-  _set(phase, message = '') {
+  _set(phase, message = '', messageCode = null, messageParams = null) {
     if (this.phase !== phase || this.message !== message) {
       this.phase = phase;
       this.message = message;
+      this.phaseCode = phase;
+      this.messageCode = messageCode;
+      this.messageParams = messageParams;
       this.emit('changed');
     }
   }
@@ -362,7 +368,7 @@ export class Updater extends EventEmitter {
   async tick({ force = false } = {}) {
     if (!lib || this.busy || this.phase === 'unsupported' || this.phase === 'restarting') return;
     if (this._mode() === 'off') {
-      this._set('off', 'самообновление выключено в настройках');
+      this._set('off', 'самообновление выключено в настройках', 'UPDATE_OFF');
       return;
     }
     if (this.trial) return;
@@ -430,7 +436,7 @@ export class Updater extends EventEmitter {
   async _acquire(version, st) {
     const sources = this._sourcesFor(version);
     if (!sources.length) {
-      this._set('idle', `версия ${version} есть у соседей, но источников пока нет`);
+      this._set('idle', `версия ${version} есть у соседей, но источников пока нет`, 'UPDATE_WAITING_SOURCES', { version });
       return false;
     }
 
@@ -454,7 +460,7 @@ export class Updater extends EventEmitter {
       let manifestBytes;
       let sig;
       try {
-        this._set('checking', `проверяю версию ${version} у «${src.name}»`);
+        this._set('checking', `проверяю версию ${version} у «${src.name}»`, 'UPDATE_CHECKING', { version, source: src.name });
         const d = await call('/api/v1/peer/release');
         manifestBytes = Buffer.from(String(d.manifest || ''), 'base64');
         sig = Buffer.from(String(d.sig || ''), 'base64');
@@ -479,7 +485,7 @@ export class Updater extends EventEmitter {
       const verdict = this._judge(manifest, st);
       if (verdict) {
         this._reject(manifest.version, manifest.payload.sha256, verdict);
-        this._set('error', `версия ${manifest.version} не принята: ${verdict}`);
+        this._set('error', `версия ${manifest.version} не принята: ${verdict}`, null, { version: manifest.version, reason: verdict });
         continue;
       }
       this.candidate = { version: manifest.version, sha256: manifest.payload.sha256, from: src.name };
@@ -509,7 +515,7 @@ export class Updater extends EventEmitter {
       }
 
       try {
-        this._set('downloading', `скачиваю версию ${manifest.version} у «${src.name}» (${Math.round(manifest.payload.size / 1024)} КБ)`);
+        this._set('downloading', `скачиваю версию ${manifest.version} у «${src.name}» (${Math.round(manifest.payload.size / 1024)} КБ)`, 'UPDATE_DOWNLOADING', { version: manifest.version, sizeKb: Math.round(manifest.payload.size / 1024), source: src.name });
         const payload = await this._download(ep, key, token, manifest.payload.size);
         // Проверка и раскладка — из того же буфера, что скачали.
         const bundle = { manifestBytes, sig, payload };
@@ -526,9 +532,9 @@ export class Updater extends EventEmitter {
 
     if (anyBusy) {
       this.retryAt = Date.now() + retryAfter * 1000;
-      this._set('queued', `источники заняты — жду очереди (повтор через ${retryAfter} с)`);
+      this._set('queued', `источники заняты — жду очереди (повтор через ${retryAfter} с)`, 'UPDATE_QUEUED', { retryAfter });
     } else if (this.phase !== 'error') {
-      this._set('error', `не удалось получить версию ${version}: ${this.lastError || 'нет доступных источников'}`);
+      this._set('error', `не удалось получить версию ${version}: ${this.lastError || 'нет доступных источников'}`, 'UPDATE_ACQUIRE_FAILED', { version, error: this.lastError || 'нет доступных источников' });
     }
     return false;
   }
@@ -575,7 +581,7 @@ export class Updater extends EventEmitter {
       recheckAt: Date.now() + 10 * 60 * 1000,
     };
     log.info(`версия ${version} требует установщика: ${reason}${found ? `; он есть у «${found.from}»` : '; раздающего установщик узла не нашлось'}`);
-    this._set('needs-installer', `версия ${version} не ставится по сети: ${reason}`);
+    this._set('needs-installer', `версия ${version} не ставится по сети: ${reason}`, 'UPDATE_NEEDS_INSTALLER', { version, reason });
   }
 
   /** Короткий запрос без подписи: страница /download открыта всем в сети. */
@@ -663,7 +669,7 @@ export class Updater extends EventEmitter {
     }
 
     if (mode === 'ask' && this.approved !== v) {
-      this._set('awaiting-approval', `версия ${v} подготовлена — ждёт вашего разрешения`);
+      this._set('awaiting-approval', `версия ${v} подготовлена — ждёт вашего разрешения`, 'UPDATE_AWAITING_APPROVAL', { version: v });
       return;
     }
 
@@ -672,12 +678,13 @@ export class Updater extends EventEmitter {
     // (в любом режиме). Двое — версия до этого места не доходит (см. _reactToReports).
     const reps = this.reported.get(v);
     if (reps?.length === 1 && this.approved !== v) {
-      this._set('awaiting-approval', `сосед «${reps[0].name}» откатил версию ${v}: ${reps[0].reason || 'причина не указана'}. Ставить её здесь?`);
+      this._set('awaiting-approval', `сосед «${reps[0].name}» откатил версию ${v}: ${reps[0].reason || 'причина не указана'}. Ставить её здесь?`, 'UPDATE_ONE_REPORT', { name: reps[0].name, version: v, reason: reps[0].reason || null });
       return;
     }
 
     const policy = safeToRestart(this.app, { transfersActive: this.seeder?.activeCount || 0 });
-    this.waiting = [...policy.reasons];
+    this.waiting = policy.reasons.map((r) => r.text);
+    this.waitingCodes = policy.reasons.map((r) => r.code);
 
     const selfId = this.app.config.get('nodeId');
     const peers = this.app.peers.list().filter((p) => p.online && p.version);
@@ -696,12 +703,13 @@ export class Updater extends EventEmitter {
       this.noSourceSince = this.noSourceSince || Date.now();
       if (Date.now() - this.noSourceSince > STALE_STAGED_MS) {
         log.info(`версию ${v} никто не раздаёт и не проверяет уже больше часа — подготовленную забываем`);
-        this.staged = null;
-        this.approved = null;
-        this.noSourceSince = null;
-        this.waiting = [];
-        this._set('idle', '');
-        return;
+this.staged = null;
+	      this.approved = null;
+	      this.noSourceSince = null;
+	      this.waiting = [];
+	      this.waitingCodes = [];
+	      this._set('idle', '');
+	      return;
       }
     } else {
       this.noSourceSince = null;
@@ -712,19 +720,21 @@ export class Updater extends EventEmitter {
       // откатилась, выключена или недоступна. Раз её никто не проверил в работе,
       // ставить версию на себя нельзя — ждём, пока кто-то проработает на ней
       // положенное время (или вы нажмёте «Перезапустить сейчас»).
-      this.waiting.push(sources.length
-        ? 'ждём, пока соседи проверят версию в работе'
-        : 'ни один узел сейчас не работает на этой версии — ждём, пока хотя бы один проверит её в работе');
-      this._set('waiting', `версия ${v} подготовлена; ${this.waiting.join('; ')}`);
-      return;
+this.waiting.push(sources.length
+	        ? 'ждём, пока соседи проверят версию в работе'
+	        : 'ни один узел сейчас не работает на этой версии — ждём, пока хотя бы один проверит её в работе');
+	      this.waitingCodes.push(sources.length ? 'UPDATE_WAITING_CANARY' : 'UPDATE_WAITING_NO_SOURCES');
+this._set('waiting', `версия ${v} подготовлена; ${this.waiting.join('; ')}`, sources.length ? 'UPDATE_WAITING_CANARY' : 'UPDATE_WAITING_NO_SOURCES', { version: v });
+	      return;
     } else if (Date.now() < wave.eligibleAt) {
-      const sec = Math.ceil((wave.eligibleAt - Date.now()) / 1000);
-      this.waiting.push(`очередь: ${wave.rank + 1}-й, перезапуск примерно через ${sec} с`);
+const sec = Math.ceil((wave.eligibleAt - Date.now()) / 1000);
+	      this.waiting.push(`очередь: ${wave.rank + 1}-й, перезапуск примерно через ${sec} с`);
+	      this.waitingCodes.push('UPDATE_WAVE_QUEUE');
     }
 
-    if (!policy.ok || (wave.eligibleAt !== null && Date.now() < wave.eligibleAt)) {
-      this.graceUntil = null;
-      this._set('waiting', `версия ${v} подготовлена; ${this.waiting.join('; ')}`);
+if (!policy.ok || (wave.eligibleAt !== null && Date.now() < wave.eligibleAt)) {
+	      this.graceUntil = null;
+	      this._set('waiting', `версия ${v} подготовлена; ${this.waiting.join('; ')}`, 'UPDATE_WAITING_REASON', { version: v, reasons: this.waiting });
       return;
     }
 
@@ -739,7 +749,7 @@ export class Updater extends EventEmitter {
         this.graceUntil = this.graceUntil || Date.now() + graceMs;
         const left = this.graceUntil - Date.now();
         if (left > 0) {
-          this._set('waiting', `версия ${v} подготовлена; перезапуск через ${Math.ceil(left / 1000)} с — можно не ждать`);
+          this._set('waiting', `версия ${v} подготовлена; перезапуск через ${Math.ceil(left / 1000)} с — можно не ждать`, 'UPDATE_GRACE_COUNTDOWN', { version: v, seconds: Math.ceil(left / 1000) });
           clearTimeout(this.graceTimer);
           this.graceTimer = setTimeout(() => this.tick(), left + 200);
           this.graceTimer.unref?.();
@@ -760,8 +770,8 @@ export class Updater extends EventEmitter {
       s.configSnapshot = false;
       return s;
     });
-    this._set('restarting', `перезапуск в версию ${version}`);
-    log.info(`перезапуск в версию ${version}`);
+this._set('restarting', `перезапуск в версию ${version}`, 'UPDATE_RESTARTING', { version });
+	    log.info(`перезапуск в версию ${version}`);
     // Отложено, чтобы ответ интерфейсу успел уйти.
     setTimeout(() => process.emit('nds:restart'), 500).unref?.();
   }
@@ -824,8 +834,8 @@ export class Updater extends EventEmitter {
       s.rollbackRequest = { reason, at: Date.now() };
       return s;
     });
-    this._set('restarting', `откат с версии ${this.running} на ${st.previous}`);
-    log.warn(`откат с ${this.running} на ${st.previous}: ${reason}`);
+this._set('restarting', `откат с версии ${this.running} на ${st.previous}`, 'UPDATE_ROLLBACK', { from: this.running, to: st.previous });
+	    log.warn(`откат с ${this.running} на ${st.previous}: ${reason}`);
     setTimeout(() => process.emit('nds:restart'), 500).unref?.();
     return this.snapshot();
   }
@@ -841,20 +851,24 @@ export class Updater extends EventEmitter {
     const reason = lib ? this.unsupportedReason() : 'нет библиотеки обновления';
     const st = this._state();
     const held = this.seeder?.holding?.();
-    return {
-      supported: !reason,
-      unsupportedReason: reason,
-      mode: this._mode(),
-      phase: this.phase,
-      message: this.message,
-      running: this.running,
-      trial: this.trial,
-      candidate: this.candidate,
-      staged: this.staged ? { version: this.staged.version } : null,
-      installer: this.needsInstaller
-        ? { version: this.needsInstaller.version, reason: this.needsInstaller.reason, url: this.needsInstaller.url, from: this.needsInstaller.from }
-        : null,
-      waiting: this.waiting,
+return {
+	      supported: !reason,
+	      unsupportedReason: reason,
+	      mode: this._mode(),
+	      phase: this.phase,
+	      phaseCode: this.phaseCode || null,
+	      message: this.message,
+	      messageCode: this.messageCode || null,
+	      messageParams: this.messageParams || null,
+	      running: this.running,
+	      trial: this.trial,
+	      candidate: this.candidate,
+	      staged: this.staged ? { version: this.staged.version } : null,
+	      installer: this.needsInstaller
+	        ? { version: this.needsInstaller.version, reason: this.needsInstaller.reason, url: this.needsInstaller.url, from: this.needsInstaller.from }
+	        : null,
+	      waiting: this.waiting,
+	      waitingCodes: this.waitingCodes || [],
       eligibleAt: this.eligibleAt,
       retryAt: this.retryAt,
       lastError: this.lastError,

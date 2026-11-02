@@ -290,10 +290,10 @@ test('после падения приложения параметры порт
 
 test('блокировки: LPT и не-Windows честно отказываются', async () => {
   const share = new SerialShare({ config: fakeConfig(), supported: true });
-  assert.match(share.lendBlocker({ type: 'lpt', key: 'LPT1' }), /только последовательные/);
-  assert.match(share.lendBlocker({ type: 'com', key: 'COM1' }), /канал/);
+  assert.match(share.lendBlocker({ type: 'lpt', key: 'LPT1' }).text, /только последовательные/);
+  assert.match(share.lendBlocker({ type: 'com', key: 'COM1' }).text, /канал/);
   const off = new SerialShare({ config: fakeConfig(), supported: false });
-  assert.match(off.lendBlocker({ type: 'com', key: 'COM1' }), /Windows/);
+  assert.match(off.lendBlocker({ type: 'com', key: 'COM1' }).text, /Windows/);
 });
 
 // Настоящая компиляция насоса: один раз собирается и остаётся в кэше настроек.

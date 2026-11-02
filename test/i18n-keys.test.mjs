@@ -62,7 +62,7 @@ test('ключи из исходников (t(…) и data-i18n*) существ
   const used = new Set();
   for (const file of ['app.js', 'net.js', 'index.html']) {
     const src = readFileSync(fileURLToPath(new URL(`../src/ui/${file}`, import.meta.url)), 'utf8');
-    for (const m of src.matchAll(/\bt\(\s*(['"])(.*?)\1/g)) used.add(m[2]);
+    for (const m of src.matchAll(/\bt\(\s*(['"])(.*?)\1/g)) if (!m[2].endsWith('.')) used.add(m[2]);
     for (const m of src.matchAll(/\bdata-i18n(?:-[\w-]+)?="([^"]*)"/g)) used.add(m[1]);
   }
   const missing = [...used].filter((k) => k && !ruKeys.has(k));

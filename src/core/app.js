@@ -31,6 +31,7 @@ import { DriverShare } from './driverShare.js';
 import { readVersion } from './paths.js';
 import { Updater } from '../update/updater.js';
 import { NetManager } from './netManager.js';
+import { fail } from './fail.js';
 
 const log = logger('app');
 
@@ -96,7 +97,7 @@ export class App extends EventEmitter {
     this.networks = this._resolveNets();
     this.network = this.networks[0] || null;
     if (!this.network) {
-      throw new Error('не найден подходящий сетевой интерфейс IPv4 — проверьте подключение к сети');
+      throw fail('NO_NETWORK_INTERFACE', 'не найден подходящий сетевой интерфейс IPv4 — проверьте подключение к сети');
     }
     if (this.config.get('network') === 'auto') {
       log.info(`рабочие сети выбраны автоматически: ${this.networks.map((n) => `${n.cidr} (${n.iface})`).join(', ')}`);
@@ -521,10 +522,10 @@ export class App extends EventEmitter {
 
     if (nodeId === selfId) {
       const devices = this._devicesOfTarget(this.share.listShared(), this.share.listGroups(), target);
-      if (!devices.length) throw new Error('цель не найдена среди опубликованных');
-      return {
-        nodeId,
-        nodeName: `${this.config.get('name')} (этот компьютер)`,
+if (!devices.length) throw fail('TARGET_NOT_FOUND', 'цель не найдена среди опубликованных');
+	      return {
+	        nodeId,
+	        nodeName: `${this.config.get('name')} (этот компьютер)`,
         host: this.network.address,
         apiPort: this.config.get('apiPort'),
         usbipPort: this.config.get('usbipPort'),
@@ -536,11 +537,11 @@ export class App extends EventEmitter {
     }
 
     const peer = this.peers.get(nodeId);
-    if (!peer) throw new Error('узел-владелец не найден в сети');
-    if (!peer.online) throw new Error(`узел "${peer.name}" сейчас недоступен`);
+if (!peer) throw fail('OWNER_NOT_FOUND', 'узел-владелец не найден в сети');
+	    if (!peer.online) throw fail('NODE_OFFLINE', `узел "${peer.name}" сейчас недоступен`, { peerName: peer.name });
 
     const devices = this._devicesOfTarget(peer.devices || [], peer.groups || [], target);
-    if (!devices.length) throw new Error('цель не найдена у владельца');
+    if (!devices.length) throw fail('TARGET_NOT_FOUND_AT_OWNER', 'цель не найдена у владельца');
 
     return {
       nodeId,
@@ -583,11 +584,11 @@ export class App extends EventEmitter {
     if (nodeId !== this.config.get('nodeId')) {
       const peer = this.peers.get(nodeId);
       const route = (routeKey && peer.routes.get(routeKey)) || this.peers.primaryRoute(peer);
-      if (routeKey && !peer.routes.get(routeKey)) throw new Error('выбранный маршрут до узла уже недоступен — обновите список');
-      if (route) {
-        if (route.kind !== 'direct' && !route.mode) await this.peers.probeRoute(peer, route);
-        if (route.kind !== 'direct' && !route.mode) {
-          throw new Error(`узел «${peer.name}» по адресу ${route.address} недоступен ни напрямую, ни через шлюз`);
+if (routeKey && !peer.routes.get(routeKey)) throw fail('ROUTE_GONE', 'выбранный маршрут до узла уже недоступен — обновите список');
+	      if (route) {
+	        if (route.kind !== 'direct' && !route.mode) await this.peers.probeRoute(peer, route);
+	        if (route.kind !== 'direct' && !route.mode) {
+	          throw fail('NODE_UNREACHABLE', `узел «${peer.name}» по адресу ${route.address} недоступен ни напрямую, ни через шлюз`, { peerName: peer.name, routeAddress: route.address });
         }
         const ep = await this.peers.endpoint(peer, route.apiPort || peer.apiPort, route.key);
         info.routeKey = route.key;
@@ -599,12 +600,12 @@ export class App extends EventEmitter {
     }
 
     const needsClient = info.devices.some((d) => d.hasTransport && d.type !== 'net');
-    if (needsClient && !this.backendInfo.client) {
-      throw new Error('на этом компьютере нет клиентской части USB/IP — подключать устройства невозможно. См. docs/WINDOWS-SETUP.md');
-    }
-    if (info.devices.some((d) => d.hasTransport && d.type === 'net')) {
-      const why = this.net.borrowBlocker();
-      if (why) throw new Error(why);
+if (needsClient && !this.backendInfo.client) {
+	      throw fail('NO_USBIP_CLIENT', 'на этом компьютере нет клиентской части USB/IP — подключать устройства невозможно. См. docs/WINDOWS-SETUP.md');
+	    }
+	    if (info.devices.some((d) => d.hasTransport && d.type === 'net')) {
+	      const why = this.net.borrowBlocker();
+	      if (why) throw fail(why.code, why.text, why.params);
     }
 
     const r = await this.attach.attach(info, { force, mode });
@@ -623,24 +624,24 @@ export class App extends EventEmitter {
    */
   async setHeldIp(attachmentId, deviceId, ip, { category } = {}) {
     const rec = this.attach.attachments.get(attachmentId);
-    if (!rec) throw new Error('занятие не найдено');
-    const part = rec.parts.find((p) => p.deviceId === deviceId && p.type === 'net');
-    if (!part) throw new Error('в этом занятии нет такой сетевой карты');
-    if (part.netKey) {
-      const r = await this.net.setBorrowIp(part.netKey, ip, { category, neighbors: part.neighbors });
-      this.attach.setPartIp(attachmentId, deviceId, { ip: r.ip, ipApplied: r.ipApplied });
-      return r;
-    }
-    let r;
-    if (rec.self) {
-      const dev = this.share.get(deviceId);
-      if (!dev) throw new Error('карта не найдена');
+if (!rec) throw fail('ATTACHMENT_NOT_FOUND', 'занятие не найдено');
+	    const part = rec.parts.find((p) => p.deviceId === deviceId && p.type === 'net');
+	    if (!part) throw fail('NO_NET_CARD_IN_ATTACH', 'в этом занятии нет такой сетевой карты');
+	    if (part.netKey) {
+	      const r = await this.net.setBorrowIp(part.netKey, ip, { category, neighbors: part.neighbors });
+	      this.attach.setPartIp(attachmentId, deviceId, { ip: r.ip, ipApplied: r.ipApplied });
+	      return r;
+	    }
+	    let r;
+	    if (rec.self) {
+	      const dev = this.share.get(deviceId);
+	      if (!dev) throw fail('CARD_NOT_FOUND', 'карта не найдена');
       r = await this.net.holderSetIp(dev, ip);
       this.hub.invalidateSlow();
       await this.share.refresh();
     } else {
       const peer = this.peers.get(rec.nodeId);
-      if (!peer) throw new Error('владелец карты сейчас не в сети');
+      if (!peer) throw fail('OWNER_OFFLINE', 'владелец карты сейчас не в сети');
       r = await rpc({
         ...(await this.peers.endpoint(peer, peer.apiPort)),
         path: '/api/v1/peer/net-ip',
@@ -665,7 +666,7 @@ export class App extends EventEmitter {
   async prepareDriver(attachmentId, deviceId) {
     const { rec, part } = this._driverTarget(attachmentId, deviceId);
     const peer = this.peers.get(rec.nodeId);
-    if (!peer) throw new Error('владелец устройства сейчас не в сети — драйвер взять не у кого');
+    if (!peer) throw fail('DRIVER_OWNER_OFFLINE', 'владелец устройства сейчас не в сети — драйвер взять не у кого');
     let received;
     try {
       received = await rpc({
@@ -696,12 +697,12 @@ export class App extends EventEmitter {
   }
 
   _driverTarget(attachmentId, deviceId) {
-    const rec = this.attach.attachments.get(attachmentId);
-    if (!rec) throw new Error('занятие не найдено');
-    const part = rec.parts.find((p) => p.deviceId === deviceId);
-    if (!part) throw new Error('в этом занятии нет такого устройства');
-    const reason = this._driverBlock(rec, part);
-    if (reason) throw Object.assign(new Error(reason), { code: 'driver_unsupported' });
+const rec = this.attach.attachments.get(attachmentId);
+	    if (!rec) throw fail('ATTACHMENT_NOT_FOUND', 'занятие не найдено');
+	    const part = rec.parts.find((p) => p.deviceId === deviceId);
+	    if (!part) throw fail('NO_DEVICE_IN_ATTACH', 'в этом занятии нет такого устройства');
+	    const reason = this._driverBlock(rec, part);
+	    if (reason) throw Object.assign(new Error(reason), { code: 'driver_unsupported' });
     return { rec, part };
   }
 
@@ -726,10 +727,10 @@ export class App extends EventEmitter {
         message,
       });
     }
-    const peer = this.peers.get(nodeId);
-    if (!peer) throw new Error('узел-владелец не найден в сети');
+const peer = this.peers.get(nodeId);
+	    if (!peer) throw fail('OWNER_NOT_FOUND', 'узел-владелец не найден в сети');
 
-    const res = await rpc({
+	    const res = await rpc({
       ...(await this.peers.endpoint(peer, peer.apiPort)),
       path: '/api/v1/peer/request',
       method: 'POST',
@@ -900,16 +901,16 @@ export class App extends EventEmitter {
     if (clean.seeOpen !== undefined) clean.seeOpen = Boolean(clean.seeOpen);
     if (clean.showToOpen !== undefined) clean.showToOpen = Boolean(clean.showToOpen);
     if (clean.announceTransport !== undefined && !ANNOUNCE_TRANSPORTS.has(clean.announceTransport)) {
-      throw new Error(`неизвестный канал анонсов «${clean.announceTransport}»`);
+      throw fail('UNKNOWN_ANNOUNCE_CHANNEL', `неизвестный канал анонсов «${clean.announceTransport}»`, { announceTransport: clean.announceTransport });
     }
     if (clean.announceBackoff !== undefined) clean.announceBackoff = Boolean(clean.announceBackoff);
     if (clean.metricsEnabled !== undefined) clean.metricsEnabled = Boolean(clean.metricsEnabled);
     if (patch.metricsToken !== undefined && patch.metricsToken !== '' && patch.metricsToken !== null
       && !/^[A-Za-z0-9_-]{16,128}$/.test(String(patch.metricsToken))) {
-      throw new Error('токен метрик: 16–128 знаков — латинские буквы, цифры, «-» и «_»');
+      throw fail('BAD_METRICS_TOKEN', 'токен метрик: 16–128 знаков — латинские буквы, цифры, «-» и «_»');
     }
     if (clean.updateMode !== undefined && !['auto', 'ask', 'off'].includes(clean.updateMode)) {
-      throw new Error('режим обновления: auto, ask или off');
+      throw fail('BAD_UPDATE_MODE', 'режим обновления: auto, ask или off');
     }
     clampMs(clean, 'announceIntervalMs', 1000, 60000);
     clampMs(clean, 'announceIdleIntervalMs', 1000, 600000);
@@ -921,7 +922,7 @@ export class App extends EventEmitter {
     const base = clean.announceIntervalMs ?? before.announceIntervalMs;
     const idle = clean.announceIdleIntervalMs ?? before.announceIdleIntervalMs;
     if (idle < base) {
-      throw new Error('интервал в покое не может быть меньше обычного интервала анонсов');
+      throw fail('IDLE_ANNOUNCE_LESS_THAN_NORMAL', 'интервал в покое не может быть меньше обычного интервала анонсов');
     }
 
     // Узлы из других сетей без общего ключа не работают, и молча принять
@@ -933,7 +934,7 @@ export class App extends EventEmitter {
     const networksNow = clean.networks ?? before.networks ?? [];
     const keyedNow = networksNow.filter((n) => n?.key).length || Boolean(this.config.get('preSharedKey'));
     if (seedsNow.length && !keyedNow) {
-      throw new Error('для узлов из других сетей нужна сеть с общим ключом — заведите её в этом же окне');
+      throw fail('SEEDS_NEED_KEYED_NETWORK', 'для узлов из других сетей нужна сеть с общим ключом — заведите её в этом же окне');
     }
 
     this.config.set(clean);
@@ -965,9 +966,13 @@ export class App extends EventEmitter {
       const nets = this._resolveNets(clean.network ?? before.network, clean.discoveryExclude ?? before.discoveryExclude ?? []);
       if (!nets.length) {
         this.config.set({ network: before.network, discoveryExclude: before.discoveryExclude || [] });
-        throw new Error(clean.network !== undefined && clean.network !== before.network
-          ? `сеть ${clean.network} недоступна на этом компьютере`
-          : 'нельзя исключить все сети: приложению негде искать узлы');
+throw fail(clean.network !== undefined && clean.network !== before.network
+	          ? 'NETWORK_UNAVAILABLE' : 'CANNOT_EXCLUDE_ALL_NETWORKS',
+	          clean.network !== undefined && clean.network !== before.network
+	            ? `сеть ${clean.network} недоступна на этом компьютере`
+	            : 'нельзя исключить все сети: приложению негде искать узлы',
+	          clean.network !== undefined && clean.network !== before.network
+	            ? { networkName: clean.network } : {});
       }
       this._setNetworks(nets);
       await this.discovery.setNetworks(this.networks);

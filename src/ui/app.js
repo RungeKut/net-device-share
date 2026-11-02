@@ -9,7 +9,7 @@
 // права проверяет сервер, здесь лишь убираем заведомо бесполезные кнопки.
 
 import { initNet } from './net.js';
-import { getLang, setLang, startI18n, t } from './i18n.js';
+import { getLang, setLang, startI18n, t, srv } from './i18n.js';
 
 const $ = (sel) => document.querySelector(sel);
 let state = null;
@@ -79,7 +79,7 @@ function action(btn, fn, okMessage) {
   btn.textContent = '…';
   fn()
     .then(() => { if (okMessage) toast(okMessage, 'ok'); })
-    .catch((e) => toast(e.message, 'err'))
+    .catch((e) => toast(srv(e), 'err'))
     .finally(() => { btn.disabled = false; btn.textContent = label; });
 }
 
@@ -362,7 +362,7 @@ function statusPill(entry) {
   // Занятие идёт: показываем, что именно сейчас происходит. Сетевая карта
   // занимается секундами, и «…» на кнопке ничего не говорит о том, ждать ли.
   if (entry.attachState === 'attaching') {
-    return `<span class="pill warn">${t('common.beingTaken')}${entry.attachStage ? `: ${esc(entry.attachStage)}` : '…'}</span>`;
+    return `<span class="pill warn">${t('common.beingTaken')}${entry.attachStageCode ? `: ${esc(t('srv.' + entry.attachStageCode, entry.attachStageParams))}` : entry.attachStage ? `: ${esc(entry.attachStage)}` : '…'}</span>`;
   }
   if (entry.preparing && !entry.busy) return '<span class="pill warn">' + t('common.beingPrepared_2') + '</span>';
   if (entry.busyByMe) return `<span class="pill mine">${t('app.takenByYou')} · ${esc(since(entry.claim.since))}</span>`;
@@ -588,7 +588,7 @@ function adapterIpText(ip, applied) {
 /** Значок узла, стоящего в нескольких сетях: он может пересказывать каталог и пропускать соединения. */
 function gatewayMark(e) {
   return e.ownerGateway || e.gateway
-    ? ' <span class="pill plain" title="' + t('app.gatewayPillTitle') + '">🌉 шлюз</span>'
+    ? ' <span class="pill plain" title="' + t('app.gatewayPillTitle') + '">' + t('common.gateway_3') + '</span>'
     : '';
 }
 
@@ -930,7 +930,10 @@ function driverNotes(a) {
   if (a.state !== 'attached') return '';
   const parts = a.parts.filter((p) => p.hasTransport && p.type === 'usb' && p.driverBlock);
   // Одна и та же причина у всех устройств занятия называется один раз.
-  const reasons = [...new Set(parts.map((p) => p.driverBlock))];
+  const reasons = [...new Set(parts.map((p) => {
+    if (p.driverBlockCode) return t('srv.' + p.driverBlockCode, p.driverBlockParams);
+    return p.driverBlock;
+  }))];
   return reasons.map((r) => `<p class="hint"><b>Копировать драйвер нельзя.</b> ${esc(r)}</p>`).join('');
 }
 
@@ -1137,15 +1140,15 @@ document.addEventListener('change', (ev) => {
     }
     post('/api/v1/settings', { discoveryExclude: [...now] })
       .then(() => toast(t.checked ? t('common.theNicIsExcludedFrom') : t('common.theNicTakesPartIn'), 'ok'))
-      .catch((e) => { t.checked = !t.checked; toast(e.message, 'err'); });
+      .catch((e) => { t.checked = !t.checked; toast(srv(e), 'err'); });
     return;
   }
   if (t.dataset.purpose) {
     post('/api/v1/purpose', { deviceId: t.dataset.purpose, purpose: t.value })
       .then(() => toast(t('common.descriptionSaved'), 'ok'))
-      .catch((e) => toast(e.message, 'err'));
+      .catch((e) => toast(srv(e), 'err'));
   } else if (t.id === 'autoShare') {
-    post('/api/v1/settings', { autoShareNew: t.checked }).catch((e) => toast(e.message, 'err'));
+    post('/api/v1/settings', { autoShareNew: t.checked }).catch((e) => toast(srv(e), 'err'));
   } else if (t.id === 'setAutostart') {
     // Действие над системой, а не правка настройки: применяем сразу и
     // возвращаем галочку на место, если не получилось.
@@ -1156,7 +1159,7 @@ document.addEventListener('change', (ev) => {
         t.checked = Boolean(st.enabled);
         toast(st.enabled ? t('common.autostartEnabled') : t('common.autostartDisabled'), 'ok');
       })
-      .catch((e) => { t.checked = !wanted; toast(e.message, 'err'); })
+      .catch((e) => { t.checked = !wanted; toast(srv(e), 'err'); })
       .finally(() => { t.disabled = false; });
   } else if (t.id === 'onlyFree' || t.id === 'typeFilter') {
     renderCatalog();
@@ -1194,7 +1197,7 @@ $('#requestDialog').addEventListener('close', async () => {
     await post('/api/v1/request/answer', { requestId: req.id, accept });
     toast(accept ? t('common.deviceHandedOver') : t('common.requestDeclined'), accept ? 'ok' : '');
   } catch (e) {
-    toast(e.message, 'err');
+    toast(srv(e), 'err');
   }
 });
 
@@ -1207,7 +1210,7 @@ $('#btnNetDiag').addEventListener('click', async (ev) => {
     $('#diagText').textContent = JSON.stringify(d, null, 2);
     $('#diagDialog').showModal();
   } catch (e) {
-    toast(e.message, 'err');
+    toast(srv(e), 'err');
   } finally {
     btn.disabled = false;
   }
@@ -1282,7 +1285,7 @@ $('#bridgeIpDialog').addEventListener('close', async () => {
     toast(t('app.addressSetToAdapter', { address }), 'ok');
     routeWarning(res);
   } catch (e) {
-    toast(e.message, 'err');
+    toast(srv(e), 'err');
   }
 });
 
@@ -1294,7 +1297,7 @@ $('#askDialog').addEventListener('close', async () => {
     await post('/api/v1/request', { nodeId, target, message: $('#askMessage').value });
     toast(t('common.requestSentToTheHolder'), 'ok');
   } catch (e) {
-    toast(e.message, 'err');
+    toast(srv(e), 'err');
   }
 });
 
@@ -1342,7 +1345,7 @@ $('#groupDialog').addEventListener('close', async () => {
       toast(t('common.groupSaved'), 'ok');
     }
   } catch (e) {
-    toast(e.message, 'err');
+    toast(srv(e), 'err');
   }
 });
 
@@ -1515,7 +1518,7 @@ toast(r.needsRestart
 	      ? t('common.savedPortAndKeyChanges')
 	      : t('common.settingsSaved'), r.needsRestart ? '' : 'ok');
   } catch (e) {
-    toast(e.message, 'err');
+    toast(srv(e), 'err');
     // Диалог уже закрылся формой, но поля в нём остались заполненными.
     // Возвращаем его: иначе отвергнутый адрес пришлось бы набирать заново.
     $('#settingsNote').textContent = e.message;
@@ -1841,11 +1844,15 @@ function liveUpdateText(u) {
   const fix = (s) => String(s)
     .replace(/перезапуск через \d+ с/, (m) => (u.graceUntil ? `перезапуск через ${left(u.graceUntil)} с` : m))
     .replace(/(очередь: \d+-й, перезапуск примерно через) \d+ с/, (m, head) => (u.eligibleAt ? `${head} ${left(u.eligibleAt)} с` : m));
-  let message = u.message ? fix(u.message) : '';
+  let message = u.messageCode ? t('srv.' + u.messageCode, u.messageParams) : u.message ? fix(u.message) : '';
   if (u.phase === 'trial' && u.trialUntil) {
     message = t('app.trialRunVersion', { running: u.running, left: left(u.trialUntil) });
   }
-  return { message, waiting: (u.waiting || []).map(fix) };
+  const waiting = (u.waiting || []).map((w) => {
+    if (w.code) return t('srv.' + w.code, w.params);
+    return fix(w);
+  });
+  return { message, waiting };
 }
 
 /** Полоса над вкладками: что с обновлением и что с ним можно сделать. */

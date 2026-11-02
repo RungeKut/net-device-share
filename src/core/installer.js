@@ -22,6 +22,7 @@ import { fileURLToPath } from 'node:url';
 import { logger } from '../log.js';
 import { run } from '../devices/backend.js';
 import { installersDir } from './paths.js';
+import { fail } from './fail.js';
 
 const log = logger('installer');
 
@@ -135,13 +136,13 @@ export class Installer extends EventEmitter {
 
   /** Запуск установки. Возвращается сразу, ход дела — в plan()/событиях. */
   async start() {
-    if (this.state === 'running') throw new Error('установка уже идёт');
+    if (this.state === 'running') throw fail('INSTALL_ALREADY_RUNNING', 'установка уже идёт');
     if (process.platform !== 'win32') {
-      throw new Error('автоматическая установка сделана только для Windows; для Linux см. подсказки в интерфейсе');
+      throw fail('INSTALL_WINDOWS_ONLY', 'автоматическая установка сделана только для Windows; для Linux см. подсказки в интерфейсе');
     }
 
     const todo = this.plan().components.filter((c) => c.needed);
-    if (!todo.length) throw new Error('устанавливать нечего: всё необходимое уже есть');
+    if (!todo.length) throw fail('INSTALL_NOTHING_TO_DO', 'устанавливать нечего: всё необходимое уже есть');
 
     this.state = 'running';
     this.steps = [];
