@@ -10,6 +10,8 @@
 // компьютера или после входа по паролю. Сервер проверяет это сам; здесь
 // лишь не рисуем бесполезных кнопок.
 
+import { t } from './i18n.js';
+
 /** Как часто перечитывать карту, пока вкладка открыта. */
 const POLL_MS = 6000;
 
@@ -20,21 +22,21 @@ const ROW_GAP = 14;
 const BAND_GAP = 26;
 
 const CATEGORY = {
-  Private: 'частная',
-  Public: 'общедоступная',
-  DomainAuthenticated: 'доменная',
+  Private: t('common.private'),
+  Public: t('common.public'),
+  DomainAuthenticated: t('common.domain'),
 };
 
 const ROLE = {
-  physical: 'физическая карта',
+  physical: t('common.physicalNic'),
   wifi: 'Wi-Fi',
-  bridge: 'адаптер моста — этот компьютер',
-  vnic: 'виртуальный адаптер',
-  uplink: 'выход коммутатора в сеть',
-  lend: 'мост отданной карты',
-  borrow: 'чужая карта у вас',
-  tap: 'TAP-адаптер другой программы',
-  virtual: 'программный адаптер',
+  bridge: t('common.bridgeAdapterThisComputer'),
+  vnic: t('common.virtualAdapter'),
+  uplink: t('common.switchUplink'),
+  lend: t('common.sharedNicsBridge'),
+  borrow: t('common.someonesNicAtYourSide'),
+  tap: t('common.anotherProgramsTapAdapter'),
+  virtual: t('common.softwareAdapter'),
 };
 
 export function initNet(h) {
@@ -89,39 +91,39 @@ export function initNet(h) {
 
   /** Кем адаптер приходится этому компьютеру — подпись на карте и карточке. */
   function roleText(a) {
-    if (a.adopted) return 'TAP-адаптер другой программы, в коммутаторе';
-    if (a.role === 'virtual' && a.hyperv) return 'адаптер Hyper-V';
+    if (a.adopted) return t('common.anotherProgramsTapAdapterIn');
+    if (a.role === 'virtual' && a.hyperv) return t('common.hypervAdapter');
     return ROLE[a.role] || a.role;
   }
 
   /** Где адаптер сейчас — для списков «подключить к коммутатору». */
   function portNote(a) {
-    if (a.role === 'tap') return 'создан не приложением';
+    if (a.role === 'tap') return t('common.notCreatedByTheApp');
     const sw = map.switches.find((s) => s.id === a.switchId);
-    return sw ? `сейчас в «${sw.name}» — перейдёт` : 'не подключён';
+    return sw ? t('net.currentlyInSwitch', { name: sw.name }) : t('common.notConnected');
   }
 
   function addrText(a) {
-    if (a.bridged) return 'в мосту — адрес у моста';
-    if (a.tcpip === false) return 'IP выключен';
+    if (a.bridged) return t('common.bridgedTheAddressIsOn');
+    if (a.tcpip === false) return t('common.ipOff');
     const live = (a.addresses || []).filter((x) => !x.address.startsWith('169.254.'));
     if (live.length) {
       const shown = live.slice(0, 2).map((x) => `${x.address}/${x.prefixLength}`).join(', ');
       return `${shown}${live.length > 2 ? ` +${live.length - 2}` : ''}${a.ip?.dhcp ? ' (DHCP)' : ''}`;
     }
-    if (a.ip && !a.ip.dhcp && a.ip.addresses?.length) return `${a.ip.addresses[0].address}/${a.ip.addresses[0].prefixLength} (нет связи)`;
-    if (a.ip?.dhcp) return 'DHCP, адреса нет';
-    return 'адреса нет';
+    if (a.ip && !a.ip.dhcp && a.ip.addresses?.length) return t('net.noLinkAddress', { address: `${a.ip.addresses[0].address}/${a.ip.addresses[0].prefixLength}` });
+    if (a.ip?.dhcp) return t('common.dhcpNoAddress');
+    return t('common.noAddress');
   }
 
   /** Настройки IP одной строкой — как в каталоге. */
   function cfgText(ip) {
-    if (!ip) return 'не прочитаны';
+    if (!ip) return t('common.notRead');
     const parts = [];
-    if (ip.dhcp) parts.push(ip.lease ? `DHCP, сейчас ${ip.lease.address}/${ip.lease.prefixLength ?? '?'}` : 'DHCP');
-    else parts.push(`${(ip.addresses || []).map((x) => `${x.address}/${x.prefixLength}`).join(', ') || 'нет адреса'} вручную`);
+    if (ip.dhcp) parts.push(ip.lease ? `DHCP, ${t('net.currentLease', { address: `${ip.lease.address}/${ip.lease.prefixLength ?? '?'}` })}` : 'DHCP');
+    else parts.push(`${(ip.addresses || []).map((x) => `${x.address}/${x.prefixLength}`).join(', ') || t('common.noAddress_2')} ${t('net.manual')}`);
     const gw = ip.dhcp ? ip.lease?.gateways : ip.gateways;
-    if (gw?.length) parts.push(`шлюз ${gw.join(', ')}`);
+    if (gw?.length) parts.push(t('net.gateway', { list: gw.join(', ') }));
     const dns = ip.dns?.length ? ip.dns : ip.lease?.dns || [];
     if (dns.length) parts.push(`DNS ${dns.join(', ')}`);
     return parts.join(' · ');
@@ -129,8 +131,8 @@ export function initNet(h) {
 
   function statusBadge(a) {
     if (a.status === 'Up') return '';
-    if (a.status === 'Disconnected') return '<span class="pill plain">нет связи</span>';
-    if (a.status === 'Disabled') return '<span class="pill err">отключён</span>';
+    if (a.status === 'Disconnected') return `<span class="pill plain">${t('common.noLink')}</span>`;
+    if (a.status === 'Disabled') return `<span class="pill err">${t('common.disabled')}</span>`;
     return a.status ? `<span class="pill plain">${esc(a.status)}</span>` : '';
   }
 
@@ -139,20 +141,20 @@ export function initNet(h) {
     if (!c) return '';
     const cls = c === 'Public' ? 'warn' : 'plain';
     const tip = c === 'Public'
-      ? 'Общедоступная сеть: сетевой экран (и Windows, и Kaspersky) режет входящие — приборы стенда не достучатся до серверов на этом компьютере'
-      : 'Частная сеть: входящие соединения разрешены правилами для частных сетей';
-    return `<span class="pill ${cls}" title="${esc(tip)}">сеть ${esc(CATEGORY[c] || c)}</span>`;
+      ? t('common.publicNetworkTheFirewallWindows')
+      : t('common.privateNetworkIncomingConnectionsAre');
+    return `<span class="pill ${cls}" title="${esc(tip)}">${t('net.networkTypePrefix')} ${esc(CATEGORY[c] || c)}</span>`;
   }
 
   function claimBadge(a) {
     const d = a.device;
     if (!d) return '';
-    if (d.preparing) return '<span class="pill warn">готовится к выдаче</span>';
-    if (!d.claim) return d.shared ? '<span class="pill free">опубликована</span>' : '';
+    if (d.preparing) return `<span class="pill warn">${t('common.beingPrepared')}</span>`;
+    if (!d.claim) return d.shared ? `<span class="pill free">${t('common.published')}</span>` : '';
     const who = esc(d.claim.holderName);
     return a.lend || (d.hasTransport && a.bridged)
-      ? `<span class="pill busy">отдана: ${who}</span>`
-      : `<span class="pill busy" title="Карта не пробрасывается: держатель работает с ней на этом компьютере">бронь: ${who}</span>`;
+      ? `<span class="pill busy">${t('net.sharedTo', { who })}</span>`
+      : `<span class="pill busy" title="${esc(t('common.theNicCannotBeForwarded'))}">${t('net.bookingFor', { who })}</span>`;
   }
 
   // ---------------------------------------------------------------- карта
@@ -183,10 +185,10 @@ export function initNet(h) {
       const forwarded = Boolean(a.lend) || (a.bridged && d.hasTransport);
       const r = node(b, {
         id: `remote:${a.guid}`, col: 4, kind: 'remote',
-        title: d.claim.holderName, sub: forwarded ? 'занял карту — у него адаптер' : 'забронировал карту',
-        line: forwarded ? `«${a.name}» по сети` : 'работает на этом компьютере',
+        title: d.claim.holderName, sub: forwarded ? t('net.ownerLine') : t('net.ownerLineBooked'),
+        line: forwarded ? t('net.ownerSubForward', { name: a.name }) : t('net.ownerSubLocal'),
       });
-      b.edges.push({ from: from.id, to: r.id, style: forwarded ? 'forward' : 'reserve', label: forwarded ? 'проброс' : 'бронь' });
+      b.edges.push({ from: from.id, to: r.id, style: forwarded ? 'forward' : 'reserve', label: forwarded ? t('net.edgeLabelForward') : t('net.edgeLabelBooking') });
     };
 
     // Мост Windows со всем, что к нему подключено.
@@ -196,9 +198,9 @@ export function initNet(h) {
       const lendTap = A.find((a) => a.role === 'lend');
       const center = node(b, {
         id: sw ? `sw:${sw.id}` : 'bridge', col: 2, kind: sw ? 'switch' : 'bridge',
-        title: sw ? sw.name : 'Мост Windows',
-        sub: sw ? 'коммутатор · мост Windows' : m.bridge.owner?.kind === 'lend' ? 'мост отданной карты' : 'мост, собранный не приложением',
-        line: sw?.problem || (m.bridge.ipEnabled === false ? 'IP на мосту выключен' : ''),
+        title: sw ? sw.name : t('common.windowsBridge'),
+        sub: sw ? t('common.switchWindowsBridge') : m.bridge.owner?.kind === 'lend' ? t('common.sharedNicsBridge') : t('common.aBridgeNotBuiltBy'),
+        line: sw?.problem || (m.bridge.ipEnabled === false ? t('common.ipTurnedOffForThe') : ''),
         problem: Boolean(sw?.problem),
       });
       if (sw) shown.add(`sw:${sw.id}`);
@@ -220,13 +222,13 @@ export function initNet(h) {
       }
       if (lendTap?.lend) {
         const nic = A.find((a) => a.name === lendTap.lend.nic);
-        const holder = lendTap.lend.holderName || nic?.device?.claim?.holderName || 'занявший';
+        const holder = lendTap.lend.holderName || nic?.device?.claim?.holderName || t('common.taker');
         const r = node(b, {
           id: `remote:${lendTap.guid}`, col: 3, kind: 'remote', title: holder,
-          sub: lendTap.lend.connected ? 'занял карту — канал подключён' : 'занял карту — канал ждёт подключения',
-          line: `у него адаптер «${lendTap.lend.nic} на …»`, problem: !lendTap.lend.connected,
+          sub: lendTap.lend.connected ? t('common.tookTheNicLinkConnected') : t('common.tookTheNicLinkWaiting'),
+          line: t('net.hasAdapterNic', { nic: lendTap.lend.nic }), problem: !lendTap.lend.connected,
         });
-        b.edges.push({ from: center.id, to: r.id, style: 'forward', label: 'проброс' });
+        b.edges.push({ from: center.id, to: r.id, style: 'forward', label: t('common.forward') });
         if (nic) shown.add(`claim:${nic.guid}`);
       }
     }
@@ -237,7 +239,7 @@ export function initNet(h) {
       const b = band();
       const center = node(b, {
         id: `sw:${sw.id}`, col: 2, kind: 'switch', title: sw.name,
-        sub: sw.external ? 'коммутатор · мост не собран' : 'внутренний коммутатор',
+        sub: sw.external ? t('common.switchNoBridge') : t('common.internalSwitch'),
         line: sw.problem || '', problem: Boolean(sw.problem),
       });
       for (const nic of sw.nics || []) {
@@ -257,14 +259,14 @@ export function initNet(h) {
     for (const a of A.filter((x) => x.role === 'borrow' && !shown.has(x.guid))) {
       const b = band();
       const label = a.borrow?.label || a.name;
-      const owner = label.includes(' на ') ? label.split(' на ').pop() : (a.borrow?.host || 'владелец');
-      const card = label.includes(' на ') ? label.slice(0, label.lastIndexOf(' на ')) : 'карта';
+      const owner = label.includes(' на ') ? label.split(' на ').pop() : (a.borrow?.host || t('common.owner'));
+      const card = label.includes(' на ') ? label.slice(0, label.lastIndexOf(' на ')) : t('common.nic');
       const r = node(b, {
         id: `owner:${a.guid}`, col: 0, kind: 'remote', title: owner,
-        sub: `карта «${card}»`, line: a.borrow?.host || '', problem: a.borrow && !a.borrow.connected,
+        sub: t('net.ownerLabel', { card }), line: a.borrow?.host || '', problem: a.borrow && !a.borrow.connected,
       });
       const n = adapterNode(b, a, 3);
-      b.edges.push({ from: r.id, to: n.id, style: 'forward', label: a.borrow?.connected ? 'проброс' : 'проброс — связь потеряна' });
+      b.edges.push({ from: r.id, to: n.id, style: 'forward', label: a.borrow?.connected ? t('common.forward') : t('common.forwardLinkLost') });
     }
 
     // Виртуальные адаптеры без коммутатора.
@@ -324,11 +326,11 @@ export function initNet(h) {
     const a = n.a;
     const icon = { physical: '🔌', wifi: '📶', bridge: '💻', vnic: '🧩', borrow: '🔗', virtual: '▫', tap: '▫', uplink: '↔', lend: '↔' }[a.role] || '▫';
     const badges = [];
-    if (a.working) badges.push('<span class="nm-b">рабочая</span>');
-    if (a.status && a.status !== 'Up') badges.push(`<span class="nm-b off">${a.status === 'Disconnected' ? 'нет связи' : esc(a.status)}</span>`);
-    if (a.category === 'Public') badges.push('<span class="nm-b warn" title="общедоступная сеть: входящие закрыты">общедост.</span>');
-    if (a.device?.claim && !a.bridged) badges.push(`<span class="nm-b busy">бронь</span>`);
-    if (a.device?.heldEdit) badges.push('<span class="nm-b busy" title="настройки поменял держатель брони; вернутся при освобождении">адрес держателя</span>');
+    if (a.working) badges.push(`<span class="nm-b">${t('common.inUse')}</span>`);
+    if (a.status && a.status !== 'Up') badges.push(`<span class="nm-b off">${a.status === 'Disconnected' ? t('common.noLink') : esc(a.status)}</span>`);
+    if (a.category === 'Public') badges.push(`<span class="nm-b warn" title="${esc(t('net.nmPublicTitle'))}">${t('common.public_2')}</span>`);
+    if (a.device?.claim && !a.bridged) badges.push(`<span class="nm-b busy">${t('ui.booking')}</span>`);
+    if (a.device?.heldEdit) badges.push(`<span class="nm-b busy" title="${esc(t('common.settingsChangedByTheBooking'))}">${t('common.holdersAddress')}</span>`);
     return `<div class="nm-node nm-a-${a.role}${a.status !== 'Up' ? ' nm-down' : ''}${selected === a.guid ? ' nm-sel' : ''}"
       style="left:${n.x}px;top:${n.y}px;width:${NODE_W}px;height:${NODE_H}px" data-nm="${esc(a.guid)}"
       title="${esc(`${a.name}\n${a.description}\nMAC ${a.mac || '—'}`)}">
@@ -369,25 +371,19 @@ export function initNet(h) {
 
   function renderNotes() {
     const out = [];
-    if (error) out.push(`<div class="banner err">Карта сети не прочитана: ${esc(error)}</div>`);
-    if (!map) { $('#netNotes').innerHTML = out.join('') || '<div class="empty">Читается состав сети…</div>'; return; }
+    if (error) out.push(`<div class="banner err">${t('net.mapNotRead')}: ${esc(error)}</div>`);
+    if (!map) { $('#netNotes').innerHTML = out.join('') || `<div class="empty">${t('common.readingTheNetworkComposition')}</div>`; return; }
     if (map.supported === false) { $('#netNotes').innerHTML = `<div class="empty">${esc(map.reason)}</div>`; return; }
     if (map.createNote) out.push(`<div class="banner info">${esc(map.createNote)}</div>`);
-    if (map.busy) out.push(`<div class="banner">⏳ ${esc(map.busy)}… Мост Windows меняется секундами — дождитесь окончания.</div>`);
+    if (map.busy) out.push(`<div class="banner">⏳ ${esc(map.busy)}${t('net.bridgeChangesSeconds')}</div>`);
     const fw = map.firewall;
     if (fw?.thirdParty?.length) {
-      out.push(`<div class="banner info">Входящие соединения на этом компьютере фильтрует
-        <b>${esc(fw.thirdParty.join(', '))}</b>. Тип сети он берёт у Windows: в <b>общедоступной</b> сети входящие
-        (ping, ваши серверы) закрыты. Своим адаптерам — виртуальным и чужим картам — приложение ставит тип
-        «частная» само. Если приборы стенда всё равно не видят ваших серверов, откройте в нём
-        «Сетевой экран → Сети» и дайте сети адаптера статус «Локальная сеть».</div>`);
+      out.push(`<div class="banner info">${t('net.firewallNote', { list: esc(fw.thirdParty.join(', ')) })}</div>`);
     }
     const lendHost = map.adapters.find((a) => a.role === 'bridge');
     if (map.bridge?.owner?.kind === 'lend') {
-      out.push(`<div class="banner info">Карта «${esc(map.bridge.owner.nic)}» отдана. Её адрес теперь у занявшего,
-        а на адаптере моста IP ${lendHost?.tcpip === false ? 'выключен — сам компьютер в сети карты не участвует' : 'включён'}.
-        Чтобы остаться в этой сети, включите IP на мосту и задайте свой адрес — другой, не тот, что у занявшего.
-        При освобождении карты всё вернётся как было.</div>`);
+      const ipState = lendHost?.tcpip === false ? t('common.offTheComputerItselfIs') : t('common.on');
+      out.push(`<div class="banner info">${t('net.lendBridgeNote', { nic: esc(map.bridge.owner.nic), ipState })}</div>`);
     }
     $('#netNotes').innerHTML = out.join('');
   }
@@ -403,32 +399,32 @@ export function initNet(h) {
     const portable = map.adapters.filter((a) => a.can.move && a.switchId !== sw.id);
     const acts = [];
     if (may()) {
-      acts.push(`<button class="btn small" data-sw-rename="${esc(sw.id)}">Переименовать</button>`);
-      acts.push(`<button class="btn small" data-sw-vnic="${esc(sw.id)}">Добавить адаптер</button>`);
+      acts.push(`<button class="btn small" data-sw-rename="${esc(sw.id)}">${t('common.rename')}</button>`);
+      acts.push(`<button class="btn small" data-sw-vnic="${esc(sw.id)}">${t('common.addAdapter')}</button>`);
       if (sw.external) {
-        acts.push(`<button class="btn small" data-sw-host="${esc(sw.id)}|${sw.hostAccess ? '0' : '1'}">${sw.hostAccess ? 'Отключить компьютер от сети' : 'Подключить компьютер к сети'}</button>`);
+        acts.push(`<button class="btn small" data-sw-host="${esc(sw.id)}|${sw.hostAccess ? '0' : '1'}">${sw.hostAccess ? t('common.disconnectTheComputerFromThe') : t('common.connectTheComputerToThe')}</button>`);
       }
-      acts.push(`<button class="btn small danger" data-sw-delete="${esc(sw.id)}">Удалить</button>`);
+      acts.push(`<button class="btn small danger" data-sw-delete="${esc(sw.id)}">${t('common.delete')}</button>`);
     }
     const addNic = may() && candidates.length ? `<div class="row-inline sw-addnic">
         <select data-sw-nicsel="${esc(sw.id)}">${candidates.map((a) => `<option value="${esc(a.guid)}">${esc(a.name)} — ${esc(a.description)}</option>`).join('')}</select>
-        <button class="btn small" data-sw-addnic="${esc(sw.id)}">${sw.external ? 'Добавить карту' : 'Выход в сеть карты'}</button>
+        <button class="btn small" data-sw-addnic="${esc(sw.id)}">${sw.external ? t('common.addNic') : t('common.uplinkToTheNicsNetwork')}</button>
       </div>` : '';
     const addPort = may() && portable.length ? `<div class="row-inline sw-addnic">
         <select data-sw-portsel="${esc(sw.id)}">${portable.map((a) => `<option value="${esc(a.guid)}">${esc(a.name)} — ${esc(portNote(a))}</option>`).join('')}</select>
-        <button class="btn small" data-sw-port="${esc(sw.id)}">Подключить адаптер</button>
+        <button class="btn small" data-sw-port="${esc(sw.id)}">${t('common.connectAdapter')}</button>
       </div>` : '';
     return `<article class="card ${sw.problem ? 'error' : 'free'}${selected === `sw:${sw.id}` ? ' sel' : ''}" id="card-sw-${esc(sw.id)}">
       <div class="card-main">
         <div class="card-title">🔀 ${esc(sw.name)}
-          <span class="pill ${sw.external ? 'mine' : 'plain'}">${sw.external ? 'внешний — в сети карты' : 'внутренний'}</span>
+          <span class="pill ${sw.external ? 'mine' : 'plain'}">${sw.external ? t('common.externalOnTheNicsNetwork') : t('common.internal')}</span>
           ${sw.problem ? `<span class="pill err">${esc(sw.problem)}</span>` : ''}
         </div>
         <div class="card-meta">
-          ${sw.external ? `<span>карта: <b>${esc(nics.join(', '))}</b>${may() ? sw.nics.map((n) => ` <button class="btn small" data-sw-dropnic="${esc(sw.id)}|${esc(n.guid)}" title="вывести карту из коммутатора">убрать ${esc(map.adapters.find((a) => a.guid === n.guid)?.name || n.name)}</button>`).join('') : ''}</span>` : ''}
-          ${sw.external ? `<span>компьютер в сети карты: <b>${sw.hostAccess ? 'да' : 'нет'}</b>${host ? ` — адаптер «${esc(host.name)}»` : ''}</span>` : ''}
-          <span>адаптеры: ${vnics.length ? vnics.map((a) => `<b>${esc(a.name)}</b>${a.adopted ? ' <span class="muted">(чужой)</span>' : ''}`).join(', ') : 'нет'}</span>
-          ${sw.stats ? `<span>MAC в таблице: ${sw.stats.macs}</span>` : ''}
+          ${sw.external ? `<span>${t('common.nicColon')} <b>${esc(nics.join(', '))}</b>${may() ? sw.nics.map((n) => ` <button class="btn small" data-sw-dropnic="${esc(sw.id)}|${esc(n.guid)}" title="${esc(t('common.removeTheNicFromThe'))}">${t('common.remove')} ${esc(map.adapters.find((a) => a.guid === n.guid)?.name || n.name)}</button>`).join('') : ''}</span>` : ''}
+          ${sw.external ? `<span>${t('common.computerInNicNetwork')}: <b>${sw.hostAccess ? t('common.yes') : t('common.no')}</b>${host ? ` — ${t('common.adapterNamed', { name: esc(host.name) })}` : ''}</span>` : ''}
+          <span>${t('common.adaptersColon')} ${vnics.length ? vnics.map((a) => `<b>${esc(a.name)}</b>${a.adopted ? ` <span class="muted">${t('common.foreign')}</span>` : ''}`).join(', ') : t('common.no')}</span>
+          ${sw.stats ? `<span>${t('common.macInTable')}: ${sw.stats.macs}</span>` : ''}
         </div>
         ${addNic}
         ${addPort}
@@ -441,53 +437,53 @@ export function initNet(h) {
     const acts = [];
     const sw = map.switches.find((s) => s.id === a.switchId);
     if (may()) {
-      if (a.can.ip) acts.push(`<button class="btn small" data-ip="${esc(a.guid)}">Настройки IP</button>`);
+      if (a.can.ip) acts.push(`<button class="btn small" data-ip="${esc(a.guid)}">${t('common.ipSettings')}</button>`);
       if (a.role === 'bridge') {
-        acts.push(`<button class="btn small" data-bridge-ip="${a.tcpip === false ? '1' : '0'}">${a.tcpip === false ? 'Включить IP' : 'Выключить IP'}</button>`);
+        acts.push(`<button class="btn small" data-bridge-ip="${a.tcpip === false ? '1' : '0'}">${a.tcpip === false ? t('common.turnIpOn') : t('common.turnIpOff')}</button>`);
       }
       if (a.category === 'Public' && a.can.category) {
-        acts.push(`<button class="btn small" data-cat="${esc(a.guid)}|Private" title="Входящие соединения из этой сети станут разрешены правилами для частных сетей">Сделать сеть частной</button>`);
+        acts.push(`<button class="btn small" data-cat="${esc(a.guid)}|Private" title="${esc(t('common.incomingConnectionsFromThisNetwork'))}">${t('common.makeTheNetworkPrivate')}</button>`);
       }
       // Соединить: TAP — портом коммутатора, остальное — мостом, как карту.
       if (a.can.move && !a.switchId) {
         acts.push(map.switches.length
-          ? `<button class="btn small" data-a-connect="${esc(a.guid)}">К коммутатору…</button>`
-          : `<button class="btn small" data-new-switch-port="${esc(a.guid)}">Коммутатор для этого адаптера…</button>`);
+          ? `<button class="btn small" data-a-connect="${esc(a.guid)}">${t('common.toASwitch')}</button>`
+          : `<button class="btn small" data-new-switch-port="${esc(a.guid)}">${t('common.aSwitchForThisAdapter')}</button>`);
       }
       if (a.can.bridge) {
         const ext = map.switches.find((s) => s.external);
-        if (ext) acts.push(`<button class="btn small" data-sw-addnic-one="${esc(ext.id)}|${esc(a.guid)}">В коммутатор «${esc(ext.name)}»</button>`);
-        else acts.push(`<button class="btn small" data-new-switch-nic="${esc(a.guid)}">Коммутатор на ${a.role === 'physical' ? 'этой карте' : 'этом адаптере'}…</button>`);
+        if (ext) acts.push(`<button class="btn small" data-sw-addnic-one="${esc(ext.id)}|${esc(a.guid)}">${t('common.intoSwitch', { name: esc(ext.name) })}</button>`);
+        else acts.push(`<button class="btn small" data-new-switch-nic="${esc(a.guid)}">${t('common.aSwitchOn', { what: a.role === 'physical' ? t('common.thisNic') : t('common.thisAdapter') })}</button>`);
       }
       if (a.can.unbridge && sw) {
-        acts.push(`<button class="btn small" data-sw-dropnic="${esc(sw.id)}|${esc(a.guid)}">Вывести из коммутатора</button>`);
+        acts.push(`<button class="btn small" data-sw-dropnic="${esc(sw.id)}|${esc(a.guid)}">${t('common.removeFromSwitch')}</button>`);
       }
       if (a.can.rename || a.can.mac || (a.can.move && a.switchId)) {
-        acts.push(`<button class="btn small" data-a-edit="${esc(a.guid)}">Изменить…</button>`);
+        acts.push(`<button class="btn small" data-a-edit="${esc(a.guid)}">${t('common.edit_2')}</button>`);
       }
       if (a.can.enable) {
         const off = a.status === 'Disabled';
-        acts.push(`<button class="btn small" data-a-enable="${esc(a.guid)}|${off ? '1' : '0'}">${off ? 'Включить' : 'Отключить'}</button>`);
+        acts.push(`<button class="btn small" data-a-enable="${esc(a.guid)}|${off ? '1' : '0'}">${off ? t('common.enable') : t('common.disable')}</button>`);
       }
       if (a.can.release) {
-        acts.push(`<button class="btn small" data-a-release="${esc(a.guid)}" title="Вывести из коммутатора: адаптер снова свободен для своей программы">Отпустить</button>`);
+        acts.push(`<button class="btn small" data-a-release="${esc(a.guid)}" title="${esc(t('common.removeFromTheSwitchThe'))}">${t('common.release')}</button>`);
       }
-      if (a.can.delete) acts.push(`<button class="btn small danger" data-a-delete="${esc(a.guid)}">Удалить</button>`);
+      if (a.can.delete) acts.push(`<button class="btn small danger" data-a-delete="${esc(a.guid)}">${t('common.delete')}</button>`);
     }
     // Отказ во всём перекрывает отказ в настройках IP — он о том же.
     const why = [a.why?.manage || a.why?.ip].filter(Boolean);
     const pills = [
       `<span class="pill plain">${esc(roleText(a))}</span>`,
       statusBadge(a),
-      a.working ? '<span class="pill mine" title="через эту карту работает приложение">рабочая</span>' : '',
-      a.bridged ? `<span class="pill plain">в мосту${sw ? ` · «${esc(sw.name)}»` : ''}</span>` : '',
+      a.working ? `<span class="pill mine" title="${esc(t('common.theAppWorksThroughThis'))}">${t('common.inUse')}</span>` : '',
+      a.bridged ? `<span class="pill plain">${t('common.inBridge')}${sw ? ` · «${esc(sw.name)}»` : ''}</span>` : '',
       categoryBadge(a),
       claimBadge(a),
-      a.device?.heldEdit ? '<span class="pill busy">адрес задал держатель брони</span>' : '',
-      a.borrow ? `<span class="pill ${a.borrow.connected ? 'mine' : 'err'}">${a.borrow.connected ? 'канал подключён' : 'канал ждёт владельца'}</span>` : '',
-      a.port?.failed ? `<span class="pill err" title="${esc(a.port.failed)}">адаптер не поднят</span>` : '',
+      a.device?.heldEdit ? `<span class="pill busy">${t('common.theAddressWasSetBy')}</span>` : '',
+      a.borrow ? `<span class="pill ${a.borrow.connected ? 'mine' : 'err'}">${a.borrow.connected ? t('common.linkConnected') : t('common.linkWaitingForTheOwner')}</span>` : '',
+      a.port?.failed ? `<span class="pill err" title="${esc(a.port.failed)}">${t('net.adapterNotRaised')}</span>` : '',
     ].join(' ');
-    const live = (a.addresses || []).map((x) => `${x.address}/${x.prefixLength}${x.state && x.state !== 'Preferred' ? ` (${x.state === 'Duplicate' ? 'занят другим!' : x.state})` : ''}`);
+    const live = (a.addresses || []).map((x) => `${x.address}/${x.prefixLength}${x.state && x.state !== 'Preferred' ? ` (${x.state === 'Duplicate' ? t('common.takenBySomeoneElse') : x.state})` : ''}`);
     return `<article class="card ${a.status === 'Up' ? '' : 'offline'}${selected === a.guid ? ' sel' : ''}" id="card-a-${esc(a.guid)}">
       <div class="card-main">
         <div class="card-title">${esc(a.name)} ${pills}</div>
@@ -495,12 +491,12 @@ export function initNet(h) {
           <span>${esc(a.description)}</span>
           ${a.mac ? `<span>MAC: <span class="mono">${esc(a.mac)}</span></span>` : ''}
           ${a.speed && a.status === 'Up' ? `<span>${esc(a.speed)}</span>` : ''}
-          ${a.bridged || a.tcpip === false ? '' : `<span>настройки: ${esc(cfgText(a.ip))}</span>`}
-          ${live.length && !a.bridged ? `<span>сейчас: <span class="mono">${esc(live.join(', '))}</span></span>` : ''}
-          ${a.metric && !a.bridged && a.tcpip !== false ? `<span>метрика ${esc(a.metric)}</span>` : ''}
-          ${a.profile ? `<span>сеть Windows: «${esc(a.profile.name)}»</span>` : ''}
-          ${a.borrow?.announced?.length ? `<span title="адреса, объявленные в сеть владельца (gratuitous ARP)">объявлено: <span class="mono">${esc(a.borrow.announced.join(', '))}</span></span>` : ''}
-          ${a.device?.transportNote && a.role !== 'bridge' ? `<span class="muted">проброс: ${esc(a.device.transportNote)}</span>` : ''}
+          ${a.bridged || a.tcpip === false ? '' : `<span>${t('net.settingsLabel')}: ${esc(cfgText(a.ip))}</span>`}
+          ${live.length && !a.bridged ? `<span>${t('net.currentLabel')}: <span class="mono">${esc(live.join(', '))}</span></span>` : ''}
+          ${a.metric && !a.bridged && a.tcpip !== false ? `<span>${t('net.metricLabel', { m: esc(a.metric) })}</span>` : ''}
+          ${a.profile ? `<span>${t('net.windowsNetworkLabel')}: «${esc(a.profile.name)}»</span>` : ''}
+          ${a.borrow?.announced?.length ? `<span title="${esc(t('common.addressesAnnouncedIntoTheOwners'))}">${t('net.announcedLabel')}: <span class="mono">${esc(a.borrow.announced.join(', '))}</span></span>` : ''}
+          ${a.device?.transportNote && a.role !== 'bridge' ? `<span class="muted">${t('net.forwardLabel')}: ${esc(a.device.transportNote)}</span>` : ''}
           ${why.length && may() ? `<span class="muted">${esc(why.join('; '))}</span>` : ''}
           ${(a.notes || []).map((x) => `<span class="pill err">${esc(x)}</span>`).join('')}
         </div>
@@ -524,7 +520,7 @@ export function initNet(h) {
     renderMap();
     $('#netSwitches').innerHTML = map.switches.length
       ? map.switches.map(switchCard).join('')
-      : '<div class="empty">Коммутаторов нет. «Создать коммутатор» — чтобы подключить виртуальные адаптеры к сети карты или друг к другу.</div>';
+      : `<div class="empty">${t('common.noSwitchesYetCreateSwitch')}</div>`;
     const order = { borrow: 0, vnic: 1, bridge: 2, physical: 3, wifi: 4, lend: 5, uplink: 6, virtual: 7, tap: 8 };
     const list = [...map.adapters].sort((x, y) => (order[x.role] ?? 9) - (order[y.role] ?? 9) || x.name.localeCompare(y.name));
     $('#netAdapters').innerHTML = list.map(adapterCard).join('');
@@ -535,7 +531,7 @@ export function initNet(h) {
   /** Разобрать строку адреса: «10.0.0.5/24», «10.0.0.5 24», «10.0.0.5 255.255.255.0». */
   function parseAddr(line) {
     const m = line.trim().match(/^(\d{1,3}(?:\.\d{1,3}){3})(?:\s*\/\s*(\d{1,2})|\s+(\d{1,3}(?:\.\d{1,3}){3})|\s+(\d{1,2}))?$/);
-    if (!m) throw new Error(`не разобран адрес «${line.trim()}» — нужно «адрес/префикс», например 192.168.2.35/24`);
+    if (!m) throw new Error(t('net.parseAddrError', { line: line.trim() }));
     let prefix = 24;
     if (m[2] || m[4]) prefix = Number(m[2] || m[4]);
     if (m[3]) {
@@ -552,28 +548,27 @@ export function initNet(h) {
     const c = cfg || { dhcp: true, addresses: [], gateways: [], dns: [] };
     box.innerHTML = `
       <div class="field">
-        <span>Адрес IPv4</span>
-        <label class="check"><input type="radio" name="${id}-mode" value="dhcp" ${c.dhcp ? 'checked' : ''}> получать автоматически (DHCP)</label>
-        <label class="check"><input type="radio" name="${id}-mode" value="static" ${c.dhcp ? '' : 'checked'}> задать вручную</label>
+        <span>${t('net.ip.ipv4Address')}</span>
+        <label class="check"><input type="radio" name="${id}-mode" value="dhcp" ${c.dhcp ? 'checked' : ''}> ${t('net.ip.auto')}</label>
+        <label class="check"><input type="radio" name="${id}-mode" value="static" ${c.dhcp ? '' : 'checked'}> ${t('net.ip.static')}</label>
       </div>
       <label class="field ${id}-st">
-        <span>Адреса — по одному в строке</span>
-        <textarea id="${id}-addrs" rows="3" spellcheck="false" placeholder="192.168.2.35/24">${esc((c.addresses || []).map((a) => `${a.address}/${a.prefixLength}`).join('\n'))}</textarea>
-        <small>«адрес/префикс»: 24 — это маска 255.255.255.0. Можно и маской: «192.168.2.35 255.255.255.0».
-          Несколько адресов — компьютер отвечает в сети за каждый.</small>
+        <span>${t('net.ip.addrsField')}</span>
+        <textarea id="${id}-addrs" rows="3" spellcheck="false" placeholder="${t('net.selPlaceholder')}">${esc((c.addresses || []).map((a) => `${a.address}/${a.prefixLength}`).join('\n'))}</textarea>
+        <small>${t('net.ip.addrsHint')}</small>
       </label>
       <div class="grid2">
-        <label class="field ${id}-st"><span>Шлюз</span><input type="text" id="${id}-gw" placeholder="необязательно" value="${esc((c.gateways || []).join(', '))}"></label>
-        <label class="field"><span>DNS</span><input type="text" id="${id}-dns" placeholder="через запятую, необязательно" value="${esc((c.dns || []).join(', '))}"></label>
+        <label class="field ${id}-st"><span>${t('common.gateway')}</span><input type="text" id="${id}-gw" placeholder="${t('common.optional')}" value="${esc((c.gateways || []).join(', '))}"></label>
+        <label class="field"><span>DNS</span><input type="text" id="${id}-dns" placeholder="${t('common.commaseparatedOptional')}" value="${esc((c.dns || []).join(', '))}"></label>
       </div>
       ${showCategory ? `<label class="field">
-        <span>Тип сети</span>
+        <span>${t('net.ip.networkType')}</span>
         <select id="${id}-cat">
-          <option value="">не менять</option>
-          <option value="Private" ${category === 'Private' ? 'selected' : ''}>частная — входящие соединения разрешены</option>
-          <option value="Public" ${category === 'Public' ? 'selected' : ''}>общедоступная — входящие закрыты</option>
+          <option value="">${t('net.ip.notChange')}</option>
+          <option value="Private" ${category === 'Private' ? 'selected' : ''}>${t('net.ip.catPrivate')}</option>
+          <option value="Public" ${category === 'Public' ? 'selected' : ''}>${t('net.ip.catPublic')}</option>
         </select>
-        <small>${esc(categoryNote || 'От типа сети зависит, пустит ли сетевой экран к этому компьютеру ping и соединения к вашим серверам.')}</small>
+        <small>${esc(categoryNote || t('net.ip.catHint'))}</small>
       </label>` : ''}`;
     const sync = () => {
       const dhcp = box.querySelector(`input[name="${id}-mode"]:checked`)?.value === 'dhcp';
@@ -586,7 +581,7 @@ export function initNet(h) {
         const dhcp = box.querySelector(`input[name="${id}-mode"]:checked`)?.value === 'dhcp';
         const split = (v) => String(v || '').split(/[\s,;]+/).map((s) => s.trim()).filter(Boolean);
         const addresses = dhcp ? [] : $(`#${id}-addrs`).value.split(/\n/).filter((l) => l.trim()).map(parseAddr);
-        if (!dhcp && !addresses.length) throw new Error('впишите хотя бы один адрес или выберите DHCP');
+        if (!dhcp && !addresses.length) throw new Error(t('common.enterAtLeastOneAddress'));
         return {
           ip: { dhcp, addresses, gateways: dhcp ? [] : split($(`#${id}-gw`).value), dns: split($(`#${id}-dns`).value) },
           category: showCategory ? ($(`#${id}-cat`).value || undefined) : undefined,
@@ -621,9 +616,9 @@ export function initNet(h) {
       toast(e.message, 'err');
       return;
     }
-    toast('Применяется…');
+    toast(t('common.applying'));
     pending.save(v)
-      .then((r) => { toast(r?.pending ? r.note : 'Настройки применены', 'ok'); if (r?.routeWarn?.length) routeWarning(r); load(); })
+      .then((r) => { toast(r?.pending ? r.note : t('common.settingsApplied'), 'ok'); if (r?.routeWarn?.length) routeWarning(r); load(); })
       .catch((e) => toast(e.message, 'err'));
   });
 
@@ -644,25 +639,25 @@ export function initNet(h) {
     $('#swHost').checked = true;
     $('#swNics').innerHTML = nics.length
       ? nics.map((a) => {
-        const why = owner ? `мост Windows уже у коммутатора «${owner.name}» — карты добавляют туда`
-          : a.can.bridge ? '' : (a.why?.move || a.why?.manage || 'в мост не включается');
+        const why = owner ? t('net.bridgeAlreadyAtSwitch', { name: owner.name })
+          : a.can.bridge ? '' : (a.why?.move || a.why?.manage || t('common.cannotJoinABridge'));
         return `<label class="member${why ? ' muted' : ''}"><input type="checkbox" value="${esc(a.guid)}"
           ${a.guid === nic && !why ? 'checked' : ''} ${why ? 'disabled' : ''}> ${esc(a.name)} — ${esc(a.description)}
           <span class="muted">${esc(addrText(a))}${why ? ` · ${esc(why)}` : ''}</span></label>`;
       }).join('')
-      : '<div class="muted">Свободных карт нет — будет внутренний коммутатор.</div>';
+      : `<div class="muted">${t('common.noFreeNicsTheSwitch')}</div>`;
     const ports = map.adapters.filter((a) => a.can.move);
     $('#swPorts').innerHTML = ports.length
       ? ports.map((a) => `<label class="member"><input type="checkbox" value="${esc(a.guid)}"
           ${a.guid === port ? 'checked' : ''}> ${esc(a.name)} — ${esc(a.description)}
           <span class="muted">${esc(addrText(a))} · ${esc(portNote(a))}</span></label>`).join('')
-      : '<div class="muted">TAP-адаптеров, которые можно подключить, нет. Новый — кнопкой «Создать виртуальный адаптер».</div>';
+      : `<div class="muted">${t('common.noTapAdaptersToConnect')}</div>`;
     const warn = () => {
       const n = $('#swNics').querySelectorAll('input:checked').length;
       $('#swWarn').textContent = n > 1
-        ? 'Две карты в одном коммутаторе — это две сети, слитые в одну. Убедитесь, что это и нужно.'
-        : n === 1 ? 'Связь на карте прервётся на несколько секунд, пока собирается мост.'
-          : 'Внутренний коммутатор: соединяет только адаптеры этого компьютера.';
+        ? t('common.twoNicsInOneSwitch')
+        : n === 1 ? t('common.theNicsLinkDropsFor')
+          : t('common.internalSwitchJoinsOnlyThis');
     };
     $('#swNics').onchange = warn;
     warn();
@@ -674,11 +669,11 @@ export function initNet(h) {
     const nics = [...$('#swNics').querySelectorAll('input:checked')].map((el) => el.value);
     const ports = [...$('#swPorts').querySelectorAll('input:checked')].map((el) => el.value);
     const body = { name: $('#swName').value, nics, ports, hostAccess: $('#swHost').checked };
-    toast(nics.length ? 'Собирается мост — это до минуты…' : ports.length ? 'Создаётся коммутатор, подключаются адаптеры…' : 'Создаётся коммутатор…');
+    toast(nics.length ? t('common.assemblingTheBridgeUpTo') : ports.length ? t('common.creatingTheSwitchConnectingThe') : t('common.creatingTheSwitch'));
     post('/api/v1/net/switch/create', body)
       .then((r) => {
-        if (r?.warnings?.length) toast(`Коммутатор создан, но подключились не все: ${r.warnings.join('; ')}`, 'err');
-        else toast('Коммутатор создан', 'ok');
+        if (r?.warnings?.length) toast(t('net.switchCreatedWithWarnings', { warnings: r.warnings.join('; ') }), 'err');
+        else toast(t('common.switchCreated'), 'ok');
         load();
       })
       .catch((e) => toast(e.message, 'err'));
@@ -686,10 +681,10 @@ export function initNet(h) {
 
   // ------------------------------------------------------------- адаптер
 
-  const TAP_MAC_HINT = 'Драйвер TAP принимает только локальные MAC-адреса — первый байт 02, 06, 0A… '
-    + 'Заводской адрес настоящей карты (00-15-…) он не примет.';
-  const NIC_MAC_HINT = 'Драйвер обычно принимает любой одноадресный MAC; не примет — адаптер останется со своим, '
-    + 'и вы увидите ошибку. Смена MAC перезапускает адаптер: связь на нём прервётся на несколько секунд.';
+  const TAP_MAC_HINT = t('common.theTapDriverAcceptsOnly') + ' '
+    + t('common.itWillNotAcceptA');
+  const NIC_MAC_HINT = t('common.theDriverUsuallyAcceptsAny') + ' '
+    + t('common.andYouWillSeeAn');
 
   let vnicIp = null;
   /**
@@ -707,15 +702,15 @@ export function initNet(h) {
     // TAP подключается портом; остальные — мостом, как карта.
     const port = a ? can.move : true;
     const viaBridge = Boolean(a && !port && (can.bridge || can.unbridge));
-    $('#vnicTitle').textContent = a ? `Адаптер «${a.name}»` : 'Новый виртуальный адаптер';
+    $('#vnicTitle').textContent = a ? t('common.adapter', { name: a.name }) : t('common.newVirtualAdapter');
     $('#vnicSub').textContent = a ? `${a.description} · ${roleText(a)}` : '';
-    $('#vnicSave').textContent = a ? 'Сохранить' : 'Создать';
+    $('#vnicSave').textContent = a ? t('common.save') : t('common.create');
 
     const taken = new Set(map.adapters.map((x) => x.name));
     let n = 1;
-    while (taken.has(`Стенд ${n}`)) n++;
+    while (taken.has(t('net.benchDefault', { n }))) n++;
     $('#vnicNameRow').hidden = !can.rename;
-    $('#vnicName').value = a ? a.name : `Стенд ${n}`;
+    $('#vnicName').value = a ? a.name : t('net.benchDefault', { n });
 
     let options = map.switches;
     if (viaBridge) {
@@ -723,14 +718,14 @@ export function initNet(h) {
       options = a.switchId ? map.switches.filter((s) => s.id === a.switchId) : owner ? [owner] : map.switches;
     }
     $('#vnicSwitchRow').hidden = !(port || viaBridge);
-    $('#vnicSwitch').innerHTML = `<option value="">${a?.adopted ? 'не подключать — отпустить адаптер' : 'не подключать'}</option>`
-      + options.map((s) => `<option value="${esc(s.id)}">${esc(s.name)}${s.external ? ' (в сети карты)' : ''}</option>`).join('');
+    $('#vnicSwitch').innerHTML = `<option value="">${a?.adopted ? t('common.dontConnectReleaseTheAdapter') : t('common.dontConnect')}</option>`
+      + options.map((s) => `<option value="${esc(s.id)}">${esc(s.name)}${s.external ? ` ${t('common.onTheNicsNetwork')}` : ''}</option>`).join('');
     $('#vnicSwitch').value = a ? (a.switchId || (connect ? options[0]?.id || '' : '')) : (switchId || map.switches[0]?.id || '');
     $('#vnicSwitchHint').textContent = viaBridge
-      ? 'Этот адаптер входит в коммутатор мостом Windows, как карта: связь на нём прервётся на несколько секунд, и всё, что подключено к коммутатору, окажется в его сети.'
+      ? t('common.thisAdapterJoinsTheSwitch')
       : a?.role === 'tap'
-        ? 'Адаптер создан не приложением. Подключённый к коммутатору, он занят приложением: другая программа (например, OpenVPN) открыть его не сможет, пока вы его не отпустите. Сеть адаптера станет «частной».'
-        : a?.adopted ? 'Адаптер создан не приложением. «Не подключать» — отпустить его: он снова будет свободен для своей программы.' : '';
+        ? t('common.thisAdapterWasNotCreated')
+        : a?.adopted ? t('common.thisAdapterWasNotCreated_2') : '';
 
     $('#vnicMacRow').hidden = !can.mac;
     $('#vnicMacMode').value = '';
@@ -740,11 +735,11 @@ export function initNet(h) {
     $('#vnicMacHint').textContent = !a || a.tap ? TAP_MAC_HINT : NIC_MAC_HINT;
 
     const notes = [];
-    if (a && can.mac) notes.push(`Сейчас MAC ${a.mac || '—'}${a.macCustom ? ' — задан вместо заводского' : ''}. Смена MAC перезапускает адаптер.`);
+    if (a && can.mac) notes.push(t('net.currentMac', { mac: a.mac || '—', custom: a.macCustom ? t('net.macCustom') : '' }) + ' ' + t('net.macRestartHint'));
     if (a) {
-      const labels = { rename: 'Имя', mac: 'MAC', move: 'Коммутатор' };
+      const labels = { rename: t('common.name_2'), mac: 'MAC', move: t('common.switch') };
       for (const [k, label] of Object.entries(labels)) {
-        if (a.why?.[k] && !(k === 'move' && (port || viaBridge))) notes.push(`${label} не меняется: ${a.why[k]}.`);
+        if (a.why?.[k] && !(k === 'move' && (port || viaBridge))) notes.push(t('net.labelNotChanged', { label, reason: a.why[k] }));
       }
     }
     $('#vnicNote').textContent = notes.join(' ');
@@ -771,21 +766,21 @@ export function initNet(h) {
       if (!Object.keys(patch).length) return;
       const bridging = patch.switchId !== undefined && !was.can.move;
       if (bridging && !confirm(patch.switchId
-        ? `Включить «${was.name}» в коммутатор мостом Windows? Связь на адаптере прервётся на несколько секунд.`
-        : `Вывести «${was.name}» из коммутатора? Он вернётся к своим настройкам IP.`)) return;
-      toast(bridging ? 'Меняется мост — это до минуты…' : 'Меняется адаптер…');
+        ? t('net.confirmBridgeJoin', { name: was.name })
+        : t('net.confirmBridgeLeave', { name: was.name }))) return;
+      toast(bridging ? t('common.changingTheBridgeUpTo') : t('common.changingTheAdapter'));
       post('/api/v1/net/adapter/update', { guid: was.guid, ...patch })
-        .then(() => { toast('Готово', 'ok'); load(); })
+        .then(() => { toast(t('common.done'), 'ok'); load(); })
         .catch((e) => toast(e.message, 'err'));
       return;
     }
     let v;
     try { v = vnicIp.read(); } catch (e) { toast(e.message, 'err'); return; }
-    toast('Создаётся адаптер — до минуты…');
+    toast(t('common.creatingTheAdapterUpTo'));
     post('/api/v1/net/vnic/create', {
       name: $('#vnicName').value, switchId: $('#vnicSwitch').value || null, mac: mac || null, ip: v.ip, category: v.category || 'Private',
     })
-      .then(() => { toast('Адаптер создан', 'ok'); load(); })
+      .then(() => { toast(t('common.adapterCreated'), 'ok'); load(); })
       .catch((e) => toast(e.message, 'err'));
   });
 
@@ -796,15 +791,15 @@ export function initNet(h) {
   function adapterIp(a) {
     const borrow = a.role === 'borrow';
     openIp({
-      title: `Настройки IP — ${a.name}`,
+      title: t('net.ipSettingsFor', { name: a.name }),
       sub: borrow
-        ? 'Это адаптер чужой карты у вас: адрес из сети её владельца. Шлюз и DNS получают пониженный приоритет, чтобы не перехватить ваш выход в интернет. Новые адреса приложение объявит в сеть владельца — приборы, помнившие адрес за другим MAC, узнают о переезде сразу. При освобождении адаптер очистится.'
+        ? t('net.ipBorrowSub')
         : a.role === 'bridge'
           ? (map.bridge?.owner?.kind === 'lend'
-            ? 'Адаптер моста отданной карты: это сам компьютер в сети карты. Адрес задайте свой — не тот, что у занявшего. При освобождении карты настройки моста вернутся к прежним.'
-            : 'Адаптер моста — это сам компьютер в сети коммутатора.')
-          : a.role === 'vnic' ? 'Виртуальный адаптер: проверка адреса на дубликат у него выключена — в одном коммутаторе несколько адаптеров компьютера иначе гасили бы друг другу адреса.'
-            : a.device?.claim ? `Карта забронирована «${esc(a.device.claim.holderName)}». Вы владелец — меняете её настройки насовсем, а не на время брони.` : '',
+            ? t('net.ipBridgeLendNote')
+            : t('net.ipBridgeNote'))
+          : a.role === 'vnic' ? t('net.ipVnicNote')
+            : a.device?.claim ? t('net.ipClaimedNote', { holder: esc(a.device.claim.holderName) }) : '',
       cfg: a.ip,
       category: a.wantCategory || a.category,
       save: (v) => post('/api/v1/net/adapter/ip', { guid: a.guid, ip: v.ip, category: v.category }),
@@ -830,8 +825,8 @@ export function initNet(h) {
     if (d.ip) { const a = byGuid(d.ip); if (a) adapterIp(a); return; }
     if (d.bridgeIp) {
       const on = d.bridgeIp === '1';
-      if (!on && !confirm('Выключить IP на адаптере моста? Этот компьютер перестанет быть в сети карты.')) return;
-      action(t, () => post('/api/v1/net/bridge/ip', { enabled: on }).then(load), on ? 'IP на мосту включён' : 'IP на мосту выключен');
+      if (!on && !confirm(t('common.turnIpOffOnThe'))) return;
+      action(t, () => post('/api/v1/net/bridge/ip', { enabled: on }).then(load), on ? t('common.ipTurnedOnForThe') : t('common.ipTurnedOffForThe'));
       return;
     }
     if (d.cat) {
@@ -845,15 +840,17 @@ export function initNet(h) {
       const [guid, flag] = d.aEnable.split('|');
       const a = byGuid(guid);
       if (!a) return;
-      if (flag === '0' && !confirm(`Отключить «${a.name}»? Адаптер пропадёт из сети, пока его не включат снова — здесь или в «Сетевых подключениях».`)) return;
-      action(t, () => post('/api/v1/net/adapter/update', { guid, enabled: flag === '1' }).then(load), flag === '1' ? 'Адаптер включён' : 'Адаптер отключён');
+      if (flag === '0' && !confirm(t('net.disableAdapter.confirm', { name: a.name }))) return;
+      action(t, () => post('/api/v1/net/adapter/update', { guid, enabled: flag === '1' }).then(load), flag === '1' ? t('common.adapterEnabled') : t('common.adapterDisabled'));
       return;
     }
     if (d.aRelease) {
       const a = byGuid(d.aRelease);
       const sw = a && map.switches.find((s) => s.id === a.switchId);
-      if (a && confirm(`Отпустить «${a.name}»? Он выйдет из коммутатора${sw ? ` «${sw.name}»` : ''} и снова будет свободен для своей программы (например, OpenVPN).`)) {
-        action(t, () => post('/api/v1/net/adapter/update', { guid: a.guid, switchId: null }).then(load), 'Адаптер отпущен');
+      if (a && confirm(sw
+        ? t('net.releaseAdapter.confirmWithSw', { name: a.name, sw: sw.name })
+        : t('net.releaseAdapter.confirm', { name: a.name }))) {
+        action(t, () => post('/api/v1/net/adapter/update', { guid: a.guid, switchId: null }).then(load), t('common.adapterReleased'));
       }
       return;
     }
@@ -861,10 +858,9 @@ export function initNet(h) {
       const a = byGuid(d.aDelete);
       if (!a) return;
       const text = a.role === 'vnic' && !a.adopted
-        ? `Удалить адаптер «${a.name}»? Он исчезнет из Windows вместе с настройками.`
-        : `Удалить «${a.name}» (${a.description})? Адаптер создан не приложением: если он нужен другой программе `
-          + '(OpenVPN, VirtualBox…), она перестанет работать, пока не создаст его заново. Адаптер исчезнет из Windows вместе с настройками.';
-      if (confirm(text)) action(t, () => post('/api/v1/net/adapter/delete', { guid: a.guid }).then(load), 'Адаптер удалён');
+        ? t('net.deleteVnic.confirm', { name: a.name })
+        : t('net.deleteAdapter.confirm', { name: a.name, desc: a.description });
+      if (confirm(text)) action(t, () => post('/api/v1/net/adapter/delete', { guid: a.guid }).then(load), t('common.adapterRemoved'));
       return;
     }
     if (d.newSwitchNic) { openSwitch({ nic: d.newSwitchNic }); return; }
@@ -873,28 +869,30 @@ export function initNet(h) {
       const guid = document.querySelector(`[data-sw-portsel="${CSS.escape(d.swPort)}"]`)?.value;
       const a = byGuid(guid);
       if (!a) return;
-      if (a.role === 'tap' && !confirm(`Подключить «${a.name}» к коммутатору? Адаптер создан не приложением: пока он подключён, другая программа (например, OpenVPN) открыть его не сможет. Отпустить его можно в любой момент.`)) return;
-      action(t, () => post('/api/v1/net/adapter/update', { guid, switchId: d.swPort }).then(load), 'Адаптер подключён');
+      if (a.role === 'tap' && !confirm(t('net.connectTap.confirm', { name: a.name }))) return;
+      action(t, () => post('/api/v1/net/adapter/update', { guid, switchId: d.swPort }).then(load), t('common.adapterConnected'));
       return;
     }
     if (d.swRename) {
       const sw = map.switches.find((s) => s.id === d.swRename);
-      const name = sw && prompt('Новое имя коммутатора', sw.name);
+      const name = sw && prompt(t('common.newSwitchName'), sw.name);
       if (name && name !== sw.name) action(t, () => post('/api/v1/net/switch/rename', { id: sw.id, name }).then(load));
       return;
     }
     if (d.swVnic) { openVnic(d.swVnic); return; }
     if (d.swHost) {
       const [id, flag] = d.swHost.split('|');
-      if (flag === '0' && !confirm('Отключить этот компьютер от сети карты? На мосту выключится IP.')) return;
+      if (flag === '0' && !confirm(t('common.disconnectThisComputerFromThe'))) return;
       action(t, () => post('/api/v1/net/switch/host', { id, enabled: flag === '1' }).then(load));
       return;
     }
     if (d.swDelete) {
       const sw = map.switches.find((s) => s.id === d.swDelete);
-      if (sw && confirm(`Удалить коммутатор «${sw.name}»?${sw.external ? ' Мост разберётся, карта вернётся к своим настройкам.' : ''} Виртуальные адаптеры останутся — неподключёнными.`)) {
-        toast('Коммутатор удаляется…');
-        action(t, () => post('/api/v1/net/switch/delete', { id: sw.id }).then(load), 'Коммутатор удалён');
+      if (sw && confirm(sw.external
+        ? t('net.deleteSwitch.confirmExternal', { name: sw.name })
+        : t('net.deleteSwitch.confirm', { name: sw.name }))) {
+        toast(t('common.removingTheSwitch'));
+        action(t, () => post('/api/v1/net/switch/delete', { id: sw.id }).then(load), t('common.switchRemoved'));
       }
       return;
     }
@@ -906,17 +904,17 @@ export function initNet(h) {
       if (!sw || !a) return;
       const merge = sw.nics.length > 0;
       if (!confirm(merge
-        ? `Добавить «${a.name}» в коммутатор «${sw.name}»? В нём уже есть карта — две сети сольются в одну.`
-        : `Включить «${a.name}» в коммутатор «${sw.name}»? Связь на карте прервётся на несколько секунд.`)) return;
-      toast('Собирается мост — это до минуты…');
-      action(t, () => post('/api/v1/net/switch/nic', { id, guid, add: true }).then(load), 'Карта в коммутаторе');
+        ? t('net.addNicMerge.confirm', { name: a.name, swName: sw.name })
+        : t('net.addNic.confirm', { name: a.name, swName: sw.name }))) return;
+      toast(t('common.assemblingTheBridgeUpTo'));
+      action(t, () => post('/api/v1/net/switch/nic', { id, guid, add: true }).then(load), t('net.nicInSwitch'));
       return;
     }
     if (d.swDropnic) {
       const [id, guid] = d.swDropnic.split('|');
       const a = byGuid(guid);
-      if (!confirm(`Вывести «${a?.name || 'карту'}» из коммутатора? Она вернётся к своим настройкам IP.`)) return;
-      action(t, () => post('/api/v1/net/switch/nic', { id, guid, add: false }).then(load), 'Карта выведена');
+      if (!confirm(t('net.removeNicFromSwitch.confirm', { name: a?.name || t('common.nic_2') }))) return;
+      action(t, () => post('/api/v1/net/switch/nic', { id, guid, add: false }).then(load), t('common.nicRemoved'));
     }
   });
 
@@ -945,10 +943,10 @@ export function initNet(h) {
       cfg = entries.find((e) => e.ownerId === a.nodeId && e.target === deviceId)?.meta?.ip || null;
     }
     openIp({
-      title: `Настройки IP — ${p.adapter || p.description || p.title}`,
+      title: t('net.ipSettingsFor', { name: p.adapter || p.description || p.title }),
       sub: p.adapter
-        ? `Карта проброшена к вам: это ваш адаптер «${esc(p.adapter)}», и меняются его настройки. У владельца ничего не меняется. Новые адреса приложение объявит в сеть владельца. После освобождения адаптер очистится.`
-        : `Карта забронирована: она у «${esc(a.nodeName)}», и настройки поменяет его приложение. При освобождении карта получит прежние настройки обратно.`,
+        ? t('net.heldIpBorrowSub', { adapter: esc(p.adapter) })
+        : t('net.heldIpBookedSub', { nodeName: esc(a.nodeName) }),
       cfg,
       category: p.adapter ? 'Private' : null,
       showCategory: Boolean(p.adapter),

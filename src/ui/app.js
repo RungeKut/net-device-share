@@ -9,7 +9,7 @@
 // права проверяет сервер, здесь лишь убираем заведомо бесполезные кнопки.
 
 import { initNet } from './net.js';
-import { getLang, setLang, startI18n } from './i18n.js';
+import { getLang, setLang, startI18n, t } from './i18n.js';
 
 const $ = (sel) => document.querySelector(sel);
 let state = null;
@@ -38,13 +38,13 @@ function esc(v) {
 function duration(ms) {
   if (!Number.isFinite(ms) || ms < 0) return '—';
   const s = Math.floor(ms / 1000);
-  if (s < 60) return `${s} с`;
+  if (s < 60) return `${s} ${t('unit.sec')}`;
   const m = Math.floor(s / 60);
-  if (m < 60) return `${m} мин`;
+  if (m < 60) return `${m} ${t('unit.min')}`;
   const h = Math.floor(m / 60);
-  if (h < 24) return `${h} ч${m % 60 ? ` ${m % 60} мин` : ''}`;
+  if (h < 24) return `${h} ${t('unit.hour')}${m % 60 ? ` ${m % 60} ${t('unit.min')}` : ''}`;
   const d = Math.floor(h / 24);
-  return `${d} дн${h % 24 ? ` ${h % 24} ч` : ''}`;
+  return `${d} ${t('unit.day')}${h % 24 ? ` ${h % 24} ${t('unit.hour')}` : ''}`;
 }
 
 const since = (ts) => (ts ? duration(Date.now() - ts) : '—');
@@ -101,8 +101,9 @@ function ensureNotificationPermission() {
 function systemNotify(req) {
   if (!('Notification' in window) || Notification.permission !== 'granted') return;
   try {
-    const n = new Notification('У вас просят устройство', {
-      body: `${req.requesterName} просит ${req.title}${req.message ? `\n«${req.message}»` : ''}`,
+    const n = new Notification(t('app.deviceRequest'), {
+      body: t('app.requesterAsksFor', { name: req.requesterName, title: req.title })
+        + (req.message ? `\n«${req.message}»` : ''),
       tag: req.id,
       requireInteraction: true,
     });
@@ -136,7 +137,7 @@ function flashTitle(on) {
   let flip = false;
   titleFlashTimer = setInterval(() => {
     flip = !flip;
-    document.title = flip ? '⚠ У ВАС ПРОСЯТ УСТРОЙСТВО' : base;
+    document.title = flip ? t('app.flashTitle') : base;
   }, 900);
 }
 
@@ -156,11 +157,11 @@ function handleIncomingRequests() {
 
   currentRequest = req;
   $('#requestBody').innerHTML = `
-    <p class="request-line"><b>${esc(req.requesterName)}</b> просит освободить</p>
+    <p class="request-line"><b>${esc(req.requesterName)}</b> ${t('app.asksToRelease')}</p>
     <p class="request-target">${esc(req.title)}</p>
     ${req.message ? `<p class="request-message">«${esc(req.message)}»</p>` : ''}
-    <p class="dlg-note">Запрос отправлен ${esc(since(req.createdAt))} назад.
-      ${incoming.length > 1 ? `Ещё запросов в очереди: ${incoming.length - 1}.` : ''}</p>`;
+<p class="dlg-note">${t('app.requestSentAgo', { time: esc(since(req.createdAt)) })}
+	      ${incoming.length > 1 ? t('app.moreRequestsInQueue', { count: incoming.length - 1 }) : ''}</p>`;
 
   const dlg = $('#requestDialog');
   if (!dlg.open) dlg.showModal();
@@ -178,8 +179,8 @@ function handleIncomingRequests() {
 /** Пометка «чужая сеть» у владельца в каталоге: его анонсы идут через NAT/туннель. */
 function natMark(e) {
   return e.ownerRedirected
-    ? ' <span class="pill warn" title="Этот узел объявляет чужую для нас сеть, а слышен здесь: его анонсы проходят через NAT или туннель, '
-      + 'и напрямую его порты недоступны. Свяжитесь с ним через «Узлы в других сетях» и проброс портов на его хосте">чужая сеть</span>'
+    ? ' <span class="pill warn" title="' + t('common.thisNodeAnnouncesANetwork') + ' '
+      + t('common.andItsPortsAreNot') + '">' + t('common.foreignNetwork') + '</span>'
     : '';
 }
 
@@ -204,19 +205,19 @@ function renderHeader() {
   const s = state.self;
   $('#selfLine').textContent = s.networks?.length > 1
     ? `${s.name} · ${s.networks.map((n) => `${n.address} (${n.cidr}, ${n.iface})`).join(' · ')}`
-    : `${s.name} · ${s.address} · сеть ${s.network} (${s.iface})`;
+    : `${s.name} · ${s.address} · ${t('app.network')} ${s.network} (${s.iface})`;
   if (s.gateway) $('#selfLine').insertAdjacentHTML('beforeend', gatewayMark({ gateway: true }));
   if (!titleFlashTimer) document.title = `${s.name} — Net Device Share`;
 
   const server = $('#capServer');
   server.className = `cap ${state.backend.server ? 'on' : 'off'}`;
-  server.title = state.backend.server ? 'Свои USB-устройства можно публиковать'
-    : 'Серверная часть USB/IP не найдена — публикация USB недоступна';
+  server.title = state.backend.server ? t('common.ownUsbDevicesCanBe')
+    : t('common.theUsbIpServerPart');
 
   const client = $('#capClient');
   client.className = `cap ${state.backend.client ? 'on' : 'off'}`;
-  client.title = state.backend.client ? 'Чужие USB-устройства можно подключать'
-    : 'Клиентская часть USB/IP не найдена — подключение USB недоступно';
+  client.title = state.backend.client ? t('common.othersUsbDevicesCanBe')
+    : t('common.theUsbIpClientPart');
 
   const ro = !canEdit();
   $('#accessBadge').hidden = !ro;
@@ -231,8 +232,8 @@ function renderHeader() {
   bar.hidden = !ro;
   if (ro) {
     bar.innerHTML = state.config.hasWebPassword
-      ? '<b>Режим просмотра.</b> Каталог и занятость видны полностью. Чтобы занимать и публиковать устройства, нажмите «Войти» и введите пароль.'
-      : '<b>Режим просмотра.</b> Управление с других компьютеров закрыто: пароль не задан. Задайте его в настройках на том компьютере, где запущено приложение.';
+      ? '<b>' + t('common.viewonlyMode') + '</b> ' + t('common.theCatalogAndOccupancyAre')
+      : '<b>' + t('common.viewonlyMode') + '</b> ' + t('common.managingFromOtherComputersIs');
   }
 
   renderBanner();
@@ -282,39 +283,39 @@ function renderBanner() {
   if (running) {
     const tail = (inst.steps || []).slice(-6);
     banner.innerHTML = `
-      <b>Идёт установка компонентов USB/IP…</b>
-      <p class="banner-hint">Windows запросит права администратора — подтвердите. Запрос приходит на каждый компонент отдельно; в окне видно издателя установщика. Это может занять около минуты.</p>
-      <pre class="banner-log">${tail.map((s) => esc(s.text)).join('\n') || 'подготовка…'}</pre>`;
+<b>${t('common.installingUsbIpComponents')}</b>
+	      <p class="banner-hint">${t('common.windowsWillAskForAdministrator')}</p>
+	      <pre class="banner-log">${tail.map((s) => esc(s.text)).join('\n') || t('common.preparing')}</pre>`;
     return;
   }
 
   if (justDone && !issues.length) {
     banner.innerHTML = `
-      <b>Готово: всё необходимое установлено.</b>
-      <p class="banner-hint">Окружение перепроверено, ограничения сняты.</p>
-      <div class="banner-actions"><button class="btn small" data-dismiss="1">Скрыть</button></div>`;
+<b>${t('common.doneEverythingNeededIsInstalled')}</b>
+	      <p class="banner-hint">${t('common.theEnvironmentHasBeenRechecked')}</p>
+	      <div class="banner-actions"><button class="btn small" data-dismiss="1">${t('common.hide')}</button></div>`;
     return;
   }
 
-  const parts = ['<b>Окружение USB/IP настроено не полностью</b>'];
+  const parts = ['<b>' + t('common.theUsbIpEnvironmentIs') + '</b>'];
   if (issues.length) parts.push(`<ul>${issues.map((i) => `<li>${esc(i)}</li>`).join('')}</ul>`);
-  if (failed && inst.error) parts.push(`<p class="banner-error">Установка не удалась: ${esc(inst.error)}</p>`);
+  if (failed && inst.error) parts.push(`<p class="banner-error">${t('app.installFailed', { error: esc(inst.error) })}</p>`);
 
   if (inst && inst.canInstall) {
     const todo = inst.components.filter((c) => c.needed);
     const size = todo.reduce((s, c) => s + (c.sizeMb || 0), 0);
     parts.push(`
       <div class="banner-actions">
-        <button class="btn primary" id="btnInstall">${failed ? 'Повторить установку' : 'Установить'}</button>
+        <button class="btn primary" id="btnInstall">${failed ? t('common.retryInstallation') : t('common.install')}</button>
         <span class="banner-hint">${esc(todo.map((c) => `${c.title.split('—')[0].trim()} ${c.version}`).join(', '))}
-          — ${size ? esc(size.toFixed(1)) : '?'} МБ из папки <code>installers</code>, интернет не нужен.
-          Потребуются права администратора: Windows спросит подтверждение на каждый компонент.</span>
+${t('app.mbFromFolder', { size: size ? esc(size.toFixed(1)) : '?', folder: 'installers' })}
+	          ${t('common.administratorRightsWillBeNeeded')}</span>
       </div>`);
     const note = todo.find((c) => c.signerNote);
     if (note) parts.push(`<p class="banner-hint">${esc(note.signerNote)}</p>`);
   } else if (inst && !inst.supported && (inst.hints || []).length) {
-    parts.push(`<p class="banner-hint">Установка вручную:</p><ul>${
-      inst.hints.map((h) => `<li>${esc(h)}</li>`).join('')}</ul>`);
+parts.push(`<p class="banner-hint">${t('app.manualInstall')}</p><ul>${
+	      inst.hints.map((h) => `<li>${esc(h)}</li>`).join('')}</ul>`);
   }
 
   banner.innerHTML = parts.join('');
@@ -351,11 +352,8 @@ function renderGhosted() {
   const g = state.self?.ghosted;
   if (!g) { box.hidden = true; return; }
   box.hidden = false;
-  box.innerHTML = `<b>Этот узел видно в соседней сети под чужим адресом ${esc(g.address || '—')}.</b>
-    <p class="banner-hint">Вы за NAT: соседи слышат ваши анонсы, но дотянуться до портов не могут, и в их списках
-    узел мельтешит как двойник. Связь настраивается так: на хосте пробросьте TCP-порт на 47812 этой машины и добавьте
-    адрес «хост:порт» соседям в «Узлы в других сетях»; чтобы не мельтешить, закройте исходящий UDP 47811
-    (в Proxifier — правило Block, или брандмауэром). Полоса исчезнет, когда обмен подтвердит, что отражения больше нет.</p>`;
+box.innerHTML = `<b>${t('app.nodeSeenInNeighborNetwork', { addr: esc(g.address || '\u2014') })}</b>
+	    <p class="banner-hint">${t('app.ghostedExplanation')}</p>`;
 }
 
 // ------------------------------------------------------------------ каталог
@@ -364,13 +362,13 @@ function statusPill(entry) {
   // Занятие идёт: показываем, что именно сейчас происходит. Сетевая карта
   // занимается секундами, и «…» на кнопке ничего не говорит о том, ждать ли.
   if (entry.attachState === 'attaching') {
-    return `<span class="pill warn">занимается${entry.attachStage ? `: ${esc(entry.attachStage)}` : '…'}</span>`;
+    return `<span class="pill warn">${t('common.beingTaken')}${entry.attachStage ? `: ${esc(entry.attachStage)}` : '…'}</span>`;
   }
-  if (entry.preparing && !entry.busy) return '<span class="pill warn">готовится к выдаче…</span>';
-  if (entry.busyByMe) return `<span class="pill mine">занято вами · ${esc(since(entry.claim.since))}</span>`;
-  if (entry.busy) return `<span class="pill busy">занято: ${esc(entry.claim.holderName)} · ${esc(since(entry.claim.since))}</span>`;
-  if (entry.reservedFor) return `<span class="pill warn">придержано за ${esc(entry.reservedFor.nodeName)}</span>`;
-  return '<span class="pill free">свободно</span>';
+  if (entry.preparing && !entry.busy) return '<span class="pill warn">' + t('common.beingPrepared_2') + '</span>';
+  if (entry.busyByMe) return `<span class="pill mine">${t('app.takenByYou')} · ${esc(since(entry.claim.since))}</span>`;
+  if (entry.busy) return `<span class="pill busy">${t('app.takenByWith', { who: esc(entry.claim.holderName), since: esc(since(entry.claim.since)) })}</span>`;
+  if (entry.reservedFor) return `<span class="pill warn">${t('app.heldFor', { name: esc(entry.reservedFor.nodeName) })}</span>`;
+  return '<span class="pill free">' + t('common.free') + '</span>';
 }
 
 /** Кто сейчас в общем мосту карты и с какой скоростью каждый работает. Карта при этом не «занята»: подключаться могут и остальные. */
@@ -381,9 +379,9 @@ function joinPill(entry) {
     const total = j.traffic ? (j.traffic.bytesInPerMinute || 0) + (j.traffic.bytesOutPerMinute || 0) : 0;
     return total ? `${j.holderName} · ${formatRate(total)}` : j.holderName;
   }).join(', ');
-  const title = 'Карта подключена в общий мост: эти узлы работают в сети владельца одновременно. '
-    + 'Скорость каждого — обмен за последнюю минуту. Подключиться может любой ещё.';
-  return `<span class="pill ${entry.joinedByMe ? 'mine' : 'warn'}" title="${esc(title)}">в мосту: ${esc(names)}</span>`;
+  const title = t('app.theNicIsJoinedIntoSharedBridge')
+    + t('common.eachOnesRateIsThe');
+  return `<span class="pill ${entry.joinedByMe ? 'mine' : 'warn'}" title="${esc(title)}">${t('app.inBridge')}${esc(names)}</span>`;
 }
 
 /** Можно ли подключить эту карту в общий мост с нашего компьютера. */
@@ -395,18 +393,18 @@ function canJoinBridge(d) {
 /** Кнопки карты внутри группы: целиком группу занимают её кнопкой, но в мост карту можно подключить отдельно. */
 function memberActions(d) {
   if (!canEdit()) return '';
-  if (d.joinedByMe && d.attachmentId) return `<button class="btn small danger" data-detach="${esc(d.attachmentId)}">Выйти из моста</button>`;
+  if (d.joinedByMe && d.attachmentId) return `<button class="btn small danger" data-detach="${esc(d.attachmentId)}">${t('common.leaveTheBridge')}</button>`;
   return canJoinBridge(d) ? joinButton(d) : '';
 }
 
 function joinButton(d) {
   const m = d.meta || {};
   const adv = m.staticAddress
-    ? ` У владельца статический адрес ${m.staticAddress.address}/${m.staticAddress.prefixLength}${m.staticAddress.next ? `, вам предложим ${m.staticAddress.next}` : ''}.`
+    ? t('app.ownerStaticAddress', { address: m.staticAddress.address, prefix: m.staticAddress.prefixLength, next: m.staticAddress.next ? t('app.weSuggest', { next: m.staticAddress.next }) : '' })
     : '';
   return `<button class="btn small primary" data-join="${esc(d.ownerId)}|${esc(d.target)}"
-    title="${esc(`На этом компьютере появится адаптер в сети владельца. Владелец остаётся в ней под своим адресом, карта остаётся доступной остальным узлам.${adv}`)}"
-    >Подключиться в мост</button>`;
+    title="${esc(t('common.anAdapterOnTheOwners') + adv)}"
+    >${t('common.joinToBridge')}</button>`;
 }
 
 /**
@@ -417,18 +415,18 @@ function joinButton(d) {
  * просто числится занятым.
  */
 function formatRate(bytesPerMinute) {
-  if (!bytesPerMinute) return '0 Б/мин';
-  if (bytesPerMinute < 1024) return `${bytesPerMinute} Б/мин`;
-  if (bytesPerMinute < 1024 * 1024) return `${(bytesPerMinute / 1024).toFixed(1)} КБ/мин`;
-  return `${(bytesPerMinute / 1048576).toFixed(2)} МБ/мин`;
+  if (!bytesPerMinute) return `0 ${t('common.bMin')}`;
+  if (bytesPerMinute < 1024) return `${bytesPerMinute} ${t('common.bMin')}`;
+  if (bytesPerMinute < 1024 * 1024) return `${(bytesPerMinute / 1024).toFixed(1)} ${t('common.kbMin')}`;
+  return `${(bytesPerMinute / 1048576).toFixed(2)} ${t('common.mbMin')}`;
 }
 
 function formatVolume(bytes) {
-  if (!bytes) return '0 Б';
-  if (bytes < 1024) return `${bytes} Б`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} КБ`;
-  if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1048576).toFixed(1)} МБ`;
-  return `${(bytes / 1073741824).toFixed(2)} ГБ`;
+  if (!bytes) return `0 ${t('unit.b')}`;
+  if (bytes < 1024) return `${bytes} ${t('unit.b')}`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} ${t('common.kb')}`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1048576).toFixed(1)} ${t('common.mb')}`;
+  return `${(bytes / 1073741824).toFixed(2)} ${t('common.gb')}`;
 }
 
 /** Полоска активности: приём и передача за последнюю минуту. */
@@ -436,9 +434,7 @@ function trafficPill(t) {
   if (!t) return '';
   const total = (t.bytesInPerMinute || 0) + (t.bytesOutPerMinute || 0);
   const idle = total === 0;
-  const title = `За последнюю минуту принято ${formatRate(t.bytesInPerMinute)}, `
-    + `передано ${formatRate(t.bytesOutPerMinute)}. `
-    + `Всего за сеанс: ${formatVolume((t.totalIn || 0) + (t.totalOut || 0))}.`;
+  const title = t('app.trafficTitle', { inRate: formatRate(t.bytesInPerMinute), outRate: formatRate(t.bytesOutPerMinute), totalVol: formatVolume((t.totalIn || 0) + (t.totalOut || 0)) });
   return `<span class="pill traffic ${idle ? 'idle' : 'busy-flow'}" title="${esc(title)}">`
     + `${idle ? '⏸' : '⇅'} ${esc(formatRate(total))}</span>`;
 }
@@ -453,10 +449,8 @@ function discoveryInfo(meta, note) {
   // Значок — только когда причина отказа именно эта, а не, например, Wi-Fi.
   if (!meta?.discoveryUse || !/ищет через эту карту узлы|работает само приложение/.test(note || '')) return '';
   const text = meta.discoveryAuto
-    ? 'Через эту карту приложение ищет узлы (автоматический выбор сетей), поэтому пробросить её нельзя. '
-      + 'Чтобы можно было: отметьте у карты в «Моих устройствах» «Не использовать для обнаружения» '
-      + 'или выберите основную сеть вручную в настройках. Тогда приложение перестанет работать в этой сети и потеряет в ней соседей.'
-    : 'Через эту карту работает само приложение: отдав её, компьютер потеряет связь с остальными узлами.';
+    ? t('app.discoveryAuto1') + t('app.discoveryAuto2') + t('common.orPickThePrimaryNetwork')
+    : t('common.theAppItselfWorksThrough');
   return ` <span class="info-i" tabindex="0" title="${esc(text)}" aria-label="${esc(text)}">ⓘ</span>`;
 }
 
@@ -470,16 +464,14 @@ function transportPill(d) {
   const meta = d.meta || {};
   const note = meta.transportNote;
   const why = note
-    ? `Проброса нет: ${note}. Приложение учитывает, кто занял устройство, но данные по сети не передаёт.`
-    : 'Проброса нет: приложение учитывает, кто занял устройство, '
-      + 'но данные по сети не передаёт. Подключаться к нему нужно физически.';
-  return `<span class="pill warn" title="${esc(why)}">только бронь</span>${usbAdapterHint(d, meta)}${discoveryInfo(meta, note)}`;
+    ? t('app.noForwardPrefix', { note })
+    : t('app.noForwardPrefix2') + t('common.theAppRecordsWhoHas_2');
+  return `<span class="pill warn" title="${esc(why)}">${t('ui.bookingOnly')}</span>${usbAdapterHint(d, meta)}${discoveryInfo(meta, note)}`;
 }
 
 /** Совет для COM на USB-переходнике: полноценный проброс уже есть — через USB, а не через бронь. */
 function usbAdapterText() {
-  return 'Это USB-адаптер: опубликуйте его как USB-устройство — и оно пробросится целиком, '
-    + 'с его COM-портом у занявшего.';
+  return t('app.usbAdapterText');
 }
 
 function usbAdapterHint(d, meta) {
@@ -519,18 +511,18 @@ function entryActions(entry) {
     // другое слово и прямое пояснение в подсказке.
     const reserve = entry.hasTransport === false;
     // Тот же совет, что у значка «только бронь»: COM на переходнике пробрасывается через USB.
-    const reserveWhy = 'Только бронирование: приложение запишет, что устройство за вами, но в системе оно не появится — подключаться к нему нужно физически'
-      + (entry.type === 'com' && entry.meta?.viaUsb ? `. ${usbAdapterText()}` : '');
+    const reserveWhy = t('app.reserveWhy')
+    + (entry.type === 'com' && entry.meta?.viaUsb ? `. ${usbAdapterText()}` : '');
     acts.push(`<button class="btn small primary" data-attach="${esc(entry.ownerId)}|${esc(entry.target)}"
       data-reserve="${reserve ? '1' : ''}"
       title="${reserve
         ? reserveWhy
         : entry.type === 'net'
-          ? 'На этом компьютере появится сетевой адаптер, подключённый к сети за картой владельца. Первое занятие занимает до минуты: владелец собирает мост'
+          ? t('app.netAppear')
           : entry.type === 'com'
-            ? 'У владельца откроется настоящий COM-порт, а на этом компьютере появится виртуальный порт с тем же именем: приложение будет работать с ним, как с локальным. Параметры возьмутся как у владельца'
-            : 'Устройство появится в «Диспетчере устройств» этого компьютера'}"
-      >${reserve ? 'Забронировать' : 'Занять'}</button>`);
+            ? t('app.comAppear')
+            : t('app.deviceAppear')}"
+      >${reserve ? t('common.book') : t('common.take')}</button>`);
   }
   return acts.join('');
 }
@@ -538,12 +530,12 @@ function entryActions(entry) {
 function deviceMeta(d) {
   const m = d.meta || {};
   const bits = [];
-  if (m.vendorId && m.productId) bits.push(`ид: <span class="mono">${esc(m.vendorId)}:${esc(m.productId)}</span>`);
-  if (m.serial) bits.push(`с/н: <span class="mono">${esc(m.serial)}</span>`);
-  if (m.viaUsb) bits.push('через USB-переходник');
-  if (m.status) bits.push(`состояние: ${esc(m.status)}`);
+  if (m.vendorId && m.productId) bits.push(`${t('app.idLabel')}<span class="mono">${esc(m.vendorId)}:${esc(m.productId)}</span>`);
+  if (m.serial) bits.push(`${t('app.snLabel')}<span class="mono">${esc(m.serial)}</span>`);
+  if (m.viaUsb) bits.push(t('common.viaAUsbAdapter'));
+  if (m.status) bits.push(`${t('app.statusLabel')}${esc(m.status)}`);
   if (m.mac) bits.push(`MAC: <span class="mono">${esc(m.mac)}</span>`);
-  if (m.linkSpeed) bits.push(`скорость: ${esc(m.linkSpeed)}`);
+  if (m.linkSpeed) bits.push(`${t('app.speedLabel')}${esc(m.linkSpeed)}`);
   if (m.usedIps?.length) bits.push(usedIpsText(m.usedIps, m.scannedAt));
   if (m.ip) {
     // Настройки карты, с которыми её получит занявший.
@@ -558,9 +550,9 @@ function deviceMeta(d) {
 function usedIpsText(ips, scannedAt) {
   const shown = ips.slice(0, 12);
   const rest = ips.length - shown.length;
-  const when = scannedAt ? ` · проверено ${at(scannedAt)}` : '';
-  return `<span title="${esc(ips.join(', '))}">занято адресов в сети: <b>${ips.length}</b> — `
-    + `<span class="mono">${esc(shown.join(', '))}${rest > 0 ? ` и ещё ${rest}` : ''}</span>${esc(when)}</span>`;
+  const when = scannedAt ? t('app.scannedAtPrefix') + at(scannedAt) : '';
+  return `<span title="${esc(ips.join(', '))}">${t('app.usedIpsPrefix')}<b>${ips.length}</b> — `
+    + `<span class="mono">${esc(shown.join(', '))}${rest > 0 ? t('app.andMore', { count: rest }) : ''}</span>${esc(when)}</span>`;
 }
 
 /** Настройки IPv4 одной строкой: адрес, шлюз, DNS — или DHCP. */
@@ -569,13 +561,13 @@ function ipText(ip) {
   const parts = [];
   if (ip.dhcp) {
     const l = ip.lease;
-    parts.push(l ? `IPv4: DHCP, сейчас ${mono([`${l.address}/${l.prefixLength ?? '?'}`])}` : 'IPv4: DHCP');
-    if (l && l.gateways?.length) parts.push(`шлюз ${mono(l.gateways)}`);
+    parts.push(l ? `${t('app.ipv4Dhcp')}${mono([`${l.address}/${l.prefixLength ?? '?'}`])}` : t('app.ipv4DhcpPlain'));
+    if (l && l.gateways?.length) parts.push(`${t('common.gateway_2')} ${mono(l.gateways)}`);
   } else if (ip.addresses?.length) {
-    parts.push(`IPv4: ${mono(ip.addresses.map((a) => `${a.address}/${a.prefixLength}`))} вручную`);
-    if (ip.gateways?.length) parts.push(`шлюз ${mono(ip.gateways)}`);
+    parts.push(`IPv4: ${mono(ip.addresses.map((a) => `${a.address}/${a.prefixLength}`))}${t('app.ipv4Manual')}`);
+    if (ip.gateways?.length) parts.push(`${t('common.gateway_2')} ${mono(ip.gateways)}`);
   } else {
-    parts.push('IPv4: не настроен');
+    parts.push(t('common.ipv4NotConfigured'));
   }
   const dns = ip.dns?.length ? ip.dns : (ip.dhcp ? ip.lease?.dns || [] : []);
   if (dns.length) parts.push(`DNS ${mono(dns)}`);
@@ -586,17 +578,17 @@ function ipText(ip) {
 function adapterIpText(ip, applied) {
   if (!ip) return '';
   if (applied && !applied.ok) {
-    return `<span class="pill err" title="${esc(applied.error || '')}">настройки IP не перенесены: ${esc(applied.error || 'ошибка')}</span>`;
+    return `<span class="pill err" title="${esc(applied.error || '')}">${t('app.ipSettingsNotApplied')}${esc(applied.error || t('common.error'))}</span>`;
   }
-  if (applied?.remote) return `настройки карты у владельца заданы вами — ${ipText(ip)}; при освобождении вернутся прежние`;
-  if (applied?.own) return `ваши настройки — ${ipText(ip)}`;
-  return `настройки как у карты владельца — ${ipText(ip)}`;
+  if (applied?.remote) return t('app.ipSettingsRemote', { ip: ipText(ip) });
+  if (applied?.own) return t('app.ipSettingsOwn', { ip: ipText(ip) });
+  return t('app.ipSettingsDefault', { ip: ipText(ip) });
 }
 
 /** Значок узла, стоящего в нескольких сетях: он может пересказывать каталог и пропускать соединения. */
 function gatewayMark(e) {
   return e.ownerGateway || e.gateway
-    ? ' <span class="pill plain" title="Этот узел стоит в нескольких сетях и работает шлюзом: пересказывает каталог и при необходимости пропускает соединения из одной сети в другую">🌉 шлюз</span>'
+    ? ' <span class="pill plain" title="' + t('app.gatewayPillTitle') + '">🌉 шлюз</span>'
     : '';
 }
 
@@ -604,7 +596,7 @@ function gatewayMark(e) {
 function ownerAddresses(e) {
   const routes = e.ownerRoutes || [];
   if (routes.length < 2) return `(${esc(e.ownerAddress)})`;
-  const how = (r) => (r.via ? `через «${esc(r.via.name || '?')}»${r.mode === 'tunnel' ? ', туннель' : r.mode === 'direct' ? ', напрямую' : ''}` : 'напрямую');
+  const how = (r) => (r.via ? `${t('app.viaNamed', { name: esc(r.via.name || '?') })}${r.mode === 'tunnel' ? t('app.viaTunnel') : r.mode === 'direct' ? t('app.viaDirect') : ''}` : t('app.directOnly'));
   return '(' + routes.map((r) => `<span title="${esc(how(r).replace(/<[^>]+>/g, ''))}"><span class="mono">${esc(r.address)}</span> `
     + `<span class="muted">${esc(r.network || '')} · ${how(r)}</span></span>`).join(' · ') + ')';
 }
@@ -627,12 +619,12 @@ function deviceCard(d, { insideGroup = false } = {}) {
         </div>
         ${d.purpose ? `<div class="purpose">${esc(d.purpose)}</div>` : ''}
         <div class="card-meta">
-          ${insideGroup ? '' : `<span>владелец: <b>${esc(d.ownerName)}</b>${gatewayMark(d)}${natMark(d)} ${ownerAddresses(d)}${remoteMark(d.ownerId)}</span>`}
+          ${insideGroup ? '' : `<span>${t('app.ownerColon')}<b>${esc(d.ownerName)}</b>${gatewayMark(d)}${natMark(d)} ${ownerAddresses(d)}${remoteMark(d.ownerId)}</span>`}
           <span>${esc(d.typeTitle)}: <span class="mono">${esc(d.subtitle)}</span></span>
           ${meta.map((b) => `<span>${b}</span>`).join('')}
-          ${d.connectedSince ? `<span>подключено: ${esc(since(d.connectedSince))} (${esc(at(d.connectedSince))})</span>` : ''}
-          ${d.vhciPort !== null && d.vhciPort !== undefined ? `<span>порт VHCI: <b>${esc(d.vhciPort)}</b></span>` : ''}
-          ${d.adapter ? `<span>адаптер у вас: <b>${esc(d.adapter)}</b></span>` : ''}
+          ${d.connectedSince ? `<span>${t('app.connectedColon')}${esc(since(d.connectedSince))} (${esc(at(d.connectedSince))})</span>` : ''}
+          ${d.vhciPort !== null && d.vhciPort !== undefined ? `<span>${t('app.vhciPortColon')}<b>${esc(d.vhciPort)}</b></span>` : ''}
+          ${d.adapter ? `<span>${t('app.adapterYoursColon')}<b>${esc(d.adapter)}</b></span>` : ''}
           ${d.adapter && d.adapterIp ? `<span>${adapterIpText(d.adapterIp, d.adapterIpApplied)}</span>` : ''}
           ${d.adapter && !d.adapterIp && d.adapterNote ? `<span class="pill warn">${esc(d.adapterNote)}</span>` : ''}
           ${d.lastError ? `<span class="pill err">${esc(d.lastError)}</span>` : ''}
@@ -662,7 +654,7 @@ function groupCard(g) {
           </div>
           ${g.purpose ? `<div class="purpose">${esc(g.purpose)}</div>` : ''}
           <div class="card-meta">
-            <span>владелец: <b>${esc(g.ownerName)}</b>${gatewayMark(g)}${natMark(g)} ${ownerAddresses(g)}${remoteMark(g.ownerId)}</span>
+            <span>${t('app.ownerColon')}<b>${esc(g.ownerName)}</b>${gatewayMark(g)}${natMark(g)} ${ownerAddresses(g)}${remoteMark(g.ownerId)}</span>
             <span>занимается целиком</span>
           </div>
         </div>
@@ -713,8 +705,8 @@ function renderCatalog() {
   const box = $('#catalogList');
   if (!items.length) {
     box.innerHTML = `<div class="empty">${state.catalog.length
-      ? (words.length ? `Ничего не найдено по запросу «${esc($('#search').value.trim())}».` : 'Под фильтр ничего не подходит.')
-      : 'Опубликованных устройств в сети пока нет.<br>Опубликуйте своё на вкладке «Мои устройства» или дождитесь других узлов.'}</div>`;
+      ? (words.length ? t('app.notFoundForQuery', { query: esc($('#search').value.trim()) }) : t('common.nothingMatchesTheFilter'))
+      : t('common.noPublishedDevicesOnThe')}</div>`;
     return;
   }
   box.innerHTML = items.map((e) => (e.kind === 'group' ? groupCard(e) : deviceCard(e))).join('');
@@ -727,21 +719,21 @@ function renderOutgoing() {
   if (!list.length) { box.innerHTML = ''; return; }
 
   const label = {
-    pending: ['warn', 'ждём ответа'],
-    accepted: ['ok', 'отдано вам — занимайте'],
-    granted: ['ok', 'освободилось'],
-    declined: ['err', 'отказано'],
-    expired: ['err', 'истёк без ответа'],
-    superseded: ['plain', 'владелец забрал себе'],
+    pending: ['warn', t('common.waitingForAnAnswer')],
+    accepted: ['ok', t('common.handedToYouTakeIt')],
+    granted: ['ok', t('common.released_2')],
+    declined: ['err', t('common.declined')],
+    expired: ['err', t('common.expiredUnanswered')],
+    superseded: ['plain', t('common.theOwnerTookItBack')],
   };
 
   box.innerHTML = `<div class="outgoing">${list.map((r) => {
     const [kind, text] = label[r.state] || ['plain', r.state];
     return `<div class="outgoing-row">
       <span class="pill ${kind}">${esc(text)}</span>
-      <span>ваш запрос: <b>${esc(r.title)}</b> у «${esc(r.holderName)}»</span>
-      ${r.state === 'pending' && canEdit()
-        ? `<button class="btn small" data-cancel-request="${esc(r.id)}">Отменить</button>` : ''}
+<span>${t('app.yourRequest')} <b>${esc(r.title)}</b> ${t('app.atHolder', { holder: esc(r.holderName) })}</span>
+	      ${r.state === 'pending' && canEdit()
+	        ? `<button class="btn small" data-cancel-request="${esc(r.id)}">${t('app.cancel')}</button>` : ''}
     </div>`;
   }).join('')}</div>`;
 }
@@ -757,16 +749,16 @@ function discoveryToggle(d, ro) {
   const m = d.meta || {};
   if (d.type !== 'net' || ro || !m.hardware || !m.discoveryAuto) return '';
   if (!m.discoveryUse && !m.discoveryExcluded) return '';
-  return `<label class="member disc-toggle" title="Приложение не будет искать узлы и объявляться в сети этой карты. Карту можно будет пробросить; соседи из этой сети пропадут из списка.">
-    <input type="checkbox" data-disc-exclude="${esc(d.title)}" ${m.discoveryExcluded ? 'checked' : ''}>
-    <span>Не использовать для обнаружения узлов</span></label>`;
+return `<label class="member disc-toggle" title="${t('common.theAppWillStopSearching')}">
+	    <input type="checkbox" data-disc-exclude="${esc(d.title)}" ${m.discoveryExcluded ? 'checked' : ''}>
+	    <span>${t('app.doNotUseForDiscovery')}</span></label>`;
 }
 
 function renderMine() {
   const items = state.localDevices;
   const box = $('#mineList');
   if (!items.length) {
-    box.innerHTML = '<div class="empty">Устройства не обнаружены. Проверьте, какие типы включены в настройках.</div>';
+    box.innerHTML = '<div class="empty">' + t('common.noDevicesFoundCheckWhich') + '</div>';
     return;
   }
 
@@ -777,20 +769,20 @@ function renderMine() {
     // не опубликована, устройство публикуется и занимается само по себе.
     const inGroup = Boolean(d.groupPublished);
     const cls = blocked ? 'offline' : d.claim ? 'busy' : d.shared ? 'free' : '';
-    const status = d.preparing && !d.claim
-      ? '<span class="pill warn">готовится к выдаче…</span>'
-      : d.claim
-      ? `<span class="pill busy">занято: ${esc(d.claim.holderName)} · ${esc(since(d.claim.since))}</span>${silentHolderPill(d.claim)}`
-      : d.shared ? '<span class="pill free">опубликовано, свободно</span>'
-        : '<span class="pill plain">не опубликовано</span>';
+const status = d.preparing && !d.claim
+	      ? '<span class="pill warn">' + t('common.beingPrepared_2') + '</span>'
+	      : d.claim
+	      ? `<span class="pill busy">${t('app.takenBy', { who: esc(d.claim.holderName), time: esc(since(d.claim.since)) })}</span>${silentHolderPill(d.claim)}`
+	      : d.shared ? '<span class="pill free">' + t('common.publishedFree') + '</span>'
+	        : '<span class="pill plain">' + t('common.notPublished') + '</span>';
 
     const acts = [];
     if (!blocked && !ro) {
       if (!inGroup) {
-        acts.push(`<button class="btn small ${d.shared ? '' : 'primary'}" data-share="${esc(d.deviceId)}|${d.shared ? '0' : '1'}">${
-          d.shared ? 'Снять с публикации' : 'Опубликовать'}</button>`);
-      }
-      if (d.claim) acts.push(`<button class="btn small danger" data-force="${esc(d.deviceId)}">Освободить</button>`);
+acts.push(`<button class="btn small ${d.shared ? '' : 'primary'}" data-share="${esc(d.deviceId)}|${d.shared ? '0' : '1'}">${
+	          d.shared ? t('common.unpublish') : t('common.publish')}</button>`);
+	      }
+	      if (d.claim) acts.push(`<button class="btn small danger" data-force="${esc(d.deviceId)}">${t('common.release_2')}</button>`);
     }
 
     return `
@@ -802,19 +794,19 @@ function renderMine() {
             ${blocked ? '' : status}
             ${d.claim ? trafficPill(d.traffic) : ''}
             ${transportPill(d)}
-            ${d.groupId ? `<span class="pill group-pill">${inGroup ? 'отдано группой' : 'в группе (не опубл.)'} «${esc(d.groupName || '')}»</span>` : ''}
+            ${d.groupId ? `<span class="pill group-pill">${inGroup ? t('common.sharedViaGroup') : t('common.inAGroupUnpublished')} «${esc(d.groupName || '')}»</span>` : ''}
           </div>
           <div class="card-meta">
             <span>${esc(d.typeTitle)}: <span class="mono">${esc(d.title)}</span></span>
             ${deviceMeta(d).map((b) => `<span>${b}</span>`).join('')}
-            <span>состояние драйвера: <b>${esc(d.bindState)}</b></span>
+            <span>${t('app.driverState')}: <b>${esc(d.bindState)}</b></span>
             ${d.lastError ? `<span class="pill err">${esc(d.lastError)}</span>` : ''}
             ${blocked ? `<span class="pill err">${esc(d.unavailableReason)}</span>` : ''}
           </div>
           ${discoveryToggle(d, ro)}
           ${blocked || ro ? (d.purpose ? `<div class="purpose">${esc(d.purpose)}</div>` : '')
             : `<input class="purpose-input" data-purpose="${esc(d.deviceId)}" value="${esc(d.purpose || '')}"
-                 maxlength="500" placeholder="для чего это устройство — текст видят все">`}
+                 maxlength="500" placeholder="${t('app.purposePlaceholder')}">`}
         </div>
         <div class="card-actions">${acts.join('')}</div>
       </article>`;
@@ -827,7 +819,7 @@ function renderGroups() {
   const box = $('#groupsList');
   const groups = state.localGroups || [];
   if (!groups.length) {
-    box.innerHTML = '<div class="empty">Групп пока нет. Объедините устройства, которые имеет смысл занимать только вместе.</div>';
+    box.innerHTML = '<div class="empty">' + t('common.noGroupsYetGroupThe') + '</div>';
     return;
   }
   const byId = new Map(state.localDevices.map((d) => [d.deviceId, d]));
@@ -839,7 +831,7 @@ function renderGroups() {
 
     const acts = canEdit() ? [
       `<button class="btn small ${g.shared ? '' : 'primary'}" data-group-share="${esc(g.id)}|${g.shared ? '0' : '1'}">${
-        g.shared ? 'Снять с публикации' : 'Опубликовать'}</button>`,
+        g.shared ? t('common.unpublish') : t('common.publish')}</button>`,
       `<button class="btn small" data-edit-group="${esc(g.id)}">Изменить</button>`,
     ].join('') : '';
 
@@ -858,8 +850,8 @@ function renderGroups() {
           }).join('')}
         </div>
         <p class="hint group-rule">${g.shared
-          ? 'Группа опубликована: её устройства занимаются только целиком и не публикуются по отдельности.'
-          : 'Группа не опубликована: её устройства ведут себя как обычные — публикуются и занимаются по отдельности.'}</p>
+          ? t('common.theGroupIsPublishedIts')
+          : t('common.theGroupIsNotPublished')}</p>
       </div>
       <div class="card-actions">${acts}</div>
     </article>`;
@@ -872,11 +864,11 @@ function renderAttached() {
   const items = state.attachments;
   const box = $('#attachedList');
   if (!items.length) {
-    box.innerHTML = '<div class="empty">Сейчас этот компьютер ничего не занимает.</div>';
+    box.innerHTML = `<div class="empty">${t('common.thisComputerHasNothingTaken')}</div>`;
     return;
   }
 
-  const label = { attaching: 'занимается…', attached: 'занято', detaching: 'освобождается…', error: 'ошибка' };
+  const label = { attaching: t('common.taking'), attached: t('common.taken'), detaching: t('common.releasing'), error: t('common.error') };
   box.innerHTML = items.map((a) => `
     <article class="card ${a.state === 'error' ? 'error' : a.state === 'attached' ? 'mine' : ''}">
       <div class="card-main">
@@ -886,22 +878,22 @@ function renderAttached() {
           <span class="pill ${a.state === 'error' ? 'err' : 'mine'}">${esc(label[a.state] || a.state)}</span>
           ${a.state === 'attaching' && a.stage ? `<span class="pill warn">${esc(a.stage)}</span>` : ''}
           ${a.self ? '<span class="pill plain">своё устройство</span>' : ''}
-          ${a.mode === 'bridge' ? '<span class="pill warn" title="Карта подключена в общий мост владельца: остальные узлы работают в той же сети одновременно с вами">в общем мосту</span>' : ''}
+          ${a.mode === 'bridge' ? `<span class="pill warn" title="${t('app.nicConnectedToSharedBridgeTitle')}">${t('common.inTheSharedBridge')}</span>` : ''}
           ${a.orphan ? '<span class="pill plain">вне приложения</span>' : ''}
         </div>
         <div class="card-meta">
           <span>источник: <b>${esc(a.nodeName)}</b> (${esc(a.host)})</span>
           <span>занято: ${esc(since(a.attachedAt || a.since))}</span>
-          ${a.lastHeartbeat ? `<span>связь с владельцем: ${esc(since(a.lastHeartbeat))} назад</span>` : ''}
+          ${a.lastHeartbeat ? `<span>${t('app.connectionWithOwnerAgo', { time: esc(since(a.lastHeartbeat)) })}</span>` : ''}
           ${a.lastError ? `<span class="pill err">${esc(a.lastError)}</span>` : ''}
         </div>
         <div class="card-meta">
-          ${a.parts.map((p) => `<span>${esc(p.description || p.deviceId)}${partState(p)} ${p.comNote ? `<span class="pill warn" title="Имя порта владельца здесь занято">${esc(p.comNote)}</span>` : ''} ${p.traffic ? trafficPill(p.traffic) : ''}</span>`).join('')}
+          ${a.parts.map((p) => `<span>${esc(p.description || p.deviceId)}${partState(p)} ${p.comNote ? `<span class="pill warn" title="${t('common.theOwnersPortNameIs')}">${esc(p.comNote)}</span>` : ''} ${p.traffic ? trafficPill(p.traffic) : ''}</span>`).join('')}
         </div>
         ${a.parts.filter((p) => p.adapter && (p.ip || p.ipNote)).map((p) => `<div class="card-meta"><span>${
           p.ip ? adapterIpText(p.ip, p.ipApplied) : `<span class="pill warn">${esc(p.ipNote)}</span>`}</span>${
           !p.ip && p.suggest ? `<button class="btn small primary" data-held-ip="${esc(a.id)}|${esc(p.deviceId)}"
-            title="Откроется окно настроек с предложенным адресом — останется нажать «Сохранить»">Задать ${esc(p.suggest.address)}</button>` : ''}</div>
+            title="${t('common.theSettingsWindowWillOpen')}">${t('app.setAddress', { address: esc(p.suggest.address) })}</button>` : ''}</div>
           ${p.usedIps?.length ? `<div class="card-meta"><span>${usedIpsText(p.usedIps)}</span></div>` : ''}`).join('')}
         ${a.parts.some((p) => p.hasTransport) && !a.parts.some((p) => p.traffic)
           ? '<p class="hint">Скорость не показывается: у владельца выключен учёт трафика.</p>' : ''}
@@ -910,8 +902,8 @@ function renderAttached() {
       <div class="card-actions">
         ${canEdit() && a.state === 'attached' ? a.parts.filter((p) => p.type === 'net').map((p) => `<button class="btn small"
           data-held-ip="${esc(a.id)}|${esc(p.deviceId)}" title="${p.adapter
-            ? 'Поменять настройки вашего адаптера этой карты'
-            : 'Карта в брони: попросить владельца поменять её настройки — при освобождении вернутся прежние'}"
+            ? t('common.changeTheSettingsOfYour')
+            : t('common.theNicIsBookedAsk')}"
           >Настройки IP${a.parts.filter((x) => x.type === 'net').length > 1 ? ` · ${esc(p.title || p.key)}` : ''}</button>`).join('') : ''}
         ${canEdit() && a.state === 'attached' ? driverButtons(a) : ''}
         ${canEdit() ? `<button class="btn small danger" data-detach="${esc(a.id)}">Освободить</button>` : ''}
@@ -929,7 +921,7 @@ function driverButtons(a, onlyDeviceId = null) {
   const parts = a.parts.filter((p) => p.hasTransport && p.type === 'usb' && (!onlyDeviceId || p.deviceId === onlyDeviceId));
   return parts.filter((p) => !p.driverBlock).map((p) => `<button class="btn small"
     data-driver="${esc(a.id)}|${esc(p.deviceId)}"
-    title="Взять у владельца драйвер этого устройства и установить его на этом компьютере"
+    title="${t('common.fetchThisDevicesDriverFrom')}"
     >Копировать драйвер${parts.length > 1 ? ` · ${esc(p.description || p.key)}` : ''}</button>`).join('');
 }
 
@@ -944,11 +936,11 @@ function driverNotes(a) {
 
 /** Во что превратилось устройство занятия на этом компьютере. */
 function partState(p) {
-  if (!p.hasTransport) return ' → бронь';
-  if (p.comPort) return ` → порт «${esc(p.comPort)}»`;
-  if (p.adapter) return ` → адаптер «${esc(p.adapter)}»`;
-  if (p.vhciPort !== null && p.vhciPort !== undefined) return ` → порт VHCI ${esc(p.vhciPort)}`;
-  return ' → подключается';
+  if (!p.hasTransport) return t('common.booking');
+  if (p.comPort) return t('app.arrowPort', { name: esc(p.comPort) });
+  if (p.adapter) return t('app.arrowAdapter', { name: esc(p.adapter) });
+  if (p.vhciPort !== null && p.vhciPort !== undefined) return t('app.arrowVhciPort', { name: esc(p.vhciPort) });
+  return t('common.connecting');
 }
 
 /** Метка у владельца из другой сети — прямо в карточке устройства. */
@@ -966,8 +958,8 @@ function remoteMark(ownerId) {
  * а занять его не выходит, смотреть надо именно сюда.
  */
 function remoteHint(p) {
-  const via = p.viaName ? `узнан от «${p.viaName}»` : 'узнан из каталога';
-  return `${via}. Обмен идёт с ним напрямую, посредник в передаче данных не участвует.`;
+  const via = p.viaName ? t('app.learnedFrom', { name: p.viaName }) : t('common.learnedViaCatalog');
+  return t('app.exchangeGoesDirectly', { via });
 }
 
 function renderPeers() {
@@ -991,17 +983,17 @@ function renderPeers() {
   const peers = state.peers.map((p) => {
     const url = nodeUrl(p);
     return `
-    <article class="card ${p.online ? 'free' : 'offline'}${url ? ' node-link' : ''}"${url ? ` data-node-url="${esc(url)}" title="Открыть интерфейс узла в новой вкладке"` : ''}>
+    <article class="card ${p.online ? 'free' : 'offline'}${url ? ' node-link' : ''}"${url ? ` data-node-url="${esc(url)}" title="${t('common.openTheNodesInterfaceIn')}"` : ''}>
       <div class="card-main">
         <div class="card-title">${url ? `<a class="node-name" href="${esc(url)}" target="_blank" rel="noopener">${esc(p.name)}</a>` : esc(p.name)}
-          <span class="pill ${p.online ? 'free' : 'err'}">${p.online ? 'в сети' : 'не отвечает'}</span>${gatewayMark(p)}
+          <span class="pill ${p.online ? 'free' : 'err'}">${p.online ? t('common.online') : t('common.notResponding')}</span>${gatewayMark(p)}
           ${p.origin && p.origin !== 'local' ? `<span class="pill remote" title="${esc(remoteHint(p))}">другая сеть</span>` : ''}
           ${p.redirected ? natMark({ ownerRedirected: true }) : ''}
-          ${p.realmLabel ? `<span class="pill plain" title="круг доверия ${esc(p.realm || '')}">${esc(p.realmLabel)}</span>` : ''}</div>
+          ${p.realmLabel ? `<span class="pill plain" title="${t('app.trustCircle', { realm: esc(p.realm || '') })}">${esc(p.realmLabel)}</span>` : ''}</div>
         <div class="card-meta">
           <span>адрес: <b>${esc(p.address)}</b>:${esc(p.apiPort)}</span>
-          ${p.origin !== 'local' && p.network ? `<span>сеть: ${esc(p.network)}</span>` : ''}
-          ${p.redirected ? `<span>объявляется из ${esc(p.redirected.network)}, слышен в ${esc(p.redirected.heardOn)}</span>` : ''}
+          ${p.origin !== 'local' && p.network ? `<span>${t('app.networkLabel', { name: esc(p.network) })}</span>` : ''}
+          ${p.redirected ? `<span>${t('app.announcedFromHeardOn', { network: esc(p.redirected.network), heardOn: esc(p.redirected.heardOn) })}</span>` : ''}
           <span>платформа: ${esc(p.platform || '—')}</span>
           <span>версия: ${esc(p.version || '—')}</span>
           <span>устройств: <b>${esc(p.deviceCount)}</b> (занято ${esc(p.busyCount)})</span>
@@ -1014,8 +1006,8 @@ function renderPeers() {
   }).join('');
 
   box.innerHTML = selfCard
-    + (peers ? '<p class="hint">Нажмите на узел, чтобы открыть его интерфейс в новой вкладке.</p>' + peers
-      : '<div class="empty">Других узлов в сети не найдено.</div>');
+    + (peers ? `<p class="hint">${t('common.clickANodeToOpen')}</p>` + peers
+      : `<div class="empty">${t('common.noOtherNodesFoundOn')}</div>`);
 }
 
 /**
@@ -1072,24 +1064,24 @@ document.addEventListener('click', (ev) => {
     const reserve = t.dataset.reserve === '1';
     chooseRoute(nodeId, target, (routeKey) => action(t, () => post('/api/v1/attach', { nodeId, target, routeKey }),
       reserve
-        ? 'Забронировано. В системе устройство не появится: подключайтесь к нему физически'
-        : 'Занято'));
+        ? t('common.bookedTheDeviceWillNot')
+        : t('common.taken')));
   } else if (t.dataset.join) {
     const [nodeId, target] = splitLast(t.dataset.join);
     chooseRoute(nodeId, target, (routeKey) => action(t, async () => {
       const r = await post('/api/v1/attach', { nodeId, target, mode: 'bridge', routeKey });
       offerBridgeIp(r);
-    }, 'Подключено в мост: адаптер появится в «Сетевых подключениях»'));
+    }, t('common.joinedToTheBridgeAn')));
   } else if (t.dataset.take) {
     const [nodeId, target] = t.dataset.take.split('|');
-    if (confirm('Забрать устройство себе? Тот, кто с ним работает, потеряет соединение без предупреждения.')) {
-      action(t, () => post('/api/v1/attach', { nodeId, target, force: true }), 'Устройство у вас');
+    if (confirm(t('common.takeTheDeviceBackWhoever'))) {
+      action(t, () => post('/api/v1/attach', { nodeId, target, force: true }), t('common.theDeviceIsYours'));
     }
   } else if (t.dataset.detach) {
-    action(t, () => post('/api/v1/detach', { id: t.dataset.detach }), 'Освобождено');
+    action(t, () => post('/api/v1/detach', { id: t.dataset.detach }), t('common.released'));
   } else if (t.dataset.force) {
-    if (confirm('Освободить принудительно? Тот, кто с ним работает, потеряет соединение.')) {
-      action(t, () => post('/api/v1/force-release', { target: t.dataset.force }), 'Освобождено');
+    if (confirm(t('common.forcereleaseWhoeverWorksWithIt'))) {
+      action(t, () => post('/api/v1/force-release', { target: t.dataset.force }), t('common.released'));
     }
   } else if (t.dataset.share) {
     const [deviceId, flag] = t.dataset.share.split('|');
@@ -1097,7 +1089,7 @@ document.addEventListener('click', (ev) => {
   } else if (t.dataset.ask) {
     const [nodeId, target, title] = t.dataset.ask.split('|');
     askContext = { nodeId, target };
-    $('#askTarget').textContent = `Цель: ${title}`;
+    $('#askTarget').textContent = t('app.targetLabel', { title });
     $('#askMessage').value = '';
     $('#askDialog').showModal();
   } else if (t.dataset.cancelRequest) {
@@ -1105,15 +1097,15 @@ document.addEventListener('click', (ev) => {
   } else if (t.dataset.groupShare) {
     const [groupId, flag] = t.dataset.groupShare.split('|');
     action(t, () => post('/api/v1/group/share', { groupId, shared: flag === '1' }),
-      flag === '1' ? 'Группа опубликована' : 'Группа снята с публикации');
+      flag === '1' ? t('common.groupPublished') : t('common.groupUnpublished'));
   } else if (t.dataset.editGroup) {
     openGroupDialog(state.localGroups.find((g) => g.id === t.dataset.editGroup));
   } else if (t.dataset.update) {
     const act = t.dataset.update;
-    if (act === 'rollback' && !confirm('Откатиться на предыдущую версию? Приложение перезапустится, подключения к устройствам оборвутся, а нынешняя версия будет помечена плохой на этом компьютере.')) return;
-    if ((act === 'restart' || act === 'now') && !confirm('Перезапустить приложение сейчас? Подключения к устройствам, которые вы занимаете или отдаёте, оборвутся.')) return;
+    if (act === 'rollback' && !confirm(t('common.rollBackToThePrevious'))) return;
+    if ((act === 'restart' || act === 'now') && !confirm(t('common.restartTheAppNowConnections'))) return;
     action(t, () => post(`/api/v1/update/${act}`, act === 'approve' ? { version: t.dataset.version } : {}),
-      act === 'restart' || act === 'now' ? 'Обновление…' : act === 'rollback' ? 'Откат…' : null);
+      act === 'restart' || act === 'now' ? t('common.updating') : act === 'rollback' ? t('common.rollingBack') : null);
   } else if (t.dataset.driver) {
     const [id, deviceId] = splitLast(t.dataset.driver);
     openDriverDialog(id, deviceId);
@@ -1134,21 +1126,23 @@ document.addEventListener('change', (ev) => {
       const lost = net ? neighborsOnNetwork(net.cidr) : [];
       const names = lost.slice(0, 8).map((p) => p.name).join(', ');
       const msg = net
-        ? `Приложение перестанет искать узлы в сети ${net.cidr} (${iface}).${lost.length ? ` Соседи из неё (${lost.length}: ${names}${lost.length > 8 ? '…' : ''}) пропадут из списка.` : ''} Продолжить?`
-        : `Приложение перестанет использовать «${iface}» для поиска узлов. Продолжить?`;
+        ? (lost.length
+            ? t('app.stopSearchingNetworkWithNeighbors', { cidr: net.cidr, iface, count: lost.length, names, ellipsis: lost.length > 8 ? '…' : '' })
+            : t('app.stopSearchingNetworkSimple', { cidr: net.cidr, iface }))
+        : t('app.stopSearchingIfaceConfirm', { iface });
       if (!confirm(msg)) { t.checked = false; return; }
       now.add(iface);
     } else {
       now.delete(iface);
     }
     post('/api/v1/settings', { discoveryExclude: [...now] })
-      .then(() => toast(t.checked ? 'Карта исключена из обнаружения — её можно пробросить' : 'Карта снова участвует в обнаружении', 'ok'))
+      .then(() => toast(t.checked ? t('common.theNicIsExcludedFrom') : t('common.theNicTakesPartIn'), 'ok'))
       .catch((e) => { t.checked = !t.checked; toast(e.message, 'err'); });
     return;
   }
   if (t.dataset.purpose) {
     post('/api/v1/purpose', { deviceId: t.dataset.purpose, purpose: t.value })
-      .then(() => toast('Описание сохранено', 'ok'))
+      .then(() => toast(t('common.descriptionSaved'), 'ok'))
       .catch((e) => toast(e.message, 'err'));
   } else if (t.id === 'autoShare') {
     post('/api/v1/settings', { autoShareNew: t.checked }).catch((e) => toast(e.message, 'err'));
@@ -1160,7 +1154,7 @@ document.addEventListener('change', (ev) => {
     post('/api/v1/autostart', { enabled: wanted })
       .then((st) => {
         t.checked = Boolean(st.enabled);
-        toast(st.enabled ? 'Автозапуск включён' : 'Автозапуск выключен', 'ok');
+        toast(st.enabled ? t('common.autostartEnabled') : t('common.autostartDisabled'), 'ok');
       })
       .catch((e) => { t.checked = !wanted; toast(e.message, 'err'); })
       .finally(() => { t.disabled = false; });
@@ -1198,7 +1192,7 @@ $('#requestDialog').addEventListener('close', async () => {
   const accept = dlg.returnValue === 'accept';
   try {
     await post('/api/v1/request/answer', { requestId: req.id, accept });
-    toast(accept ? 'Устройство отдано' : 'В запросе отказано', accept ? 'ok' : '');
+    toast(accept ? t('common.deviceHandedOver') : t('common.requestDeclined'), accept ? 'ok' : '');
   } catch (e) {
     toast(e.message, 'err');
   }
@@ -1220,7 +1214,7 @@ $('#btnNetDiag').addEventListener('click', async (ev) => {
 });
 $('#diagClose').addEventListener('click', () => $('#diagDialog').close());
 $('#diagCopy').addEventListener('click', () => {
-  navigator.clipboard?.writeText($('#diagText').textContent).then(() => toast('Скопировано', 'ok'), () => toast('Не удалось скопировать — выделите текст вручную', 'err'));
+  navigator.clipboard?.writeText($('#diagText').textContent).then(() => toast(t('common.copied'), 'ok'), () => toast(t('common.copyFailedSelectTheText'), 'err'));
 });
 
 $('#routeDialog').addEventListener('close', () => {
@@ -1249,16 +1243,14 @@ function offerBridgeIp(r) {
   if (!part) return;
   const s = part.suggest;
   bridgeIpContext = { attachmentId: r.id, deviceId: part.deviceId, suggest: s };
-  $('#bridgeIpNote').textContent =
-    `В сети карты у владельца DHCP, скорее всего, нет. Предлагаем свободный адрес `
-    + `для вашего адаптера «${part.adapter}» — иначе приборы той сети не увидят этот компьютер.`;
+  $('#bridgeIpNote').textContent = t('app.bridgeIpNote', { adapter: part.adapter });
   $('#bridgeIpInput').value = s.address || '';
   const extra = [
-    s.prefixLength != null ? `маска /${s.prefixLength}` : null,
-    (s.gateways || []).length ? `шлюз ${s.gateways.join(', ')}` : null,
+    s.prefixLength != null ? t('app.maskPrefix', { length: s.prefixLength }) : null,
+    (s.gateways || []).length ? `${t('app.gatewaysList', { list: s.gateways.join(', ') })}` : null,
     (s.dns || []).length ? `DNS ${s.dns.join(', ')}` : null,
   ].filter(Boolean).join(', ');
-  $('#bridgeIpExtra').textContent = extra ? `Остальное подставится из сети владельца: ${extra}.` : '';
+  $('#bridgeIpExtra').textContent = extra ? t('app.restWillComeFromOwnerNetwork', { extra }) : '';
   $('#bridgeIpDialog').showModal();
 }
 
@@ -1270,7 +1262,8 @@ $('#bridgeIpDialog').addEventListener('close', async () => {
   const address = $('#bridgeIpInput').value.trim();
   // Лёгкая проверка на месте: полный разбор всё равно делает сервер.
   if (!/^(\d{1,3})(\.\d{1,3}){3}$/.test(address)) {
-    toast(`«${address || 'пусто'}» не похоже на IPv4-адрес — задайте его позже кнопкой «Настройки IP»`, 'err');
+    const addrText = address || t('common.empty');
+    toast(t('app.notAnIPv4Address', { address: addrText }), 'err');
     return;
   }
   const s = ctx.suggest;
@@ -1286,7 +1279,7 @@ $('#bridgeIpDialog').addEventListener('close', async () => {
         dns: s.dns || [],
       },
     });
-    toast(`Адрес ${address} задан адаптеру`, 'ok');
+    toast(t('app.addressSetToAdapter', { address }), 'ok');
     routeWarning(res);
   } catch (e) {
     toast(e.message, 'err');
@@ -1299,7 +1292,7 @@ $('#askDialog').addEventListener('close', async () => {
   askContext = null;
   try {
     await post('/api/v1/request', { nodeId, target, message: $('#askMessage').value });
-    toast('Запрос отправлен держателю', 'ok');
+    toast(t('common.requestSentToTheHolder'), 'ok');
   } catch (e) {
     toast(e.message, 'err');
   }
@@ -1307,7 +1300,7 @@ $('#askDialog').addEventListener('close', async () => {
 
 // --- диалог группы ---
 function openGroupDialog(group) {
-  $('#groupDialogTitle').textContent = group ? 'Изменение группы' : 'Новая группа';
+  $('#groupDialogTitle').textContent = group ? t('common.editGroup') : t('common.newGroup');
   $('#groupName').value = group ? group.name : '';
   $('#groupDescription').value = group ? group.description : '';
   $('#btnDeleteGroup').hidden = !group;
@@ -1325,7 +1318,7 @@ function openGroupDialog(group) {
       <label class="member">
         <input type="checkbox" value="${esc(d.deviceId)}" ${group && group.members.includes(d.deviceId) ? 'checked' : ''}>
         <span>${esc(d.icon)} ${esc(d.description)} <span class="mono">${esc(d.title)}</span></span>
-      </label>`).join('') || '<div class="empty">Нет свободных устройств: все уже состоят в других группах.</div>';
+      </label>`).join('') || '<div class="empty">' + t('common.noFreeDevicesAllAlready') + '</div>';
 
   $('#groupDialog').showModal();
 }
@@ -1337,7 +1330,7 @@ $('#groupDialog').addEventListener('close', async () => {
     if (dlg.returnValue === 'delete') {
       if (!id) return;
       await post('/api/v1/group/delete', { groupId: id });
-      toast('Группа удалена', 'ok');
+      toast(t('common.groupDeleted'), 'ok');
     } else if (dlg.returnValue === 'save') {
       const members = [...dlg.querySelectorAll('#groupMembers input:checked')].map((i) => i.value);
       await post('/api/v1/group/save', {
@@ -1346,7 +1339,7 @@ $('#groupDialog').addEventListener('close', async () => {
         description: $('#groupDescription').value,
         members,
       });
-      toast('Группа сохранена', 'ok');
+      toast(t('common.groupSaved'), 'ok');
     }
   } catch (e) {
     toast(e.message, 'err');
@@ -1362,7 +1355,7 @@ $('#loginDialog').addEventListener('close', async () => {
   if ($('#loginDialog').returnValue !== 'login') return;
   try {
     await post('/api/v1/login', { password: $('#loginPassword').value });
-    toast('Полный доступ получен', 'ok');
+    toast(t('common.fullAccessGranted'), 'ok');
     location.reload();
   } catch (e) {
     $('#loginError').textContent = e.message;
@@ -1383,10 +1376,10 @@ $('#btnSettings').addEventListener('click', () => {
   renderRealmNote();
   $('#setMetricsEnabled').checked = Boolean(c.metricsEnabled);
   $('#setMetricsToken').value = '';
-  $('#setMetricsToken').placeholder = c.metricsTokenSet ? '•••••• (токен задан)' : 'токен доступа (необязательно)';
+  $('#setMetricsToken').placeholder = c.metricsTokenSet ? t('common.tokenSet') : t('common.accessTokenOptional');
   $('#setMetricsTokenClear').checked = false;
   $('#setWebPassword').value = '';
-  $('#setWebPassword').placeholder = c.hasWebPassword ? '•••••• (задан)' : 'не задан — извне только просмотр';
+  $('#setWebPassword').placeholder = c.hasWebPassword ? t('common.set_2') : t('common.notSetViewonlyFromOutside');
   $('#setLease').value = Math.round(c.claimLeaseMs / 1000);
   $('#setLogLevel').value = c.logLevel;
   $('#setApiPort').value = c.apiPort;
@@ -1417,8 +1410,8 @@ $('#btnSettings').addEventListener('click', () => {
   box.checked = Boolean(as.enabled);
   box.disabled = !as.supported;
   $('#autostartHint').textContent = as.supported
-    ? `${as.method}. ${as.hint} Применяется сразу, а не по кнопке «Сохранить».`
-    : (as.hint || 'на этой системе автозапуск не поддерживается');
+    ? `${as.method}. ${as.hint} ${t('app.appliedImmediatelyNotBySaveButton')}`
+    : (as.hint || t('common.autostartIsNotSupportedOn'));
 
   $('#settingsNote').textContent = '';
 
@@ -1430,8 +1423,8 @@ $('#btnSettings').addEventListener('click', () => {
   // галочки о них живут у карт в «Моих устройствах» и при ручной сети скрыты.
   const excl = state.discoveryExclude || [];
   $('#setNetworkNote').textContent = c.network === 'auto'
-    ? `Идёт поиск во всех настоящих сетях.${excl.length ? ` Исключённые карты: ${excl.join(', ')}.` : ''}`
-    : 'Поиск узлов только в этой сети; карты остальных можно пробрасывать.';
+    ? `${t('app.searchingInAllNetworks')}${excl.length ? ` ${t('app.excludedCards', { cards: excl.join(', ') })}` : ''}`
+    : t('common.searchingForNodesOnThis');
 
   $('#setTypes').innerHTML = (state.deviceTypes || []).map((t) => `
     <label class="member">
@@ -1462,7 +1455,7 @@ $('#btnSaveSettings').addEventListener('click', (ev) => {
   for (let d = bad.closest('details'); d; d = d.parentElement?.closest('details')) d.open = true;
   bad.scrollIntoView({ block: 'center' });
   bad.reportValidity();
-  $('#settingsNote').textContent = 'Проверьте выделенное поле — значение вне допустимых пределов.';
+  $('#settingsNote').textContent = t('common.checkTheHighlightedFieldThe');
 });
 
 $('#settings').addEventListener('close', async () => {
@@ -1493,8 +1486,11 @@ $('#settings').addEventListener('close', async () => {
   if (patch.network !== 'auto' && patch.network !== state.config.network) {
     const lostNets = (state.self?.networks || []).filter((n) => n.cidr !== patch.network);
     const lost = lostNets.flatMap((n) => neighborsOnNetwork(n.cidr));
-    if (lostNets.length && !confirm(`Основная сеть — ${patch.network}. В остальных сетях (${lostNets.map((n) => n.cidr).join(', ')}) `
-      + `приложение перестанет искать узлы${lost.length ? `: из списка пропадут ${lost.length} (${lost.slice(0, 8).map((p) => p.name).join(', ')}${lost.length > 8 ? '…' : ''})` : ''}. Карты этих сетей можно будет пробросить. Продолжить?`)) {
+if (lostNets.length && !confirm(t('app.mainNetworkIs', { network: patch.network })
+	      + t('app.inOtherNetworks', { networks: lostNets.map((n) => n.cidr).join(', ') })
+	      + t('app.willStopSearchingNodes')
+	      + (lost.length ? t('app.nodesWillDisappear', { count: lost.length, names: lost.slice(0, 8).map((p) => p.name).join(', ') + (lost.length > 8 ? t('app.andDotMore') : '') }) : '')
+	      + t('app.cardsCanBeForwarded'))) {
       return;
     }
   }
@@ -1515,9 +1511,9 @@ $('#settings').addEventListener('close', async () => {
 
   try {
     const r = await post('/api/v1/settings', patch);
-    toast(r.needsRestart
-      ? 'Сохранено. Изменения портов и ключа вступят в силу после перезапуска.'
-      : 'Настройки сохранены', r.needsRestart ? '' : 'ok');
+toast(r.needsRestart
+	      ? t('common.savedPortAndKeyChanges')
+	      : t('common.settingsSaved'), r.needsRestart ? '' : 'ok');
   } catch (e) {
     toast(e.message, 'err');
     // Диалог уже закрылся формой, но поля в нём остались заполненными.
@@ -1561,22 +1557,22 @@ let netDraft = [];
 function renderNetworks() {
   const box = $('#netList');
   if (!netDraft.length) {
-    box.innerHTML = '<div class="fed-row muted">Ни одной сети с ключом. '
-      + 'Узел работает только в открытом круге — там, где ключ не проверяется.</div>';
+    box.innerHTML = '<div class="fed-row muted">' + t('app.noKeyNetworks') + ' '
+      + t('common.theNodeWorksOnlyIn') + '</div>';
     return;
   }
   box.innerHTML = netDraft.map((n, i) => `
     <div class="net-row" data-i="${i}">
-      <input type="text" class="net-label" maxlength="48" placeholder="название сети"
+      <input type="text" class="net-label" maxlength="48" placeholder="${t('common.networkName')}"
              value="${esc(n.label || '')}">
       <input type="password" class="net-key" autocomplete="new-password"
-             placeholder="${n.saved ? 'ключ задан — оставьте пустым' : 'введите или создайте ключ'}"
+             placeholder="${n.saved ? t('common.keySetLeaveEmpty') : t('common.enterOrCreateAKey')}"
              value="${esc(n.key || '')}">
-      <button type="button" class="btn net-gen" title="Создать случайный ключ">Ключ</button>
-      <button type="button" class="btn danger net-del" title="Удалить сеть">✕</button>
+      <button type="button" class="btn net-gen" title="${t('common.generateARandomKey')}">${t('app.keyLabel')}</button>
+      <button type="button" class="btn danger net-del" title="${t('common.removeNetwork')}">✕</button>
       <div class="net-note">${n.realm
-        ? `отпечаток <b>${esc(n.realm)}</b> — на компьютерах с тем же ключом он такой же`
-        : (n.key ? 'ключ создан: скопируйте его сейчас, после сохранения он не показывается' : 'новая сеть')}</div>
+        ? t('app.fingerprintSameKey', { realm: `<b>${esc(n.realm)}</b>` })
+        : (n.key ? t('common.keyCreatedCopyItNow') : t('common.newNetwork'))}</div>
     </div>`).join('');
 }
 
@@ -1627,14 +1623,14 @@ function renderRealmNote() {
   const c = state.config;
   const rows = [];
   if (c.isolated) {
-    rows.push('<div class="fed-row err">Узел не состоит ни в одном круге: он никого не видит '
-      + 'и никому не виден. Заведите сеть с ключом или включите открытый круг.</div>');
+rows.push('<div class="fed-row err">' + t('common.theNodeBelongsToNo') + ' '
+	      + t('common.andNoOneSeesIt') + '</div>');
   } else {
     const parts = [];
-    if (c.networkCount) parts.push(`сетей с ключом: ${c.networkCount}`);
-    parts.push(c.seeOpen ? 'узлы без ключа видим' : 'узлы без ключа не видим');
-    parts.push(c.showToOpen ? 'им видны' : 'им не видны');
-    rows.push(`<div class="fed-row muted">Сейчас: ${esc(parts.join('; '))}.</div>`);
+if (c.networkCount) parts.push(t('app.keyNetworksCount', { count: c.networkCount }));
+	    parts.push(c.seeOpen ? t('common.keylessNodesVisible') : t('common.keylessNodesHidden'));
+	    parts.push(c.showToOpen ? t('common.weAreVisibleToThem') : t('common.weAreHiddenFromThem'));
+	    rows.push(`<div class="fed-row muted">${t('app.currentStatusWithInfo', { info: esc(parts.join('; ')) })}</div>`);
   }
   $('#realmNote').innerHTML = rows.join('');
 }
@@ -1648,39 +1644,36 @@ function renderFederation() {
 
   const rows = [];
   if (d.blocked) {
-    rows.push('<div class="fed-row err">Адреса указаны, но узел не состоит ни в одном круге: включите «узлы без ключа» или задайте ключ сети — иначе обмен выключен.</div>');
+    rows.push('<div class="fed-row err">' + t('common.addressesAreSetButThe') + '</div>');
   } else if (!d.enabled) {
-    rows.push('<div class="fed-row muted">Адреса не указаны — работаем только в своей подсети.</div>');
+    rows.push('<div class="fed-row muted">' + t('common.noAddressesSetWeWork') + '</div>');
   } else {
     for (const s of d.seeds || []) {
       const mark = s.ok === true ? 'ok' : s.ok === false ? 'err' : 'muted';
       const what = s.ok === true
-        ? `узел «${esc(s.name || '?')}»${s.network ? `, сеть ${esc(s.network)}` : ''}`
-        : s.ok === false ? esc(s.error || 'нет связи') : 'ещё не опрошен';
+        ? t('app.nodeWithNameAndNetwork', { name: esc(s.name || '?') }) + (s.network ? t('app.commaNetwork', { network: esc(s.network) }) : '')
+        : s.ok === false ? esc(s.error || t('common.noLink')) : t('common.notPolledYet');
       rows.push(`<div class="fed-row ${mark}"><b>${esc(s.address)}</b> — ${what}</div>`);
     }
-    rows.push(`<div class="fed-row muted">Узлов из других сетей: ${f.remoteCount || 0};
-      в своей подсети: ${f.localCount || 0}.</div>`);
+rows.push(`<div class="fed-row muted">${t('app.nodesFromOtherNetworks', { remote: f.remoteCount || 0, local: f.localCount || 0 })}</div>`);
   }
   box.innerHTML = rows.join('');
 
   const per = a.intervalMs ? Math.round(a.intervalMs / 1000) : null;
   const channels = [a.multicast ? 'multicast' : null, a.broadcast ? 'broadcast' : null].filter(Boolean);
   const legs = (a.interfaces || []).map((l) => {
-    const heard = l.lastHeardAt ? `${esc(duration(Date.now() - l.lastHeardAt))} назад` : '<b class="err">тихо</b>';
+    const heard = l.lastHeardAt ? `${t('app.seenAgo', { duration: esc(duration(Date.now() - l.lastHeardAt)) })}` : '<b class="err">' + t('common.silent') + '</b>';
     return `${esc(l.iface)} (${esc(l.address)}) — ${heard}`;
   });
-  const twins = []
-    .concat((a.clones || []).length ? [`узел с нашим nodeId: ${a.clones.join(', ')}`] : [])
-    .concat((a.selfMachine || []).length
-      ? [`отражение с адреса этой машины (за NAT, в списке узлов не показывается): ${
-        a.selfMachine.map((n) => `«${n.name || n.nodeId.slice(0, 8)}» (${n.address})`).join(', ')}`]
+const twins = []
+	    .concat((a.clones || []).length ? [t('app.cloneNodeId', { clones: a.clones.join(', ') })] : [])
+.concat((a.selfMachine || []).length
+	      ? [t('app.selfMachineReflection', { nodes: a.selfMachine.map((n) => `«${n.name || n.nodeId.slice(0, 8)}» (${n.address})`).join(', ') })]
       : []);
-  $('#announceState').innerHTML = per
-    ? `<div class="fed-row muted">Сейчас: раз в ${per} с, отправлено ${a.sent || 0};
-       каналы: ${channels.length ? esc(channels.join(' + ')) : '<b class="err">ни одного</b>'}.</div>`
-    + (legs.length ? `<div class="fed-row muted">Слышимость по сетям: ${legs.join('; ')}.</div>` : '')
-    + (twins.length ? `<div class="fed-row err">Задвоение узла: ${esc(twins.join('; '))}.</div>` : '')
+$('#announceState').innerHTML = per
+	    ? `<div class="fed-row muted">${t('app.nowEverySec', { interval: per, sent: a.sent || 0, channels: channels.length ? esc(channels.join(' + ')) : '<b class="err">' + t('common.none') + '</b>' })}</div>`
+	    + (legs.length ? `<div class="fed-row muted">${t('app.hearabilityByNetworks', { legs: legs.join('; ') })}</div>` : '')
+	    + (twins.length ? `<div class="fed-row err">${t('app.nodeDuplication', { twins: esc(twins.join('; ')) })}</div>` : '')
     : '';
 }
 
@@ -1739,10 +1732,10 @@ setInterval(() => {
 // ------------------------------------------------------ копирование драйвера
 
 const SIGNATURE_TEXT = {
-  valid: ['ok', 'подпись верна'],
-  invalid: ['err', 'подпись не прошла проверку'],
-  none: ['err', 'не подписан'],
-};
+	  valid: ['ok', t('common.signatureValid')],
+	  invalid: ['err', t('common.signatureFailedVerification')],
+	  none: ['err', t('common.unsigned')],
+	};
 
 function setDriverDialog({ title, body, install = null }) {
   $('#driverTitle').textContent = title;
@@ -1759,10 +1752,10 @@ const driverError = (msg) => `<p class="dlg-note" style="white-space:pre-wrap">$
 
 async function openDriverDialog(id, deviceId) {
   driverToken = null;
-  setDriverDialog({
-    title: 'Копирование драйвера',
-    body: '<p class="dlg-note">Запрашиваю драйвер у владельца устройства и проверяю подпись. Это может занять до минуты…</p>',
-  });
+setDriverDialog({
+	    title: t('ui.copyingDriver'),
+	    body: '<p class="dlg-note">' + t('common.fetchingTheDriverFromThe') + '</p>',
+	  });
   $('#driverDialog').showModal();
   try {
     const r = await post('/api/v1/driver/prepare', { id, deviceId });
@@ -1771,26 +1764,25 @@ async function openDriverDialog(id, deviceId) {
     const items = r.packages.map((p) => {
       const [cls, text] = SIGNATURE_TEXT[p.signature] || ['warn', p.signature];
       return `<div class="card-meta">
-        <span><b>${esc(p.name)}</b>${p.provider ? `, ${esc(p.provider)}` : ''}${p.version ? `, версия ${esc(p.version)}` : ''}</span>
-        <span>файлов: ${esc(p.fileCount)}, ${esc(formatVolume(p.size))}</span>
+<span><b>${esc(p.name)}</b>${p.provider ? `, ${esc(p.provider)}` : ''}${p.version ? t('app.commaVersion', { version: esc(p.version) }) : ''}</span>
+	        <span>${t('app.filesCountAndSize', { count: esc(p.fileCount), size: esc(formatVolume(p.size)) })}</span>
         <span class="pill ${cls}">${esc(text)}</span>
-        ${p.signer ? `<span>издатель: ${esc(p.signer)}</span>` : ''}
+        ${p.signer ? `<span>${t('app.publisherColon', { signer: esc(p.signer) })}</span>` : ''}
       </div>${p.signatureNote ? `<p class="hint">${esc(p.signatureNote)}</p>` : ''}`;
     }).join('');
-    const warning = unsigned
-      ? `<p class="hint"><b>Внимание: подпись драйвера не подтверждена.</b>
-        64-битная Windows, скорее всего, откажется его ставить — тогда ниже будет сообщение системы. Если же поставит,
-        вы запустите код с правами ядра от неизвестного издателя. Продолжайте, только если доверяете владельцу
-        устройства «${esc(r.ownerName)}».</p>`
-      : '';
-    setDriverDialog({
-      title: 'Копирование драйвера',
-      body: `<p class="dlg-note">Устройство: <b>${esc(r.deviceTitle)}</b>. Драйвер взят у «${esc(r.ownerName)}».
-        Он будет добавлен в хранилище драйверов этого компьютера и подключится к устройству.</p>${items}${warning}`,
-      install: unsigned ? 'Всё равно установить' : 'Установить',
-    });
+const warning = unsigned
+	      ? `<p class="hint"><b>${t('common.warningTheDriverSignatureIs')}</b>
+	        ${t('common.64bitWindowsWillMostLikely')}
+	        ${t('common.youWillRunKernellevelCode')} ${t('common.ofDevice')}${esc(r.ownerName)}».</p>`
+	      : '';
+setDriverDialog({
+	      title: t('ui.copyingDriver'),
+	      body: `<p class="dlg-note">${t('app.deviceDriverFrom', { device: `<b>${esc(r.deviceTitle)}</b>`, owner: esc(r.ownerName) })}
+	        ${t('app.willBeAddedToStore')}</p>${items}${warning}`,
+	      install: unsigned ? t('common.installAnyway') : t('common.install'),
+	    });
   } catch (e) {
-    setDriverDialog({ title: 'Скопировать драйвер не получилось', body: driverError(e.message) });
+    setDriverDialog({ title: t('common.couldNotCopyTheDriver'), body: driverError(e.message) });
   }
 }
 
@@ -1798,23 +1790,23 @@ $('#driverInstall').addEventListener('click', async () => {
   if (!driverToken) return;
   const btn = $('#driverInstall');
   btn.disabled = true;
-  btn.textContent = 'Устанавливаю…';
+  btn.textContent = t('common.installing');
   const token = driverToken;
   driverToken = null;
   try {
     const r = await post('/api/v1/driver/install', { token });
     const rows = r.results.map((x) => `<div class="card-meta">
-      <span class="pill ${x.ok ? 'ok' : 'err'}">${x.ok ? 'установлен' : 'не установлен'}</span>
+      <span class="pill ${x.ok ? 'ok' : 'err'}">${x.ok ? t('common.installed') : t('common.notInstalled')}</span>
       <b>${esc(x.infName)}</b></div>
       <pre class="hint" style="white-space:pre-wrap">${esc(x.output)}</pre>`).join('');
-    setDriverDialog({
-      title: r.ok ? 'Драйвер установлен' : 'Драйвер установить не удалось',
-      body: rows + (r.ok
-        ? '<p class="dlg-note">Если устройство уже подключено, Windows подхватит драйвер сама; если нет — освободите устройство и займите его снова.</p>'
-        : ''),
-    });
-  } catch (e) {
-    setDriverDialog({ title: 'Драйвер установить не удалось', body: driverError(e.message) });
+setDriverDialog({
+	      title: r.ok ? t('common.driverInstalled') : t('common.failedToInstallTheDriver'),
+	      body: rows + (r.ok
+	        ? '<p class="dlg-note">' + t('common.ifTheDeviceIsAlready') + '</p>'
+	        : ''),
+	    });
+	  } catch (e) {
+	    setDriverDialog({ title: t('common.failedToInstallTheDriver'), body: driverError(e.message) });
   }
 });
 
@@ -1829,16 +1821,16 @@ $('#driverDialog').addEventListener('close', () => {
 // ------------------------------------------------------------- обновление
 
 const UPDATE_PHASES = {
-  checking: ['Проверка обновления', ''],
-  downloading: ['Скачивание обновления', ''],
-  queued: ['Обновление в очереди', ''],
-  waiting: ['Обновление готово к установке', ''],
-  'awaiting-approval': ['Доступно обновление', ''],
-  restarting: ['Перезапуск для обновления', ''],
-  trial: ['Проверка новой версии', ''],
-  'needs-installer': ['Нужен установщик', ''],
-  error: ['Обновление не удалось', 'err'],
-};
+	  checking: [t('common.checkingForUpdates'), ''],
+	  downloading: [t('common.downloadingTheUpdate'), ''],
+	  queued: [t('common.updateQueued'), ''],
+	  waiting: [t('common.updateReadyToInstall'), ''],
+	  'awaiting-approval': [t('common.updateAvailable'), ''],
+	  restarting: [t('common.restartingToUpdate'), ''],
+	  trial: [t('common.checkingANewVersion'), ''],
+	  'needs-installer': [t('common.installerNeeded'), ''],
+	  error: [t('common.updateFailed'), 'err'],
+	};
 
 /**
  * Тексты полосы с живым обратным отсчётом. Сервер собирает строки один раз,
@@ -1851,7 +1843,7 @@ function liveUpdateText(u) {
     .replace(/(очередь: \d+-й, перезапуск примерно через) \d+ с/, (m, head) => (u.eligibleAt ? `${head} ${left(u.eligibleAt)} с` : m));
   let message = u.message ? fix(u.message) : '';
   if (u.phase === 'trial' && u.trialUntil) {
-    message = `пробный запуск версии ${u.running}: подтверждение через ${left(u.trialUntil)} с`;
+    message = t('app.trialRunVersion', { running: u.running, left: left(u.trialUntil) });
   }
   return { message, waiting: (u.waiting || []).map(fix) };
 }
@@ -1861,7 +1853,7 @@ function renderUpdate() {
   const bar = $('#updateBar');
   const u = state.update;
   const warnRunning = u && u.reportedRunning;
-  const info = (u && UPDATE_PHASES[u.phase]) || (warnRunning ? ['Версия сообщена как испорченная', 'err'] : null);
+  const info = (u && UPDATE_PHASES[u.phase]) || (warnRunning ? [t('common.versionReportedAsCorrupted'), 'err'] : null);
   if (!u || !info) { bar.hidden = true; return; }
 
   const ver = u.installer?.version || u.candidate?.version || u.staged?.version || '';
@@ -1887,15 +1879,15 @@ function renderUpdate() {
       ? `<a class="btn small primary" href="${esc(u.installer.url)}" target="_blank" rel="noopener">Скачать установщик у «${esc(u.installer.from)}»</a>`
       : '<span class="banner-hint">Ни у одного из соседей нет установщика для раздачи — возьмите его у администратора.</span>');
   }
-  const running = warnRunning
-    ? `<p class="banner-hint"><b>Внимание:</b> ${warnRunning.nodes.map((n) => `«${esc(n)}»`).join(', ')} сообщают, что установленная здесь версия ${esc(warnRunning.version)} испорчена${warnRunning.reasons.length ? `: ${esc(warnRunning.reasons.join('; '))}` : ''}. Если у вас всё работает, можно ничего не делать; если нет — откатитесь на предыдущую.</p>`
-    : '';
-  const failed = (u.failed || []).length
-    ? `<p class="banner-hint">Не прошли проверку на этом компьютере: ${u.failed.map((f) => `${esc(f.version)} (${esc(f.reason)})`).join('; ')}.</p>` : '';
+const running = warnRunning
+	    ? `<p class="banner-hint"><b>${t('app.warningReportedRunning')}</b> ${t('app.nodesReportCorrupted', { nodes: warnRunning.nodes.map((n) => `«${esc(n)}»`).join(', '), version: esc(warnRunning.version) })}${warnRunning.reasons.length ? `: ${esc(warnRunning.reasons.join('; '))}` : ''}. ${t('app.ifEverythingWorksDoNothing')}</p>`
+	    : '';
+	  const failed = (u.failed || []).length
+	    ? `<p class="banner-hint">${t('app.notPassedVerification', { details: u.failed.map((f) => `${esc(f.version)} (${esc(f.reason)})`).join('; ') })}</p>` : '';
 
   const live = liveUpdateText(u);
   bar.className = `banner ${info[1]}`;
-  bar.innerHTML = `<b>${esc(info[0])}${ver ? ` — версия ${esc(ver)}` : ''}</b>
+  bar.innerHTML = `<b>${esc(info[0])}${ver ? t('app.dashVersion', { version: esc(ver) }) : ''}</b>
     ${live.message ? `<p class="banner-hint" data-live="msg">${esc(live.message)}</p>` : ''}
     ${u.phase === 'waiting' && live.waiting.length ? `<ul>${live.waiting.map((w, i) => `<li data-live="w${i}">${esc(w)}</li>`).join('')}</ul>` : ''}
     ${running}
@@ -1908,17 +1900,17 @@ function renderUpdateStatusLine() {
   const u = state?.update;
   const line = $('#updateStatusLine');
   if (!u) return;
-  const parts = [`Запущена версия ${u.running}.`];
-  if (!u.supported) parts.push(`Обновление здесь недоступно: ${u.unsupportedReason}.`);
-  else if (u.sharing) parts.push(`Эта версия готова к раздаче соседям.`);
-  if (u.previous) parts.push(`Предыдущая версия ${u.previous} сохранена для отката.`);
-  line.textContent = parts.join(' ');
-  $('#setUpdateMode').disabled = !u.supported;
-  const rb = $('#btnRollback');
-  if (rb) {
-    rb.hidden = !(u.supported && u.canRollback && canEdit());
-    rb.textContent = `Откатить на версию ${u.previous || ''}`;
-  }
+const parts = [t('app.runningVersion', { running: u.running })];
+	  if (!u.supported) parts.push(t('app.updateNotAvailable', { reason: u.unsupportedReason }));
+	  else if (u.sharing) parts.push(t('app.versionReadyToShare'));
+	  if (u.previous) parts.push(t('app.previousVersionSaved', { previous: u.previous }));
+	  line.textContent = parts.join(' ');
+	  $('#setUpdateMode').disabled = !u.supported;
+	  const rb = $('#btnRollback');
+	  if (rb) {
+	    rb.hidden = !(u.supported && u.canRollback && canEdit());
+	    rb.textContent = t('app.rollbackToVersion', { version: u.previous || '' });
+	  }
 }
 
 /**
@@ -1929,7 +1921,7 @@ function silentHolderPill(claim) {
   if (!claim || !claim.holderSilentMs || !claim.leaseMs) return '';
   if (claim.holderSilentMs < claim.leaseMs / 2) return '';
   const left = Math.max(0, Math.round((claim.expiresAt - Date.now()) / 1000));
-  return ` <span class="pill warn" title="Держатель не присылает проверку связи. Если связь не вернётся, аренда кончится и устройство освободится само.">держатель не отвечает ${Math.round(claim.holderSilentMs / 1000)} с · освободится через ${left} с</span>`;
+  return ` <span class="pill warn" title="${t('common.theHolderSendsNoHeartbeat')}">${t('app.holderNotResponding', { seconds: Math.round(claim.holderSilentMs / 1000) })}${t('app.willFreeIn', { seconds: left })}</span>`;
 }
 
 
@@ -1948,8 +1940,7 @@ function routeWarning(res) {
   const bad = res?.routeWarn || [];
   if (!bad.length) return;
   const list = bad.slice(0, 5).map((b) => `${b.ip} → «${b.via}»`).join(', ');
-  toast(`Внимание: к ${bad.length} адресам этой сети Windows шлёт пакеты не через мост (${list}${bad.length > 5 ? '…' : ''}). `
-    + 'Откройте «Сеть» → «Диагностика моста» и пришлите снимок.', 'err');
+toast(t('app.warningRouteToAddresses', { count: bad.length, list: list + (bad.length > 5 ? '…' : '') }) + t('app.openBridgeDiagnostics'), 'err');
 }
 
 /** Запись каталога по владельцу и цели — и устройство, и группа, и участник группы. */
@@ -1972,11 +1963,13 @@ function chooseRoute(nodeId, target, go) {
   const routes = entry?.ownerRoutes || [];
   if (routes.length < 2) { go(null); return; }
 
-  $('#routeTarget').textContent = `Узел «${entry.ownerName}» виден из нескольких сетей. Выберите, через какую выполнить подключение.`;
+  $('#routeTarget').textContent = t('app.nodeSeenFromSeveralNetworks', { name: entry.ownerName });
   $('#routeList').innerHTML = routes.map((r, i) => {
-    const how = r.via
-      ? `через шлюз «${esc(r.via.name || '?')}»${r.mode === 'tunnel' ? ' — туннель (прямого маршрута нет)' : r.mode === 'direct' ? ' — маршрут есть, идём напрямую' : ' — способ ещё проверяется'}`
-      : 'напрямую в вашей сети';
+const how = r.via
+	      ? (r.mode === 'tunnel' ? t('app.viaGatewayTunnel', { name: esc(r.via.name || '?') })
+	         : r.mode === 'direct' ? t('app.viaGatewayDirect', { name: esc(r.via.name || '?') })
+	         : t('app.viaGatewayChecking', { name: esc(r.via.name || '?') }))
+	      : t('common.directlyOnYourNetwork');
     return `<label class="route-opt"><input type="radio" name="route" value="${esc(r.key)}" ${i === 0 ? 'checked' : ''}>
       <span><b class="mono">${esc(r.address)}</b> <span class="muted">${esc(r.network || '')}</span><br><span class="muted">${how}</span></span></label>`;
   }).join('');
@@ -1997,5 +1990,5 @@ $('#btnMetricsGen').addEventListener('click', () => {
   $('#setMetricsToken').value = token;
   $('#setMetricsTokenClear').checked = false;
   $('#setMetricsEnabled').checked = true;
-  toast('Токен создан: скопируйте его сейчас и нажмите «Сохранить» — потом он не покажется', 'ok');
+  toast(t('common.tokenCreatedCopyItNow'), 'ok');
 });

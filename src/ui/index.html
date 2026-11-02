@@ -19,19 +19,48 @@
   </div>
 
   <div class="topbar-right">
-    <span class="dot" id="connDot" title="связь с приложением"></span>
-    <span class="cap" id="capServer" title="возможность раздавать свои устройства">раздача</span>
-    <span class="cap" id="capClient" title="возможность подключать чужие устройства">подключение</span>
-    <span class="pill plain" id="accessBadge" hidden>только просмотр</span>
+    <span class="dot" id="connDot" data-i18n-title="ui.connectionToApp" title="связь с приложением"></span>
+    <span class="cap" id="capServer" data-i18n="ui.share" data-i18n-title="ui.canShareOwn" title="возможность раздавать свои устройства">раздача</span>
+    <span class="cap" id="capClient" data-i18n="ui.connect" data-i18n-title="ui.canConnectOthers" title="возможность подключать чужие устройства">подключение</span>
+    <span class="pill plain" id="accessBadge" data-i18n="ui.viewOnly" hidden>только просмотр</span>
     <select id="langSelect" class="mini-select" title="Interface language" aria-label="Interface language">
       <option value="en">English</option>
       <option value="ru">Русский</option>
+      <option value="zh-Hans">简体中文</option>
+      <option value="zh-Hant">繁體中文</option>
+      <option value="ja">日本語</option>
+      <option value="ko">한국어</option>
+      <option value="de">Deutsch</option>
+      <option value="fr">Français</option>
+      <option value="es">Español</option>
+      <option value="es-MX">Español (Latinoamérica)</option>
+      <option value="it">Italiano</option>
+      <option value="pt-BR">Português (Brasil)</option>
+      <option value="pt-PT">Português</option>
+      <option value="nl">Nederlands</option>
+      <option value="pl">Polski</option>
+      <option value="tr">Türkçe</option>
+      <option value="sv">Svenska</option>
+      <option value="nb">Norsk bokmål</option>
+      <option value="da">Dansk</option>
+      <option value="fi">Suomi</option>
+      <option value="uk">Українська</option>
+      <option value="ar">العربية</option>
+      <option value="hi">हिन्दी</option>
+      <option value="bn">বাংলা</option>
+      <option value="id">Bahasa Indonesia</option>
+      <option value="ms">Bahasa Melayu</option>
+      <option value="vi">Tiếng Việt</option>
+      <option value="th">ไทย</option>
+      <option value="fil">Filipino</option>
+      <option value="sw">Kiswahili</option>
     </select>
-    <button class="btn" id="btnLogin" type="button" hidden>Войти</button>
-    <button class="btn" id="btnLogout" type="button" hidden>Выйти</button>
-    <button class="btn" id="btnRefresh" type="button"
-            title="Список и так обновляется сам. Нажмите, если доставили usbipd или usbip не перезапуская приложение, если подключали устройство мимо приложения или если только что воткнули переходник и хотите увидеть новый порт сразу.">Обновить</button>
-    <button class="btn" id="btnSettings" type="button">Настройки</button>
+    <button class="btn" id="btnLogin" type="button" data-i18n="common.signIn" hidden>Войти</button>
+    <button class="btn" id="btnLogout" type="button" data-i18n="common.signOut" hidden>Выйти</button>
+    <button class="btn" id="btnRefresh" type="button" data-i18n="common.refresh"
+            data-i18n-title="ui.refreshTooltip"
+            data-i18n-title="ui.refreshTooltip" title="Список и так обновляется сам. Нажмите, если доставили usbipd или usbip не перезапуская приложение, если подключали устройство мимо приложения или если только что воткнули переходник и хотите увидеть новый порт сразу.">Обновить</button>
+    <button class="btn" id="btnSettings" type="button" data-i18n="common.settings">Настройки</button>
   </div>
 </header>
 
@@ -40,24 +69,25 @@
 <div id="readonlyBar" class="banner info" hidden></div>
 
 <nav class="tabs" role="tablist">
-  <button class="tab active" data-tab="catalog" type="button">Устройства сети <span class="badge" id="cntCatalog">0</span></button>
-  <button class="tab" data-tab="mine" type="button">Мои устройства <span class="badge" id="cntMine">0</span></button>
-  <button class="tab" data-tab="groups" type="button">Группы <span class="badge" id="cntGroups">0</span></button>
-  <button class="tab" data-tab="attached" type="button">Занято мной <span class="badge" id="cntAttached">0</span></button>
-  <button class="tab" data-tab="peers" type="button">Узлы <span class="badge" id="cntPeers">0</span></button>
-  <button class="tab" data-tab="net" type="button" id="tabNet" hidden>Сеть</button>
-  <button class="tab" data-tab="log" type="button">Журнал</button>
+<button class="tab active" data-tab="catalog" type="button"><span data-i18n="ui.tab.networkDevices">Устройства сети</span> <span class="badge" id="cntCatalog">0</span></button>
+      <button class="tab" data-tab="mine" type="button"><span data-i18n="ui.tab.myDevices">Мои устройства</span> <span class="badge" id="cntMine">0</span></button>
+      <button class="tab" data-tab="groups" type="button"><span data-i18n="ui.tab.groups">Группы</span> <span class="badge" id="cntGroups">0</span></button>
+      <button class="tab" data-tab="attached" type="button"><span data-i18n="ui.tab.takenByMe">Занято мной</span> <span class="badge" id="cntAttached">0</span></button>
+      <button class="tab" data-tab="peers" type="button"><span data-i18n="ui.tab.nodes">Узлы</span> <span class="badge" id="cntPeers">0</span></button>
+      <button class="tab" data-tab="net" type="button" id="tabNet" hidden><span data-i18n="ui.tab.network">Сеть</span></button>
+      <button class="tab" data-tab="log" type="button"><span data-i18n="ui.tab.log">Журнал</span></button>
 </nav>
 
 <main>
   <section class="panel active" id="tab-catalog">
     <div class="panel-head with-search">
-      <h2>Устройства и группы, доступные в сети</h2>
+      <h2 data-i18n="ui.devicesAndGroupsHint">Устройства и группы, доступные в сети</h2>
       <input type="search" id="search" class="search" autocomplete="off"
-             placeholder="поиск: название, описание, владелец, порт…">
+             data-i18n-placeholder="ui.searchPlaceholder"
+             data-i18n-placeholder="ui.searchPlaceholder" placeholder="поиск: название, описание, владелец, порт…">
       <div class="head-controls">
-        <label class="check"><input type="checkbox" id="onlyFree"> только свободные</label>
-        <select id="typeFilter" class="mini-select"><option value="">все типы</option></select>
+        <label class="check"><input type="checkbox" id="onlyFree"> <span data-i18n="ui.freeOnly">только свободные</span></label>
+        <select id="typeFilter" class="mini-select"><option value="" data-i18n="ui.allTypes">все типы</option></select>
       </div>
     </div>
     <div id="outgoingBox"></div>
@@ -66,26 +96,26 @@
 
   <section class="panel" id="tab-mine">
     <div class="panel-head">
-      <h2>Устройства этого компьютера</h2>
-      <label class="check"><input type="checkbox" id="autoShare"> публиковать новые автоматически</label>
+      <h2 data-i18n="ui.devicesOfThisComputer">Устройства этого компьютера</h2>
+      <label class="check"><input type="checkbox" id="autoShare"> <span data-i18n="ui.publishNewAuto">публиковать новые автоматически</span></label>
     </div>
-    <p class="hint">Опубликованное устройство видно другим узлам. Занять его может любой из них — и вы сами.
+    <p class="hint" data-i18n="common.aPublishedDeviceIsVisible">Опубликованное устройство видно другим узлам. Занять его может любой из них — и вы сами.
       В поле «для чего» напишите, что это за устройство: этот текст видят все.</p>
     <div id="mineList" class="cards"></div>
   </section>
 
   <section class="panel" id="tab-groups">
     <div class="panel-head">
-      <h2>Группы устройств</h2>
-      <button class="btn primary" id="btnNewGroup" type="button">Создать группу</button>
+      <h2 data-i18n="ui.deviceGroup">Группы устройств</h2>
+      <button class="btn primary" id="btnNewGroup" type="button" data-i18n="ui.createGroup">Создать группу</button>
     </div>
-    <p class="hint">Группа — составное устройство. Для отладки платы нужны JTAG и COM сразу, и занимать их
+    <p class="hint" data-i18n="ui.groupHint">Группа — составное устройство. Для отладки платы нужны JTAG и COM сразу, и занимать их
       по отдельности бессмысленно: между двумя захватами вклинится кто-то третий. Группа занимается целиком.</p>
     <div id="groupsList" class="cards"></div>
   </section>
 
   <section class="panel" id="tab-attached">
-    <div class="panel-head"><h2>Занято этим компьютером</h2></div>
+    <div class="panel-head"><h2 data-i18n="ui.tab.takenByThisComputer">Занято этим компьютером</h2></div>
     <p class="hint">Устройства с пробросом присутствуют в «Диспетчере устройств» так же, как подключённые кабелем.
       Остальные только числятся за вами — их вы подключаете физически.</p>
     <div id="attachedList" class="cards"></div>
@@ -103,7 +133,7 @@
         <button class="btn primary" id="btnNewSwitch" type="button">Создать коммутатор</button>
         <button class="btn" id="btnNewVnic" type="button">Создать виртуальный адаптер</button>
         <button class="btn" id="btnNetRefresh" type="button">Обновить</button>
-        <button class="btn" id="btnNetDiag" type="button" title="Что реально происходит в общем мосту: у владельца — трасса ARP/ICMP по портам, у держателя — адреса, маршруты и соседи">Диагностика моста</button>
+        <button class="btn" id="btnNetDiag" type="button" data-i18n-title="ui.bridgeDiagnosticsHint" title="Что реально происходит в общем мосту: у владельца — трасса ARP/ICMP по портам, у держателя — адреса, маршруты и соседи">Диагностика моста</button>
       </div>
     </div>
     <p class="hint">Коммутатор соединяет адаптеры этого компьютера как обычный коммутатор — кадрами по MAC.
@@ -180,7 +210,7 @@
     <p id="askTarget" class="dlg-note"></p>
     <label class="field">
       <span>Сообщение держателю <em class="muted">(необязательно)</em></span>
-      <input type="text" id="askMessage" maxlength="300" placeholder="например: нужно на 15 минут, сдать прошивку">
+      <input type="text" id="askMessage" maxlength="300" data-i18n-placeholder="ui.exampleRequestMessage" placeholder="например: нужно на 15 минут, сдать прошивку">
     </label>
     <div class="dlg-actions">
       <button class="btn" value="cancel" type="submit">Отмена</button>
@@ -196,7 +226,7 @@
     <p id="bridgeIpNote" class="dlg-note"></p>
     <label class="field">
       <span>Адрес адаптера <em class="muted">(можно изменить)</em></span>
-      <input type="text" id="bridgeIpInput" placeholder="например, 192.168.1.51" autocomplete="off" spellcheck="false">
+      <input type="text" id="bridgeIpInput" data-i18n-placeholder="ui.exampleAddress" placeholder="например, 192.168.1.51" autocomplete="off" spellcheck="false">
     </label>
     <p id="bridgeIpExtra" class="dlg-note"></p>
     <div class="dlg-actions">
@@ -224,11 +254,11 @@
     <h2 id="groupDialogTitle">Группа устройств</h2>
     <label class="field">
       <span>Название</span>
-      <input type="text" id="groupName" maxlength="80" placeholder="например: Стенд отладки STM32">
+      <input type="text" id="groupName" maxlength="80" data-i18n-placeholder="ui.exampleGroupName" placeholder="например: Стенд отладки STM32">
     </label>
     <label class="field">
       <span>Описание: что это и для чего</span>
-      <input type="text" id="groupDescription" maxlength="500" placeholder="JTAG и консоль одной платы; занимать только вместе">
+      <input type="text" id="groupDescription" maxlength="500" data-i18n-placeholder="ui.exampleGroupDescription" placeholder="JTAG и консоль одной платы; занимать только вместе">
     </label>
     <div class="field">
       <span>Устройства группы</span>
@@ -267,7 +297,7 @@
 
     <label class="field">
       <span>Имя этого узла</span>
-      <input type="text" id="setName" maxlength="64" placeholder="имя компьютера">
+      <input type="text" id="setName" maxlength="64" data-i18n-placeholder="common.computerName" placeholder="имя компьютера">
       <small>Под этим именем вас видят остальные и по нему видно, кто занял устройство.</small>
     </label>
 
@@ -320,7 +350,7 @@
 
     <div class="field">
       <span><label><input type="checkbox" id="setMetricsEnabled"> Метрики для Prometheus</label></span>
-      <input type="text" id="setMetricsToken" autocomplete="off" spellcheck="false" placeholder="токен доступа (необязательно)">
+      <input type="text" id="setMetricsToken" autocomplete="off" spellcheck="false" data-i18n-placeholder="ui.tokenPlaceholder" placeholder="токен доступа (необязательно)">
       <div class="row-actions">
         <button type="button" class="btn small" id="btnMetricsGen">Создать токен</button>
         <label class="muted"><input type="checkbox" id="setMetricsTokenClear"> снять токен</label>
@@ -472,8 +502,8 @@
 
     <details class="advanced">
       <summary>Пути к утилитам USB/IP</summary>
-      <label class="field"><span>usbipd (раздача)</span><input type="text" id="setUsbipdPath" placeholder="определяется автоматически"></label>
-      <label class="field"><span>usbip (подключение)</span><input type="text" id="setUsbipPath" placeholder="определяется автоматически"></label>
+      <label class="field"><span data-i18n="ui.usbipdCap">usbipd (раздача)</span><input type="text" id="setUsbipdPath" data-i18n-placeholder="ui.autodetected" placeholder="определяется автоматически"></label>
+      <label class="field"><span data-i18n="ui.usbipCap">usbip (подключение)</span><input type="text" id="setUsbipPath" placeholder="определяется автоматически"></label>
     </details>
 
     <p class="dlg-note" id="settingsNote"></p>
@@ -493,7 +523,7 @@
     <h2>Новый коммутатор</h2>
     <label class="field">
       <span>Имя</span>
-      <input type="text" id="swName" maxlength="48" placeholder="например: Стенд">
+      <input type="text" id="swName" maxlength="48" data-i18n-placeholder="ui.switchNameExample" placeholder="например: Стенд">
     </label>
     <div class="field">
       <span>Карта — выход в её сеть</span>
