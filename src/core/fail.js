@@ -3,6 +3,9 @@
 // записи не добавляются, e.code = CAPS.
 const LEGACY_FOR = {
   CLAIM_BLOCKED: 'busy',
+  CLAIM_BLOCKED_GROUP: 'busy',
+  CLAIM_BLOCKED_BRIDGE: 'busy',
+  CLAIM_BLOCKED_DEVICE: 'busy',
   DEVICE_BUSY: 'busy',
   GROUP_BUSY: 'busy',
   GROUP_MEMBER_BUSY: 'busy',
@@ -37,10 +40,12 @@ const LEGACY_FOR = {
 // Единый конструктор ошибок с кодом и параметрами для i18n на клиенте.
 //   e.code    — legacy-слаг (совместимость с тестами и HTTP-статусами)
 //   e.srvCode — CAPS-код (для клиента-перевода)
-export function fail(code, ru, params) {
+//   extra     — свои поля поверх ошибки (например claim), как в старом errWith
+export function fail(code, ru, params, extra) {
   const err = new Error(ru);
   err.code = LEGACY_FOR[code] || code;
   err.srvCode = code;
   err.params = params || {};
+  Object.assign(err, extra);
   return err;
 }

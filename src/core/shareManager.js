@@ -398,11 +398,12 @@ if (kind === 'group') {
       const who = first.claim ? first.claim.holderName
         : first.joined ? first.joined.map((j) => j.holderName).join(', ')
         : first.reserved.nodeName;
-throw fail('CLAIM_BLOCKED',
+throw fail(kind === 'group' ? 'CLAIM_BLOCKED_GROUP' : first.joined ? 'CLAIM_BLOCKED_BRIDGE' : 'CLAIM_BLOCKED_DEVICE',
 	        kind === 'group'
 	          ? `группа занята: ${first.dev.title} — у узла "${who}"`
 	          : first.joined ? `в мост карты подключены узлы: ${who} — целиком её занять нельзя, пока они не выйдут`
 	          : `устройство занято узлом "${who}"`,
+	        { who, title: first.dev.title },
 	        { claim: first.claim ? { ...first.claim } : null, blocking: blocking.map((b) => b.dev.title) });
     }
 
@@ -517,7 +518,7 @@ throw fail('CLAIM_BLOCKED',
     const id = dev.deviceId;
     const taker = this.claims.get(id);
 if (taker) {
-	      throw fail('CARD_BUSY', `карта занята целиком узлом "${taker.holderName}" — в мост её сейчас не подключить`, { claim: { ...taker } });
+	      throw fail('CARD_BUSY', `карта занята целиком узлом "${taker.holderName}" — в мост её сейчас не подключить`, { who: taker.holderName }, { claim: { ...taker } });
 	    }
 	    if (this.preparing.has(id)) throw fail('DEVICE_PREPARING', `${dev.title} прямо сейчас готовится — попробуйте через несколько секунд`);
 	    const reserved = this.reservations.get(id);

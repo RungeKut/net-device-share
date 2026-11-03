@@ -72,6 +72,7 @@ export class Updater extends EventEmitter {
     this.messageParams = null;
     this.waiting = [];
     this.waitingCodes = [];
+    this.waitingParams = [];
     this.candidate = null;       // { version, sha256, from }
     this.staged = null;          // { version, sha256, at }
     this.needsInstaller = null;  // { version, reason, url, from, recheckAt }
@@ -303,6 +304,8 @@ this._set('trial', `пробный запуск версии ${this.running}: п
       this.staged = null;
       this.approved = null;
       this.waiting = [];
+      this.waitingCodes = [];
+      this.waitingParams = [];
       this.eligibleAt = null;
       this._set('idle', '');
     }
@@ -685,6 +688,7 @@ this._set('trial', `пробный запуск версии ${this.running}: п
     const policy = safeToRestart(this.app, { transfersActive: this.seeder?.activeCount || 0 });
     this.waiting = policy.reasons.map((r) => r.text);
     this.waitingCodes = policy.reasons.map((r) => r.code);
+    this.waitingParams = policy.reasons.map((r) => r.params || {});
 
     const selfId = this.app.config.get('nodeId');
     const peers = this.app.peers.list().filter((p) => p.online && p.version);
@@ -708,6 +712,7 @@ this.staged = null;
 	      this.noSourceSince = null;
 	      this.waiting = [];
 	      this.waitingCodes = [];
+	      this.waitingParams = [];
 	      this._set('idle', '');
 	      return;
       }
@@ -723,13 +728,15 @@ this.staged = null;
 this.waiting.push(sources.length
 	        ? 'ждём, пока соседи проверят версию в работе'
 	        : 'ни один узел сейчас не работает на этой версии — ждём, пока хотя бы один проверит её в работе');
-	      this.waitingCodes.push(sources.length ? 'UPDATE_WAITING_CANARY' : 'UPDATE_WAITING_NO_SOURCES');
+		      this.waitingCodes.push(sources.length ? 'UPDATE_WAITING_CANARY' : 'UPDATE_WAITING_NO_SOURCES');
+		      (this.waitingParams = this.waitingParams || []).push({ version: v });
 this._set('waiting', `версия ${v} подготовлена; ${this.waiting.join('; ')}`, sources.length ? 'UPDATE_WAITING_CANARY' : 'UPDATE_WAITING_NO_SOURCES', { version: v });
 	      return;
     } else if (Date.now() < wave.eligibleAt) {
 const sec = Math.ceil((wave.eligibleAt - Date.now()) / 1000);
 	      this.waiting.push(`очередь: ${wave.rank + 1}-й, перезапуск примерно через ${sec} с`);
 	      this.waitingCodes.push('UPDATE_WAVE_QUEUE');
+	      (this.waitingParams = this.waitingParams || []).push({ rank: wave.rank + 1, seconds: sec });
     }
 
 if (!policy.ok || (wave.eligibleAt !== null && Date.now() < wave.eligibleAt)) {
@@ -869,6 +876,7 @@ return {
 	        : null,
 	      waiting: this.waiting,
 	      waitingCodes: this.waitingCodes || [],
+	      waitingParams: this.waitingParams || [],
       eligibleAt: this.eligibleAt,
       retryAt: this.retryAt,
       lastError: this.lastError,

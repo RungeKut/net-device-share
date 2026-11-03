@@ -546,7 +546,7 @@ export class NetManager extends EventEmitter {
 
   async _buildUplinkLocked(rec, adapters) {
     if (this._bridgeSwitchRec()) {
-      throw fail('BRIDGE_ALREADY_EXISTS', `мост Windows уже у коммутатора «${this._bridgeSwitchRec().name}», а мост в Windows один — добавьте карту туда`);
+      throw fail('BRIDGE_ALREADY_EXISTS', `мост Windows уже у коммутатора «${this._bridgeSwitchRec().name}», а мост в Windows один — добавьте карту туда`, { name: this._bridgeSwitchRec().name });
     }
     for (const a of adapters) {
       const why = this._nicProblem(a);
@@ -554,7 +554,7 @@ export class NetManager extends EventEmitter {
     }
     const members = await bridgeMembers();
     if (members.length) {
-      throw fail('BRIDGE_FOREIGN_EXISTS', `на компьютере уже есть мост (${members.join(', ')}), собранный не приложением. Мост в Windows один — разберите его в «Сетевых подключениях»`);
+      throw fail('BRIDGE_FOREIGN_EXISTS', `на компьютере уже есть мост (${members.join(', ')}), собранный не приложением. Мост в Windows один — разберите его в «Сетевых подключениях»`, { members: members.join(', ') });
     }
     if (!driverFilesPresent()) throw fail('TAP_DRIVER_MISSING', 'нет файлов драйвера TAP (installers/windows/tap-windows6-9.27.0)');
 

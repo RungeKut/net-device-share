@@ -68,7 +68,12 @@ async function post(path, body) {
     body: JSON.stringify(body || {}),
   });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.message || data.error || `HTTP ${res.status}`);
+  if (!res.ok) {
+    const err = new Error(srv(data));
+    err.srvCode = data.srvCode;
+    err.params = data.params;
+    throw err;
+  }
   return data;
 }
 
@@ -1844,13 +1849,18 @@ function liveUpdateText(u) {
   const fix = (s) => String(s)
     .replace(/перезапуск через \d+ с/, (m) => (u.graceUntil ? `перезапуск через ${left(u.graceUntil)} с` : m))
     .replace(/(очередь: \d+-й, перезапуск примерно через) \d+ с/, (m, head) => (u.eligibleAt ? `${head} ${left(u.eligibleAt)} с` : m));
-  let message = u.messageCode ? t('srv.' + u.messageCode, u.messageParams) : u.message ? fix(u.message) : '';
+  // Кода может не оказаться в словаре (узел новее интерфейса) — тогда текст сервера.
+  const tsrv = (code, params, fallback) => {
+    const s = t('srv.' + code, params);
+    return s === 'srv.' + code ? fallback : s;
+  };
+  let message = u.messageCode ? tsrv(u.messageCode, u.messageParams, u.message) : u.message ? fix(u.message) : '';
   if (u.phase === 'trial' && u.trialUntil) {
     message = t('app.trialRunVersion', { running: u.running, left: left(u.trialUntil) });
   }
-  const waiting = (u.waiting || []).map((w) => {
-    if (w.code) return t('srv.' + w.code, w.params);
-    return fix(w);
+  const waiting = (u.waiting || []).map((w, i) => {
+    const code = (u.waitingCodes || [])[i];
+    return code ? tsrv(code, (u.waitingParams || [])[i], w) : fix(w);
   });
   return { message, waiting };
 }

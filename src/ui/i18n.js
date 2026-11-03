@@ -104,7 +104,11 @@ export function t(key, params) {
  */
 export function srv(err) {
   const c = err && (err.srvCode || err.code);
-  if (c) return t('srv.' + c, err.params);
+  if (c) {
+    const key = 'srv.' + c;
+    const known = pick(dicts[lang], key) ?? pick(dicts.ru, key);
+    if (known !== undefined) return t(key, err.params);
+  }
   return (err && err.message) || String(err);
 }
 

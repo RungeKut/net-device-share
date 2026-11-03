@@ -61,7 +61,12 @@ export function initNet(h) {
     try {
       const r = await fetch('/api/v1/net/map');
       const d = await r.json().catch(() => ({}));
-      if (!r.ok) throw new Error(d.message || `HTTP ${r.status}`);
+      if (!r.ok) {
+        const err = new Error(srv(d));
+        err.srvCode = d.srvCode;
+        err.params = d.params;
+        throw err;
+      }
       map = d;
       error = null;
     } catch (e) {
