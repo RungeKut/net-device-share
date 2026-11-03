@@ -491,12 +491,12 @@ function entryActions(entry) {
   const acts = [];
 
   if (entry.joinedByMe && entry.attachmentId) {
-    acts.push(`<button class="btn small danger" data-detach="${esc(entry.attachmentId)}">Выйти из моста</button>`);
+    acts.push(`<button class="btn small danger" data-detach="${esc(entry.attachmentId)}">${t('common.leaveTheBridge')}</button>`);
   }
   if (canJoinBridge(entry)) acts.push(joinButton(entry));
 
   if (entry.busyByMe && entry.attachmentId) {
-    acts.push(`<button class="btn small danger" data-detach="${esc(entry.attachmentId)}">Освободить</button>`);
+    acts.push(`<button class="btn small danger" data-detach="${esc(entry.attachmentId)}">${t('common.release_2')}</button>`);
     // Драйвер у владельца — рядом с «Освободить»: человек только что занял устройство
     // и именно здесь ищет, что с ним делать дальше (причины отказа — на вкладке «Занято мной»).
     const att = (state.attachments || []).find((x) => x.id === entry.attachmentId);
@@ -504,10 +504,10 @@ function entryActions(entry) {
   } else if (entry.busy) {
     // Владелец забирает своё без спроса: оборудование стоит у него.
     if (entry.ownerSelf) {
-      acts.push(`<button class="btn small danger" data-take="${esc(entry.ownerId)}|${esc(entry.target)}">Забрать себе</button>`);
-      acts.push(`<button class="btn small" data-force="${esc(entry.target)}">Просто освободить</button>`);
+      acts.push(`<button class="btn small danger" data-take="${esc(entry.ownerId)}|${esc(entry.target)}">${t('common.takeBack')}</button>`);
+      acts.push(`<button class="btn small" data-force="${esc(entry.target)}">${t('common.justRelease')}</button>`);
     } else if (entry.ownerOnline) {
-      acts.push(`<button class="btn small" data-ask="${esc(entry.ownerId)}|${esc(entry.target)}|${esc(entry.title)}">Попросить</button>`);
+      acts.push(`<button class="btn small" data-ask="${esc(entry.ownerId)}|${esc(entry.target)}|${esc(entry.title)}">${t('ui.askShort')}</button>`);
     }
   } else if (entry.ownerOnline && entry.available !== false && !entry.joinedByMe) {
     // У COM, LPT и сетевых интерфейсов проброса нет — есть только учёт
@@ -546,7 +546,7 @@ function deviceMeta(d) {
     // Настройки карты, с которыми её получит занявший.
     bits.push(ipText(m.ip));
   } else if (Array.isArray(m.addresses) && m.addresses.length) {
-    bits.push(`адреса: <span class="mono">${esc(m.addresses.map((a) => a.address).join(', '))}</span>`);
+    bits.push(`${t('app.addressesLabel')} <span class="mono">${esc(m.addresses.map((a) => a.address).join(', '))}</span>`);
   }
   return bits;
 }
@@ -619,8 +619,8 @@ function deviceCard(d, { insideGroup = false } = {}) {
           ${joinPill(d)}
           ${d.busy ? trafficPill(d.traffic) : ''}
           ${transportPill(d)}
-          ${d.ownerSelf ? '<span class="pill plain">моё</span>' : ''}
-          ${d.ownerOnline ? '' : '<span class="pill err">владелец офлайн</span>'}
+          ${d.ownerSelf ? `<span class="pill plain">${t('common.mine')}</span>` : ''}
+          ${d.ownerOnline ? '' : `<span class="pill err">${t('common.ownerOffline')}</span>`}
         </div>
         ${d.purpose ? `<div class="purpose">${esc(d.purpose)}</div>` : ''}
         <div class="card-meta">
@@ -650,12 +650,12 @@ function groupCard(g) {
           <div class="group-title">
             <span class="type-icon">🧩</span>
             <b>${esc(g.title)}</b>
-            <span class="pill group-pill">группа · ${g.members.length} устр.</span>
+            <span class="pill group-pill">${t('app.groupWithCount', { n: g.members.length })}</span>
             ${statusPill(g)}
             ${g.busy ? trafficPill(g.traffic) : ''}
-            ${g.ownerSelf ? '<span class="pill plain">моя</span>' : ''}
-            ${g.partial ? '<span class="pill err">занята частично</span>' : ''}
-            ${g.available === false ? '<span class="pill err">не все устройства на месте</span>' : ''}
+            ${g.ownerSelf ? `<span class="pill plain">${t('common.mine_2')}</span>` : ''}
+            ${g.partial ? `<span class="pill err">${t('common.partiallyTaken')}</span>` : ''}
+            ${g.available === false ? `<span class="pill err">${t('app.groupIncomplete')}</span>` : ''}
           </div>
           ${g.purpose ? `<div class="purpose">${esc(g.purpose)}</div>` : ''}
           <div class="card-meta">
@@ -830,14 +830,14 @@ function renderGroups() {
   const byId = new Map(state.localDevices.map((d) => [d.deviceId, d]));
   box.innerHTML = groups.map((g) => {
     const status = g.claim
-      ? `<span class="pill busy">занята: ${esc(g.claim.holderName)}</span>`
-      : g.shared ? '<span class="pill free">опубликована, свободна</span>'
-        : '<span class="pill plain">не опубликована</span>';
+      ? `<span class="pill busy">${t('app.groupBusyBy', { who: esc(g.claim.holderName) })}</span>`
+      : g.shared ? `<span class="pill free">${t('app.groupPublishedFree')}</span>`
+        : `<span class="pill plain">${t('app.groupNotPublished')}</span>`;
 
     const acts = canEdit() ? [
       `<button class="btn small ${g.shared ? '' : 'primary'}" data-group-share="${esc(g.id)}|${g.shared ? '0' : '1'}">${
         g.shared ? t('common.unpublish') : t('common.publish')}</button>`,
-      `<button class="btn small" data-edit-group="${esc(g.id)}">Изменить</button>`,
+      `<button class="btn small" data-edit-group="${esc(g.id)}">${t('common.edit')}</button>`,
     ].join('') : '';
 
     return `
@@ -851,7 +851,7 @@ function renderGroups() {
           ${g.members.map((m) => {
             const d = byId.get(m);
             return `<span>${d ? `${esc(d.icon)} ${esc(d.description)} (<span class="mono">${esc(d.title)}</span>)`
-              : `<span class="pill err">нет устройства ${esc(m)}</span>`}</span>`;
+              : `<span class="pill err">${t('app.noDeviceForType', { m: esc(m) })}</span>`}</span>`;
           }).join('')}
         </div>
         <p class="hint group-rule">${g.shared
@@ -882,9 +882,9 @@ function renderAttached() {
           ${esc(a.title)}
           <span class="pill ${a.state === 'error' ? 'err' : 'mine'}">${esc(label[a.state] || a.state)}</span>
           ${a.state === 'attaching' && a.stage ? `<span class="pill warn">${esc(a.stage)}</span>` : ''}
-          ${a.self ? '<span class="pill plain">своё устройство</span>' : ''}
+          ${a.self ? `<span class="pill plain">${t('app.ownDevice')}</span>` : ''}
           ${a.mode === 'bridge' ? `<span class="pill warn" title="${t('app.nicConnectedToSharedBridgeTitle')}">${t('common.inTheSharedBridge')}</span>` : ''}
-          ${a.orphan ? '<span class="pill plain">вне приложения</span>' : ''}
+          ${a.orphan ? `<span class="pill plain">${t('app.outsideApp')}</span>` : ''}
         </div>
         <div class="card-meta">
           <span>источник: <b>${esc(a.nodeName)}</b> (${esc(a.host)})</span>
@@ -901,7 +901,7 @@ function renderAttached() {
             title="${t('common.theSettingsWindowWillOpen')}">${t('app.setAddress', { address: esc(p.suggest.address) })}</button>` : ''}</div>
           ${p.usedIps?.length ? `<div class="card-meta"><span>${usedIpsText(p.usedIps)}</span></div>` : ''}`).join('')}
         ${a.parts.some((p) => p.hasTransport) && !a.parts.some((p) => p.traffic)
-          ? '<p class="hint">Скорость не показывается: у владельца выключен учёт трафика.</p>' : ''}
+          ? `<p class="hint">${t('app.speedHidden')}</p>` : ''}
         ${driverNotes(a)}
       </div>
       <div class="card-actions">
@@ -911,7 +911,7 @@ function renderAttached() {
             : t('common.theNicIsBookedAsk')}"
           >Настройки IP${a.parts.filter((x) => x.type === 'net').length > 1 ? ` · ${esc(p.title || p.key)}` : ''}</button>`).join('') : ''}
         ${canEdit() && a.state === 'attached' ? driverButtons(a) : ''}
-        ${canEdit() ? `<button class="btn small danger" data-detach="${esc(a.id)}">Освободить</button>` : ''}
+        ${canEdit() ? `<button class="btn small danger" data-detach="${esc(a.id)}">${t('common.release_2')}</button>` : ''}
       </div>
     </article>`).join('');
 }
@@ -927,7 +927,7 @@ function driverButtons(a, onlyDeviceId = null) {
   return parts.filter((p) => !p.driverBlock).map((p) => `<button class="btn small"
     data-driver="${esc(a.id)}|${esc(p.deviceId)}"
     title="${t('common.fetchThisDevicesDriverFrom')}"
-    >Копировать драйвер${parts.length > 1 ? ` · ${esc(p.description || p.key)}` : ''}</button>`).join('');
+    >${t('app.copyDriver')}${parts.length > 1 ? ` · ${esc(p.description || p.key)}` : ''}</button>`).join('');
 }
 
 /** Объяснения, почему драйвер скопировать нельзя, — в карточке занятия. */
@@ -939,7 +939,7 @@ function driverNotes(a) {
     if (p.driverBlockCode) return t('srv.' + p.driverBlockCode, p.driverBlockParams);
     return p.driverBlock;
   }))];
-  return reasons.map((r) => `<p class="hint"><b>Копировать драйвер нельзя.</b> ${esc(r)}</p>`).join('');
+  return reasons.map((r) => `<p class="hint"><b>${t('app.copyDriverBlocked')}</b> ${esc(r)}</p>`).join('');
 }
 
 /** Во что превратилось устройство занятия на этом компьютере. */
@@ -955,7 +955,7 @@ function partState(p) {
 function remoteMark(ownerId) {
   const p = (state.peers || []).find((x) => x.nodeId === ownerId);
   if (!p || p.origin === 'local') return '';
-  return ` <span class="pill remote" title="${esc(remoteHint(p))}">другая сеть</span>`;
+  return ` <span class="pill remote" title="${esc(remoteHint(p))}">${t('common.otherNetwork')}</span>`;
 }
 
 /**
@@ -976,7 +976,7 @@ function renderPeers() {
   const selfCard = `
     <article class="card mine">
       <div class="card-main">
-        <div class="card-title">${esc(self.name)} <span class="pill mine">этот компьютер</span>${gatewayMark({ gateway: self.gateway })}</div>
+        <div class="card-title">${esc(self.name)} <span class="pill mine">${t('app.thisComputer')}</span>${gatewayMark({ gateway: self.gateway })}</div>
         <div class="card-meta">
           <span>адрес: <b>${esc(self.address)}</b></span>
           <span>платформа: ${esc(self.platform)}</span>
@@ -995,15 +995,15 @@ function renderPeers() {
       <div class="card-main">
         <div class="card-title">${url ? `<a class="node-name" href="${esc(url)}" target="_blank" rel="noopener">${esc(p.name)}</a>` : esc(p.name)}
           <span class="pill ${p.online ? 'free' : 'err'}">${p.online ? t('common.online') : t('common.notResponding')}</span>${gatewayMark(p)}
-          ${p.origin && p.origin !== 'local' ? `<span class="pill remote" title="${esc(remoteHint(p))}">другая сеть</span>` : ''}
+          ${p.origin && p.origin !== 'local' ? `<span class="pill remote" title="${esc(remoteHint(p))}">${t('common.otherNetwork')}</span>` : ''}
           ${p.redirected ? natMark({ ownerRedirected: true }) : ''}
           ${p.realmLabel ? `<span class="pill plain" title="${t('app.trustCircle', { realm: esc(p.realm || '') })}">${esc(p.realmLabel)}</span>` : ''}</div>
         <div class="card-meta">
           <span>адрес: <b>${esc(p.address)}</b>:${esc(p.apiPort)}</span>
           ${p.origin !== 'local' && p.network ? `<span>${t('app.networkLabel', { name: esc(p.network) })}</span>` : ''}
           ${p.redirected ? `<span>${t('app.announcedFromHeardOn', { network: esc(p.redirected.network), heardOn: esc(p.redirected.heardOn) })}</span>` : ''}
-          <span>платформа: ${esc(p.platform || '—')}</span>
-          <span>версия: ${esc(p.version || '—')}</span>
+          <span>${t('app.platformColon')} ${esc(p.platform || '—')}</span>
+          <span>${t('app.versionColon')} ${esc(p.version || '—')}</span>
           <span>устройств: <b>${esc(p.deviceCount)}</b> (занято ${esc(p.busyCount)})</span>
           <span>последний ответ: ${esc(since(p.lastSeen))} назад</span>
           ${p.stateError ? `<span class="pill err">${esc(p.stateError)}</span>` : ''}
@@ -1424,7 +1424,7 @@ $('#btnSettings').addEventListener('click', () => {
   $('#settingsNote').textContent = '';
 
   const sel = $('#setNetwork');
-  sel.innerHTML = '<option value="auto">автоматически</option>'
+  sel.innerHTML = `<option value="auto">${t('common.auto')}</option>`
     + state.networks.map((n) => `<option value="${esc(n.cidr)}">${esc(n.cidr)} — ${esc(n.iface)} (${esc(n.address)})</option>`).join('');
   sel.value = c.network;
   // Почему автовыбор не берёт все карты: исключённые видны только здесь,
@@ -1877,24 +1877,24 @@ function renderUpdate() {
   const btns = [];
   if (canEdit()) {
     if (u.awaitingApproval) {
-      btns.push(`<button class="btn small primary" data-update="approve" data-version="${esc(u.staged?.version || '')}">Разрешить установку</button>`);
+      btns.push(`<button class="btn small primary" data-update="approve" data-version="${esc(u.staged?.version || '')}">${t('common.approveInstall')}</button>`);
     }
     // «Обновить сейчас» — пока версия скачивается, ждёт очереди или разрешения: сервер сам
     // решит, перезапускаться ли сразу или сперва взять версию у соседей.
     if (u.canUpdateNow && ['checking', 'downloading', 'queued', 'waiting', 'awaiting-approval'].includes(u.phase)) {
-      btns.push('<button class="btn small danger" data-update="now">Обновить сейчас</button>');
+      btns.push('<button class="btn small danger" data-update="now">' + t('common.updateNow') + '</button>');
     }
-    if (u.phase === 'error') btns.push('<button class="btn small" data-update="retry">Повторить</button>');
+    if (u.phase === 'error') btns.push('<button class="btn small" data-update="retry">' + t('common.retry') + '</button>');
     // Соседи сообщают, что работающая у нас версия испорчена: откатить можно вручную.
     if (warnRunning && u.canRollback) {
-      btns.push(`<button class="btn small danger" data-update="rollback">Откатить на ${esc(u.previous)}</button>`);
+      btns.push(`<button class="btn small danger" data-update="rollback">${t('app.rollbackTo', { previous: esc(u.previous) })}</button>`);
     }
   }
   // Ссылка открыта и без права правки: скачать файл может любой, ставить — тот, кто за машиной.
   if (u.phase === 'needs-installer') {
     btns.push(u.installer?.url
-      ? `<a class="btn small primary" href="${esc(u.installer.url)}" target="_blank" rel="noopener">Скачать установщик у «${esc(u.installer.from)}»</a>`
-      : '<span class="banner-hint">Ни у одного из соседей нет установщика для раздачи — возьмите его у администратора.</span>');
+      ? `<a class="btn small primary" href="${esc(u.installer.url)}" target="_blank" rel="noopener">${t('app.downloadInstallerFrom', { from: esc(u.installer.from) })}</a>`
+      : `<span class="banner-hint">${t('app.noInstallerHint')}</span>`);
   }
 const running = warnRunning
 	    ? `<p class="banner-hint"><b>${t('app.warningReportedRunning')}</b> ${t('app.nodesReportCorrupted', { nodes: warnRunning.nodes.map((n) => `«${esc(n)}»`).join(', '), version: esc(warnRunning.version) })}${warnRunning.reasons.length ? `: ${esc(warnRunning.reasons.join('; '))}` : ''}. ${t('app.ifEverythingWorksDoNothing')}</p>`

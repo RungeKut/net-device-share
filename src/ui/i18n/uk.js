@@ -917,5 +917,24 @@ export default {
 		  "srv.NOT_FOUND": "запит не знайдено",
 		  "srv.REQUEST_CLOSED": "на запит уже відповіли",
 		  "srv.CLAIM_REJECTED": "{message}",
-		  "srv.ATTACH_FAILED": "{message} — на кроці \"{attachStage}\""
-	}
+"srv.ATTACH_FAILED": "{message} — на кроці \"{attachStage}\"",
+  "ui.askShort": "Попросити",
+  "app.groupWithCount": "група · {n} пристр.",
+  "app.groupIncomplete": "не всі пристрої на місці",
+  "app.groupBusyBy": "зайнята: {who}",
+  "app.groupPublishedFree": "опублікована, вільна",
+  "app.groupNotPublished": "не опублікована",
+  "app.noDeviceForType": "немає пристрою {m}",
+  "app.ownDevice": "власний пристрій",
+  "app.outsideApp": "поза застосунком",
+  "app.speedHidden": "Швидкість не показується: у власника вимкнено облік трафіку.",
+  "app.copyDriver": "Скопіювати драйвер",
+  "app.copyDriverBlocked": "Драйвер не можна скопіювати.",
+  "app.thisComputer": "цей комп'ютер",
+  "app.platformColon": "платформа:",
+  "app.versionColon": "версія:",
+  "common.approveInstall": "Дозволити встановлення",
+  "app.rollbackTo": "Відкотити на {previous}",
+  "app.downloadInstallerFrom": "Завантажити інсталятор у «{from}»",
+  "app.noInstallerHint": "У жодного з сусідів немає інсталятора для роздачі — візьміть його в адміністратора."
+		}

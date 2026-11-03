@@ -918,5 +918,25 @@ export default {
   "srv.NOT_FOUND": "ombi halikupatikana",
   "srv.REQUEST_CLOSED": "ombi limekwisha jibiwa",
   "srv.CLAIM_REJECTED": "{message}",
-  "srv.ATTACH_FAILED": "{message} — katika hatua \"{attachStage}\""
-}
+  "srv.ATTACH_FAILED": "{message} — katika hatua \"{attachStage}\"",
+
+  "ui.askShort": "Omba",
+  "app.groupWithCount": "kundi · {n} vifaa",
+  "app.groupIncomplete": "si vifaa vyote havipo",
+  "app.groupBusyBy": "imechukuliwa: {who}",
+  "app.groupPublishedFree": "imechapishwa, huru",
+  "app.groupNotPublished": "haijachapishwa",
+  "app.noDeviceForType": "hakuna kifaa {m}",
+  "app.ownDevice": "kifaa chako mwenyewe",
+  "app.outsideApp": "nje ya programu",
+  "app.speedHidden": "Kasi haionyeshwi: mmiliki amezima hesabu ya trafiki.",
+  "app.copyDriver": "Nakili kiendesha",
+  "app.copyDriverBlocked": "Kiendesha hakiwezi kunakiliwa.",
+  "app.thisComputer": "kompyuta hii",
+  "app.platformColon": "mfumo:",
+  "app.versionColon": "toleo:",
+  "common.approveInstall": "Idhinisha usakinishaji",
+  "app.rollbackTo": "Rudisha kwa {previous}",
+  "app.downloadInstallerFrom": "Pakua kisakinishi kutoka \"{from}\"",
+  "app.noInstallerHint": "Hakuna jirani aliye na kisakinishi cha kushiriki — pata kutoka kwa msimamizi wako.",
+};

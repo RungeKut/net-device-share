@@ -917,5 +917,25 @@ export default {
 			  "srv.NOT_FOUND": "forespørsel ble ikke funnet",
 			  "srv.REQUEST_CLOSED": "forespørselen er allerede besvart",
 			  "srv.CLAIM_REJECTED": "{message}",
-			  "srv.ATTACH_FAILED": "{message} — ved trinnet \"{attachStage}\""
-}
+			  "srv.ATTACH_FAILED": "{message} — ved trinnet \"{attachStage}\"",
+
+  "ui.askShort": "Spør",
+  "app.groupWithCount": "gruppe · {n} enheter",
+  "app.groupIncomplete": "ikke alle enheter til stede",
+  "app.groupBusyBy": "opptatt: {who}",
+  "app.groupPublishedFree": "publisert, ledig",
+  "app.groupNotPublished": "ikke publisert",
+  "app.noDeviceForType": "ingen enhet {m}",
+  "app.ownDevice": "egen enhet",
+  "app.outsideApp": "utenfor appen",
+  "app.speedHidden": "Fart vises ikke: eieren har trafikkmåling av.",
+  "app.copyDriver": "Kopier driver",
+  "app.copyDriverBlocked": "Driveren kan ikke kopieres.",
+  "app.thisComputer": "denne datamaskinen",
+  "app.platformColon": "plattform:",
+  "app.versionColon": "versjon:",
+  "common.approveInstall": "Godkjenn installasjon",
+  "app.rollbackTo": "Rull tilbake til {previous}",
+  "app.downloadInstallerFrom": "Last ned installasjonsprogrammet fra \"{from}\"",
+  "app.noInstallerHint": "Ingen av naboene har et installasjonsprogram å dele — få et fra administratoren din.",
+};

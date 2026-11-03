@@ -917,5 +917,25 @@ export default {
 		  "srv.NOT_FOUND": "anmodning blev ikke fundet",
 		  "srv.REQUEST_CLOSED": "anmodningen er allerede besvaret",
 		  "srv.CLAIM_REJECTED": "{message}",
-		  "srv.ATTACH_FAILED": "{message} — ved trinnet \"{attachStage}\""
-}
+		  "srv.ATTACH_FAILED": "{message} — ved trinnet \"{attachStage}\"",
+
+  "ui.askShort": "Spørg",
+  "app.groupWithCount": "gruppe · {n} enheder",
+  "app.groupIncomplete": "ikke alle enheder til stede",
+  "app.groupBusyBy": "optaget: {who}",
+  "app.groupPublishedFree": "udgivet, ledig",
+  "app.groupNotPublished": "ikke udgivet",
+  "app.noDeviceForType": "ingen enhed {m}",
+  "app.ownDevice": "egen enhed",
+  "app.outsideApp": "uden for appen",
+  "app.speedHidden": "Hastighed vises ikke: ejeren har trafikmåling slået fra.",
+  "app.copyDriver": "Kopier driver",
+  "app.copyDriverBlocked": "Driveren kan ikke kopieres.",
+  "app.thisComputer": "denne computer",
+  "app.platformColon": "platform:",
+  "app.versionColon": "version:",
+  "common.approveInstall": "Godkend installation",
+  "app.rollbackTo": "Rul tilbage til {previous}",
+  "app.downloadInstallerFrom": "Download installationsprogrammet fra \"{from}\"",
+  "app.noInstallerHint": "Ingen af naboerne har et installationsprogram at dele — få et fra din administrator.",
+};
