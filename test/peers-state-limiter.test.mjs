@@ -107,7 +107,7 @@ test('откат удваивается на каждом отказе и огр
   }
 });
 
-test('замолчавший сосед проверяется ping\'ом в окне между 1,5 анонса и порогом', async () => {
+test('замолчавший сосед: живой отвечает, мёртвый уходит в офлайн со второй неудачи', async () => {
   const live = await listen((req, res) => {
     if (req.url === '/api/v1/peer/ping') { json(res, { ok: true, stateHash: 'h1' }); return; }
     res.writeHead(404); res.end('{}');
@@ -130,11 +130,35 @@ test('замолчавший сосед проверяется ping\'ом в о�
     reg.onAnnounce({ ...announce(deadPort, 'ghost'), next: 500 });
     const ghost = reg.get('ghost');
     ghost.lastSeen = Date.now() - 900;
-    reg._sweep();
-    await sleep(150);
+    reg._sweep();                                      // первая неудача
+    await sleep(120);
+    assert.equal(ghost.online, true, 'одной неудачи мало');
+    reg._sweep();                                      // вторая неудача подряд
+    await sleep(120);
     assert.equal(ghost.online, false);                 // мёртвый: офлайн раньше порога 3500
     await reg.stop();
   } finally {
     live.close();
+  }
+});
+
+test('анонс, пришедший во время ping, отменяет пометку офлайн', async () => {
+  // ping не отвечает, но ответ задержан: за это время сосед успевает анонсироваться.
+  const slow = await listen((req, res) => {
+    setTimeout(() => { res.writeHead(500); res.end('boom'); }, 250);
+  });
+  const reg = registry({ peerTimeoutMs: 800, announceIntervalMs: 500 });
+  try {
+    reg.onAnnounce({ ...announce(slow.address().port, 'laggy'), next: 500 });
+    const peer = reg.get('laggy');
+    peer.lastSeen = Date.now() - 900;
+    const done = reg._checkSilent(peer);               // ping ещё висит
+    await sleep(50);
+    reg.onAnnounce({ ...announce(slow.address().port, 'laggy'), next: 500 }); // анонс: сосед жив
+    await done;
+    assert.equal(peer.online, true, 'анонс во время ping — сосед не мёртв');
+    assert.equal(peer.silentPingFails ?? 0, 0);
+  } finally {
+    slow.close();
   }
 });

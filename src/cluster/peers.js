@@ -881,12 +881,15 @@ export class PeerRegistry extends EventEmitter {
   }
 
   /**
-   * Разовая проверка замолчавшего соседа. Отказ в ping — не всегда смерть
-   * (перегруженный узел тоже не ответит), поэтому помечаем офлайн только
-   * пока молчание стоит: вернувшийся анонс вернёт узел в сеть сразу.
+   * Разовая проверка замолчавшего соседа. Отказ в ping — не всегда смерть:
+   * перегруженный узел отвечает медленно, но анонсы от него продолжают
+   * приходить. Поэтому офлайн ставим только при второй неудаче подряд и
+   * лишь пока за время ping не пришёл анонс — иначе на перегрузке проверка
+   * вырождается в шторм ложных офлайнов (замер 2026-11-13: 508 тыс. пометок).
    */
   async _checkSilent(peer) {
     this.pinging.add(peer.nodeId);
+    const seenAt = peer.lastSeen;
     try {
       const ep = await this.endpoint(peer, peer.apiPort);
       await rpc({
@@ -898,11 +901,14 @@ export class PeerRegistry extends EventEmitter {
         timeoutMs: 2500,
       });
       peer.lastSeen = Date.now();
+      peer.silentPingFails = 0;
       this.emit('changed');
     } catch (e) {
+      if (peer.lastSeen !== seenAt) return; // ожил под руку — молчание было ложным
+      peer.silentPingFails = (peer.silentPingFails || 0) + 1;
       const silence = Date.now() - peer.lastSeen;
       const every = peer.announceEvery || this.opts.announceIntervalMs;
-      if (peer.online && silence > Math.max(this.opts.peerTimeoutMs, every * 1.5)) {
+      if (peer.online && peer.silentPingFails >= 2 && silence > Math.max(this.opts.peerTimeoutMs, every * 1.5)) {
         peer.online = false;
         log.warn(`узел "${peer.name}" не отвечает на ping — помечен офлайн`);
         this.emit('peer-down', peer);
