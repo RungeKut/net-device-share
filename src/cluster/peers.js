@@ -48,6 +48,10 @@ const DEFAULT_NETLINK_PORT = 47814;
 /** Не чаще раза в это время пишем в журнал об одной и той же неработающей пробе туннеля. */
 const PROBE_LOG_EVERY_MS = 60 * 1000;
 
+/** Откат запроса состояния после отказа: с какой задержки начинаем и до какой растим. */
+const STATE_BACKOFF_BASE_MS = 1000;
+const STATE_BACKOFF_MAX_MS = 60 * 1000;
+
 export class PeerRegistry extends EventEmitter {
   constructor(opts) {
     super();
@@ -66,6 +70,13 @@ export class PeerRegistry extends EventEmitter {
     this.probeLogged = new Map();
     /** @type {Map<string, string>} узел → хеш, пришедший, пока шёл запрос состояния: нужен повтор */
     this.stateRetry = new Map();
+    // Лимит одновременных запросов состояния. Без него сотни узлов на старте
+    // устраивали лавину connect: ядро не выделяло соединение (ENOBUFS), а каждый
+    // отказ только усиливал шторм повторов (замер 2026-11-12, docs/LOADTEST.md).
+    this.stateSlots = Number(opts.stateConcurrency) || 12;
+    this.stateActive = 0;
+    /** @type {Array<() => void>} */
+    this.stateWaiters = [];
   }
 
   start() {
@@ -737,6 +748,21 @@ export class PeerRegistry extends EventEmitter {
     return parts.sort().join(';');
   }
 
+  /** Очередь запросов состояния: не более stateSlots исходящих одновременно. */
+  async _acquireStateSlot() {
+    if (this.stateActive < this.stateSlots) {
+      this.stateActive++;
+      return;
+    }
+    await new Promise((resolve) => this.stateWaiters.push(resolve));
+  }
+
+  _releaseStateSlot() {
+    const next = this.stateWaiters.shift();
+    if (next) next();
+    else this.stateActive--;
+  }
+
   async refreshPeerState(peer, expectedHash) {
     // Запрос уже идёт, а хеш за это время мог смениться: его ответ может оказаться
     // старым. Запоминаем хеш и повторяем, когда текущий запрос закончится.
@@ -746,31 +772,50 @@ export class PeerRegistry extends EventEmitter {
     }
     this.inflight.add(peer.nodeId);
     try {
-      // Пересказанный узел: сначала выясняем, как до него добраться, — иначе
-      // первый запрос состояния уходил бы напрямую в никуда.
-      const main = this.primaryRoute(peer);
-      if (main && main.kind !== 'direct' && !main.mode) await this.probeRoute(peer, main);
-      const ep = await this.endpoint(peer, peer.apiPort);
-      const state = await rpc({
-        host: ep.host,
-        port: ep.port,
-        path: '/api/v1/peer/state',
-        key: this.opts.realms.keyFor(peer.realm),
-        nodeId: this.opts.nodeId,
-        timeoutMs: 4000,
-      });
-      peer.devices = Array.isArray(state?.devices) ? state.devices : [];
-      peer.groups = Array.isArray(state?.groups) ? state.groups : [];
-      // Запросы приходят уже отфильтрованными: владелец отдаёт только те,
-      // где мы проситель или держатель.
-      peer.requests = Array.isArray(state?.requests) ? state.requests : [];
-      peer.stateHash = state?.stateHash ?? expectedHash ?? null;
-      peer.name = state?.name || peer.name;
-      peer.stateError = null;
-      log.debug(`состояние "${peer.name}" обновлено: устройств ${peer.devices.length}, групп ${peer.groups.length}`);
-      this.emit('changed');
+      // Узел не ответил — следующий запрос к нему откладываем нарастающе и
+      // спрашиваем не раньше. Анонс соседа приходит каждые несколько секунд и
+      // без отката каждый становился новым запросом: при сотнях узлов из этого
+      // рождался самоусиливающийся шторм отказов connect (замер 2026-11-12).
+      if ((peer.stateBackoffUntil || 0) > Date.now()) {
+        if (expectedHash != null) this.stateRetry.set(peer.nodeId, expectedHash);
+        return;
+      }
+      await this._acquireStateSlot();
+      try {
+        // Пересказанный узел: сначала выясняем, как до него добраться, — иначе
+        // первый запрос состояния уходил бы напрямую в никуда.
+        const main = this.primaryRoute(peer);
+        if (main && main.kind !== 'direct' && !main.mode) await this.probeRoute(peer, main);
+        const ep = await this.endpoint(peer, peer.apiPort);
+        const state = await rpc({
+          host: ep.host,
+          port: ep.port,
+          path: '/api/v1/peer/state',
+          key: this.opts.realms.keyFor(peer.realm),
+          nodeId: this.opts.nodeId,
+          timeoutMs: 4000,
+        });
+        peer.devices = Array.isArray(state?.devices) ? state.devices : [];
+        peer.groups = Array.isArray(state?.groups) ? state.groups : [];
+        // Запросы приходят уже отфильтрованными: владелец отдаёт только те,
+        // где мы проситель или держатель.
+        peer.requests = Array.isArray(state?.requests) ? state.requests : [];
+        peer.stateHash = state?.stateHash ?? expectedHash ?? null;
+        peer.name = state?.name || peer.name;
+        peer.stateError = null;
+        peer.stateBackoffMs = null;
+        peer.stateBackoffUntil = 0;
+        log.debug(`состояние "${peer.name}" обновлено: устройств ${peer.devices.length}, групп ${peer.groups.length}`);
+        this.emit('changed');
+      } finally {
+        this._releaseStateSlot();
+      }
     } catch (e) {
       peer.stateError = e.message;
+      peer.stateBackoffMs = peer.stateBackoffMs
+        ? Math.min(peer.stateBackoffMs * 2, STATE_BACKOFF_MAX_MS)
+        : STATE_BACKOFF_BASE_MS;
+      peer.stateBackoffUntil = Date.now() + peer.stateBackoffMs;
       this.dropTunnels(this.primaryRoute(peer));
       // Для узла из каталога это самая частая и самая понятная поломка:
       // рассказали о нём, а маршрута или правила брандмауэра нет.
@@ -799,6 +844,15 @@ export class PeerRegistry extends EventEmitter {
       this._expireRoutes(peer, now);
       const silence = now - peer.lastSeen;
       const timeout = peer.timeoutMs || this.opts.peerTimeoutMs;
+      // Сосед замолчал на полпути к порогу (полтора пропущенных анонса): один
+      // дешёвый ping вместо ожидания всех трёх. Мёртвый уходит в офлайн сразу,
+      // живой отвечает — и счётчик молчания обнуляется.
+      const every = peer.announceEvery || this.opts.announceIntervalMs;
+      if (peer.online && peer.origin === 'local'
+        && silence > Math.max(this.opts.peerTimeoutMs, every * 1.5)
+        && silence <= timeout && !this.pinging.has(peer.nodeId)) {
+        this._checkSilent(peer);
+      }
       if (peer.online && silence > timeout) {
         peer.online = false;
         changed = true;
@@ -824,6 +878,39 @@ export class PeerRegistry extends EventEmitter {
     for (const [k, t] of this.tunnelCache) if (t.until <= now) this.tunnelCache.delete(k);
     for (const [k, t] of this.probeLogged) if (now - t >= PROBE_LOG_EVERY_MS) this.probeLogged.delete(k);
     if (changed) this.emit('changed');
+  }
+
+  /**
+   * Разовая проверка замолчавшего соседа. Отказ в ping — не всегда смерть
+   * (перегруженный узел тоже не ответит), поэтому помечаем офлайн только
+   * пока молчание стоит: вернувшийся анонс вернёт узел в сеть сразу.
+   */
+  async _checkSilent(peer) {
+    this.pinging.add(peer.nodeId);
+    try {
+      const ep = await this.endpoint(peer, peer.apiPort);
+      await rpc({
+        host: ep.host,
+        port: ep.port,
+        path: '/api/v1/peer/ping',
+        key: this.opts.realms.keyFor(peer.realm),
+        nodeId: this.opts.nodeId,
+        timeoutMs: 2500,
+      });
+      peer.lastSeen = Date.now();
+      this.emit('changed');
+    } catch (e) {
+      const silence = Date.now() - peer.lastSeen;
+      const every = peer.announceEvery || this.opts.announceIntervalMs;
+      if (peer.online && silence > Math.max(this.opts.peerTimeoutMs, every * 1.5)) {
+        peer.online = false;
+        log.warn(`узел "${peer.name}" не отвечает на ping — помечен офлайн`);
+        this.emit('peer-down', peer);
+        this.emit('changed');
+      }
+    } finally {
+      this.pinging.delete(peer.nodeId);
+    }
   }
 
   get(nodeId) {
