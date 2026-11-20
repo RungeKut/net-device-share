@@ -212,7 +212,10 @@ function normalizeKey(name) {
 // там, где разбор каждой части занимает доли секунды.
 const COMBINED_SCRIPT = `$pOk = $true; $p = @(); try { $p = @(${PNP_PORTS_CMD}) } catch { $pOk = $false }; `
   + `$nOk = $true; $n = @(); try { $n = @(${NET_ADAPTERS_CMD}) } catch { $nOk = $false }; `
-  + '$pj = ConvertTo-Json -InputObject $p -Compress -Depth 3; $nj = ConvertTo-Json -InputObject $n -Compress -Depth 4; '
+  // Пустой или null перечень ConvertTo-Json порой не печатает вовсе (машины
+  // без COM/LPT): склейка тогда даёт "ports":, — невалидный JSON. Явный '[]'.
+  + '$pj = if ($p) { ConvertTo-Json -InputObject $p -Compress -Depth 3 } else { \'[]\' }; '
+  + '$nj = if ($n) { ConvertTo-Json -InputObject $n -Compress -Depth 4 } else { \'[]\' }; '
   + '\'{"portsOk":\' + $pOk.ToString().ToLower() + \',"ports":\' + $pj + \',"netsOk":\' + $nOk.ToString().ToLower() + \',"nets":\' + $nj + \'}\'';
 
 const asArray = (v) => (Array.isArray(v) ? v : (v ? [v] : []));
