@@ -348,7 +348,9 @@ test('ярлык (open.vbs): работает — открыть адрес; н�
     assert.match(r.stdout, new RegExp(`WAIT-AND-OPEN http://127.0.0.1:${port}/`));
 
     r = await vbs(other.port);
-    assert.match(r.stdout, /MESSAGE .*занят другой программой/, r.stdout);
+    // ASCII-тег, а не русский текст: на англоязычной Windows кириллица cscript
+    // превращается в '?' и текстовый ассерт непроходим принципиально.
+    assert.match(r.stdout, /MESSAGE busy-port/, r.stdout);
   } finally {
     server.close();
     other.server.close();
