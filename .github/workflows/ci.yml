@@ -35,8 +35,10 @@ jobs:
           # аннотациях коммита — они читаются через API без авторизации.
           npm test 2>&1 | Tee-Object -FilePath test-output.log
           if ($LASTEXITCODE -ne 0) {
-            $fails = Select-String -Path test-output.log -Pattern '✖|not ok|error:|expected:|actual:|operator:' |
-              Select-Object -First 30
+            # TAP-подробности (actual/expected) многострочны: заголовки полей
+            # и их содержимое (отступ 4+) ловятся обеими альтернативами.
+            $fails = Select-String -Path test-output.log -Pattern '✖|not ok|error:|expected:|actual:|operator:|^[ ]{4,}\S' |
+              Select-Object -First 40
             foreach ($f in $fails) {
               $line = $f.Line.Trim()
               if ($line.Length -gt 220) { $line = $line.Substring(0, 220) }

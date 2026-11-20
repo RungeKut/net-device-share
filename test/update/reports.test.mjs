@@ -171,11 +171,16 @@ test('«Откатить»: просьба записывается в сост�
   st.previous = '2.0.0';
   writeState(u.home, st);
   const asked = new Promise((resolve) => process.once('nds:restart', resolve));
+  // nds:restart эмитится unref-нутым таймером (updater): на медленной машине
+  // цикл событий опустеет раньше 500 мс и промис не разрешится. Держатель
+  // цикла живёт до конца ожидания.
+  const keepAlive = setInterval(() => {}, 100);
   u.rollbackNow('по просьбе пользователя');
   const saved = JSON.parse(fs.readFileSync(path.join(u.home, 'update', 'state.json'), 'utf8'));
   assert.equal(saved.rollbackRequest.reason, 'по просьбе пользователя');
   assert.equal(u.phase, 'restarting');
   await asked;                                         // приложение действительно просит перезапуск
+  clearInterval(keepAlive);
 });
 
 test('раздача: версию, о которой сообщили как об испорченной, соседям не отдаём', () => {
