@@ -23,4 +23,19 @@ jobs:
       - name: Файловые инварианты
         run: npm run check
       - name: Тесты
-        run: npm test
+        shell: pwsh
+        run: |
+          # Логи CI доступны только с правами администратора репозитория,
+          # поэтому имена упавших тестов дублируются в аннотации коммита —
+          # они читаются через API без авторизации.
+          npm test 2>&1 | Tee-Object -FilePath test-output.log
+          if ($LASTEXITCODE -ne 0) {
+            $fails = Select-String -Path test-output.log -Pattern '✖|not ok' |
+              Select-Object -First 10
+            foreach ($f in $fails) {
+              $line = $f.Line.Trim()
+              if ($line.Length -gt 200) { $line = $line.Substring(0, 200) }
+              Write-Host "::error title=Тест::$line"
+            }
+            exit 1
+          }
