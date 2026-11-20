@@ -16,6 +16,11 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 45
     steps:
+      # Чекаут без автоконверсии CRLF: рабочее дерево = репозиторий (LF).
+      # Иначе файлы с text=auto приезжают в CRLF, и побайтовая сверка
+      # сгенерированных файлов (дашборд Grafana) падает только на раннере.
+      # Явные eol= в .gitattributes (bat/ps1 — CRLF, sh — LF) работают и так.
+      - run: git config --global core.autocrlf false
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
@@ -26,15 +31,15 @@ jobs:
         shell: pwsh
         run: |
           # Логи CI доступны только с правами администратора репозитория,
-          # поэтому имена упавших тестов дублируются в аннотации коммита —
-          # они читаются через API без авторизации.
+          # поэтому имена упавших тестов и их ассерты дублируются в
+          # аннотациях коммита — они читаются через API без авторизации.
           npm test 2>&1 | Tee-Object -FilePath test-output.log
           if ($LASTEXITCODE -ne 0) {
-            $fails = Select-String -Path test-output.log -Pattern '✖|not ok' |
-              Select-Object -First 10
+            $fails = Select-String -Path test-output.log -Pattern '✖|not ok|error:|expected:|actual:|operator:' |
+              Select-Object -First 30
             foreach ($f in $fails) {
               $line = $f.Line.Trim()
-              if ($line.Length -gt 200) { $line = $line.Substring(0, 200) }
+              if ($line.Length -gt 220) { $line = $line.Substring(0, 220) }
               Write-Host "::error title=Тест::$line"
             }
             exit 1
