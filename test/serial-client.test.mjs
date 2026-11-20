@@ -222,7 +222,7 @@ test('без com0com занять честно нельзя', async () => {
     supported: true,
     com0com: { present: () => false, createPair: async () => { throw new Error('не должно вызываться'); }, removePair: async () => true },
   });
-  assert.match(client.borrowBlocker(), /com0com/);
+  assert.match(client.borrowBlocker().text, /com0com/);
   await assert.rejects(() => client.borrow({ key: 'k', host: '127.0.0.1', port: 1, token: 't' }), /com0com/);
 });
 
@@ -270,8 +270,8 @@ test('hub: COM пробрасывается по доступности SerialSh
 
 test('блокировки владельца: LPT и не-Windows отказываются, COM с каналом — нет', async () => {
   const share = new SerialShare({ config: fakeConfig(), supported: true });
-  assert.match(share.lendBlocker({ type: 'lpt', key: 'LPT1' }), /последовательные/);
-  assert.match(share.lendBlocker({ type: 'com', key: 'COM1' }), /канал/);
+  assert.match(share.lendBlocker({ type: 'lpt', key: 'LPT1' }).text, /последовательные/);
+  assert.match(share.lendBlocker({ type: 'com', key: 'COM1' }).text, /канал/);
   share.server = {};
   assert.equal(share.lendBlocker({ type: 'com', key: 'COM1' }), null);
 });
