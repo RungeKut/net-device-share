@@ -440,7 +440,11 @@ test('дашборд собран из актуального генератор
   const before = fs.readFileSync(DASHBOARD, 'utf8');
   const { execFileSync } = await import('node:child_process');
   execFileSync(process.execPath, [path.join(ROOT, 'scripts', 'build-grafana-dashboard.mjs')], { stdio: 'ignore' });
-  assert.equal(fs.readFileSync(DASHBOARD, 'utf8'), before, 'выполните node scripts/build-grafana-dashboard.mjs и закоммитьте результат');
+  // Сравнение нормализуется по переводам строк: в репозитории файл всегда LF
+  // (text=auto нормализует при коммите), а чекаут на Windows с autocrlf
+  // выдаёт CRLF — устареванием это не является.
+  const norm = (s) => s.replace(/\r\n/g, '\n');
+  assert.equal(norm(fs.readFileSync(DASHBOARD, 'utf8')), norm(before), 'выполните node scripts/build-grafana-dashboard.mjs и закоммитьте результат');
 });
 
 test('документация: каждая отдаваемая метрика описана в docs/METRICS.md', () => {

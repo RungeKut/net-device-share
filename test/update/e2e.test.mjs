@@ -12,6 +12,10 @@
 import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
+
+// На общем windows-раннере CI машина в 2–4 раза медленнее локальной: бюджеты
+// ожидания растягиваются, иначе e2e краснеет от скорости машины, а не от кода.
+const BUDGET = Number(process.env.CI ? 2.5 : 1);
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -98,7 +102,7 @@ async function waitFor(cond, ms, what) {
   throw new Error(`не дождались: ${what}`);
 }
 
-test('B и C получают версию от A цепочкой и обновляются сами', { timeout: 240000 }, async (t) => {
+test('B и C получают версию от A цепочкой и обновляются сами', { timeout: 240000 * BUDGET }, async (t) => {
   const A = makeNode('A', '1.1.0', { updateSlots: 1 });
   const B = makeNode('B', '1.0.0');
   const C = makeNode('C', '1.0.0');
@@ -112,7 +116,7 @@ test('B и C получают версию от A цепочкой и обнов
   try {
     await waitFor(() => [B, C].every((n) => {
       try { const s = state(n); return s.current === '1.1.0' && !s.pending; } catch { return false; }
-    }), 200000, 'B и C на версии 1.1.0 и подтверждены');
+    }), 200000 * BUDGET, 'B и C на версии 1.1.0 и подтверждены');
   } catch (e) {
     for (const n of all) process.stdout.write(`\n===== ${n.name} =====\n${n.log.slice(-3500)}\n`);
     throw e;
@@ -143,7 +147,7 @@ const apiState = (n) => new Promise((resolve, reject) => {
   }).on('error', reject);
 });
 
-test('версия, которая ставится только установщиком: узел показывает, у кого его взять', { timeout: 180000 }, async (t) => {
+test('версия, которая ставится только установщиком: узел показывает, у кого его взять', { timeout: 180000 * BUDGET }, async (t) => {
   // A на 1.1.0, которой нужен лаунчер «из будущего», и раздаёт установщик; B на 1.0.0.
   const A = makeNode('A', '1.1.0', {}, { minLauncher: 99 });
   fs.mkdirSync(path.join(A.base, 'download'), { recursive: true });
@@ -157,7 +161,7 @@ test('версия, которая ставится только установ�
 
   let snap = null;
   try {
-    await waitFor(() => { apiState(B).then((s) => { snap = s.update; }).catch(() => {}); return snap?.phase === 'needs-installer'; }, 120000, 'B сообщает «нужен установщик»');
+    await waitFor(() => { apiState(B).then((s) => { snap = s.update; }).catch(() => {}); return snap?.phase === 'needs-installer'; }, 120000 * BUDGET, 'B сообщает «нужен установщик»');
   } catch (e) {
     for (const n of [A, B]) process.stdout.write(`
 ===== ${n.name} =====
@@ -197,7 +201,7 @@ function crashingBundle(version) {
   return packBundle(buildAndSign({ root: work2, version, channel: 'test', keyId: 'test', privateKey }));
 }
 
-test('версия сломалась после подтверждения: узел откатывается сам, а сосед не ставит её без вашего слова', { timeout: 240000 }, async (t) => {
+test('версия сломалась после подтверждения: узел откатывается сам, а сосед не ставит её без вашего слова', { timeout: 240000 * BUDGET }, async (t) => {
   // A: была 1.0.0, получил 1.1.0 (пробный запуск пройдёт, через 6 с приложение падает).
   const A = makeNode('A', '1.0.0');
   const second = path.join(A.dir, 'v2.ndsupd');
@@ -219,9 +223,9 @@ test('версия сломалась после подтверждения: у�
     // 1) A подтвердил 1.1.0, упал три раза и сам откатился на 1.0.0
     await waitFor(() => {
       try { const s = state(A); return s.current === '1.0.0' && Object.keys(s.bad).some((k) => k.startsWith('1.1.0|')); } catch { return false; }
-    }, 150000, 'A откатился на 1.0.0 и пометил 1.1.0 плохой');
+    }, 150000 * BUDGET, 'A откатился на 1.0.0 и пометил 1.1.0 плохой');
     // 2) B, уже скачавший 1.1.0, узнаёт об откате и просит вашего слова
-    await waitFor(() => { apiState(B).then((s) => { snap = s.update; }).catch(() => {}); return snap?.phase === 'awaiting-approval'; }, 90000, 'B просит разрешения из-за отчёта соседа');
+    await waitFor(() => { apiState(B).then((s) => { snap = s.update; }).catch(() => {}); return snap?.phase === 'awaiting-approval'; }, 90000 * BUDGET, 'B просит разрешения из-за отчёта соседа');
   } catch (e) {
     for (const n of [A, B]) process.stdout.write(`\n===== ${n.name} =====\n${n.log.slice(-3500)}\n`);
     throw e;
