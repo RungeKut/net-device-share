@@ -13,6 +13,10 @@ import { renderMetrics, escapeLabel } from '../src/core/metrics.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
+// На общем windows-раннере CI машина в 2–4 раза медленнее локальной: бюджеты
+// ожидания подъёма узлов растягиваются, иначе падение — от скорости машины.
+const BUDGET = Number(process.env.CI ? 2.5 : 1);
+
 // ------------------------------------------------------------ разбор формата
 
 /** Строгий разбор текста Prometheus: ловит повторы серий, метки без экранирования, пропущенный TYPE. */
@@ -274,7 +278,7 @@ function get(node, urlPath, headers = {}, method = 'GET') {
 }
 
 async function ready(node) {
-  for (let i = 0; i < 80; i++) {
+  for (let i = 0; i < 80 * BUDGET; i++) {
     try { const r = await get(node, '/api/v1/session'); if (r.status === 200) return; } catch { /* ещё поднимается */ }
     await new Promise((r) => setTimeout(r, 250));
   }
@@ -371,7 +375,7 @@ test('один узел отдаёт статистику всей сети: с�
     let samples = [];
     // Под нагрузкой всего прогона /metrics может недолго отвечать не готовым
     // экспозицией: считаем это «ещё не готово» и опрашиваем дальше, а не падаем.
-    for (let i = 0; i < 80; i++) {
+    for (let i = 0; i < 80 * BUDGET; i++) {
       const res = await get(a, '/metrics');
       if (res.status !== 200) {
         await new Promise((r) => setTimeout(r, 500));
