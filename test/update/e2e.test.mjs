@@ -24,6 +24,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { packBundle } from '../../launcher/lib/release.js';
 import { buildAndSign } from '../../scripts/build-update.mjs';
+import { freePortBlock } from '../ports.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
@@ -40,16 +41,13 @@ after(() => fs.rmSync(work, { recursive: true, force: true }));
 
 const bundle = (version, compat) => packBundle(buildAndSign({ version, channel: 'test', keyId: 'test', privateKey, compat }));
 
-let nextPort = 48100 + Math.floor(Math.random() * 400) * 10;
-
-function makeNode(name, version, extraConfig = {}, compat) {
-  const dir = path.join(work, `${name}-${nextPort}`);
+async function makeNode(name, version, extraConfig = {}, compat) {
+  const p = await freePortBlock();
+  const dir = path.join(work, `${name}-${p}`);
   const base = path.join(dir, 'base');
   const home = path.join(dir, 'home');
   fs.mkdirSync(base, { recursive: true });
   fs.mkdirSync(home, { recursive: true });
-  const p = nextPort;
-  nextPort += 10;
   fs.writeFileSync(path.join(home, 'config.json'), JSON.stringify({
     name,
     apiPort: p,
@@ -103,9 +101,9 @@ async function waitFor(cond, ms, what) {
 }
 
 test('B и C получают версию от A цепочкой и обновляются сами', { timeout: 240000 * BUDGET }, async (t) => {
-  const A = makeNode('A', '1.1.0', { updateSlots: 1 });
-  const B = makeNode('B', '1.0.0');
-  const C = makeNode('C', '1.0.0');
+  const A = await makeNode('A', '1.1.0', { updateSlots: 1 });
+  const B = await makeNode('B', '1.0.0');
+  const C = await makeNode('C', '1.0.0');
   const all = [A, B, C];
   t.after(() => {
     for (const n of all) { try { n.child?.kill(); } catch { /* */ } }
@@ -149,10 +147,10 @@ const apiState = (n) => new Promise((resolve, reject) => {
 
 test('версия, которая ставится только установщиком: узел показывает, у кого его взять', { timeout: 180000 * BUDGET }, async (t) => {
   // A на 1.1.0, которой нужен лаунчер «из будущего», и раздаёт установщик; B на 1.0.0.
-  const A = makeNode('A', '1.1.0', {}, { minLauncher: 99 });
+  const A = await makeNode('A', '1.1.0', {}, { minLauncher: 99 });
   fs.mkdirSync(path.join(A.base, 'download'), { recursive: true });
   fs.writeFileSync(path.join(A.base, 'download', 'net-device-share-setup-1.1.0.exe'), 'установщик');
-  const B = makeNode('B', '1.0.0');
+  const B = await makeNode('B', '1.0.0');
   t.after(() => {
     for (const n of [A, B]) { try { n.child?.kill(); } catch { /* */ } }
   });
@@ -203,14 +201,14 @@ function crashingBundle(version) {
 
 test('версия сломалась после подтверждения: узел откатывается сам, а сосед не ставит её без вашего слова', { timeout: 240000 * BUDGET }, async (t) => {
   // A: была 1.0.0, получил 1.1.0 (пробный запуск пройдёт, через 6 с приложение падает).
-  const A = makeNode('A', '1.0.0');
+  const A = await makeNode('A', '1.0.0');
   const second = path.join(A.dir, 'v2.ndsupd');
   fs.writeFileSync(second, crashingBundle('1.1.0'));
   const r = spawnSync(process.execPath, [path.join(A.base, 'launcher', 'supervisor.mjs'), '--install-release', second], { env: A.env, encoding: 'utf8' });
   assert.equal(r.status, 0, r.stdout + r.stderr);
   A.env.NDS_BACKOFF_MS = '300,300,300';
   // B: старая версия; «канарейка» длинная, чтобы он не успел ни поставить, ни тем более перезапуститься.
-  const B = makeNode('B', '1.0.0', { updateCanaryMinutes: 30 });
+  const B = await makeNode('B', '1.0.0', { updateCanaryMinutes: 30 });
   B.env.NDS_UPDATE_REPORT_POLL_MS = '2000';
   t.after(() => {
     for (const n of [A, B]) { try { n.child?.kill(); } catch { /* */ } }

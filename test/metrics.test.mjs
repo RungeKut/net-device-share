@@ -10,6 +10,7 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { renderMetrics, escapeLabel } from '../src/core/metrics.js';
+import { freePortBlock } from './ports.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -242,14 +243,13 @@ test('подключения этого узла, группы, запросы �
 
 const work = fs.mkdtempSync(path.join(os.tmpdir(), 'nds-metrics-'));
 after(() => fs.rmSync(work, { recursive: true, force: true }));
-let port = 48700 + Math.floor(Math.random() * 100) * 10;
 // Свой на каждый прогон: узлы одного файла обязаны делить порт обнаружения,
 // но фиксированный 47921 сталкивал параллельные прогоны — заблудший узел
 // убитого прогона отвечал вместо свежеподнятого, и метрики «выключались».
 const discoveryPort = 41000 + Math.floor(Math.random() * 900);
 
-function startNode(name, { extraArgs = [], config = {} } = {}) {
-  const p = port; port += 10;
+/** p — база свободного блока портов (freePortBlock): api, трафик, L2, USB/IP. */
+function startNode(name, p, { extraArgs = [], config = {} } = {}) {
   const home = path.join(work, `${name}-${p}`);
   fs.mkdirSync(home, { recursive: true });
   fs.writeFileSync(path.join(home, 'config.json'), JSON.stringify({
@@ -288,7 +288,7 @@ async function ready(node) {
 const kill = (...nodes) => { for (const n of nodes) { try { n.child.kill(); } catch { /* */ } } };
 
 test('по умолчанию метрики выключены: /metrics отвечает 404', { timeout: 60000 }, async () => {
-  const n = startNode('off');
+  const n = startNode('off', await freePortBlock());
   try {
     await ready(n);
     const r = await get(n, '/metrics');
@@ -297,7 +297,7 @@ test('по умолчанию метрики выключены: /metrics отв
 });
 
 test('--metrics включает метрики на запуск; без токена — из рабочей сети, формат верный', { timeout: 60000 }, async () => {
-  const n = startNode('on', { extraArgs: ['--metrics'] });
+  const n = startNode('on', await freePortBlock(), { extraArgs: ['--metrics'] });
   try {
     await ready(n);
     const r = await get(n, '/metrics');
@@ -314,7 +314,7 @@ test('--metrics включает метрики на запуск; без ток
 
 test('токен: без него 401, с неверным 401, с верным 200', { timeout: 60000 }, async () => {
   const token = 'tok_0123456789abcdef0123456789abcdef';
-  const n = startNode('tok', { extraArgs: ['--metrics', '--metrics-token', token] });
+  const n = startNode('tok', await freePortBlock(), { extraArgs: ['--metrics', '--metrics-token', token] });
   try {
     await ready(n);
     const noToken = await get(n, '/metrics');
@@ -327,7 +327,7 @@ test('токен: без него 401, с неверным 401, с верным 
 });
 
 test('настройки в интерфейсе: включение и токен; токен хранится хешем, а не открытым', { timeout: 60000 }, async () => {
-  const n = startNode('cfg');
+  const n = startNode('cfg', await freePortBlock());
   const token = 'abcdefghijklmnopqrstuvwxyz012345';
   try {
     await ready(n);
@@ -368,8 +368,8 @@ test('настройки в интерфейсе: включение и токе
 });
 
 test('один узел отдаёт статистику всей сети: сосед виден с его устройствами', { timeout: 90000 }, async () => {
-  const a = startNode('NODE-A', { extraArgs: ['--metrics'] });
-  const b = startNode('NODE-B');
+  const a = startNode('NODE-A', await freePortBlock(), { extraArgs: ['--metrics'] });
+  const b = startNode('NODE-B', await freePortBlock());
   try {
     await Promise.all([ready(a), ready(b)]);
     let samples = [];
