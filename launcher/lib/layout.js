@@ -224,6 +224,42 @@ export function restoreFromArchive(base, version, trustedKeys) {
   return installRelease(base, bundle, trustedKeys);
 }
 
+/**
+ * Есть ли версия на этой машине: целый код в app/ или архив в releases/
+ * (из него лаунчер восстанавливает). Версия из state.json, которой нет ни там,
+ * ни там, — не текущая и не предыдущая: запускать и откатываться на неё нельзя.
+ */
+export function versionAvailable(base, version, trustedKeys) {
+  if (!version) return false;
+  if (fs.existsSync(path.join(appDir(base, version), RELEASE_FILES.manifest))
+    || fs.existsSync(path.join(releaseDir(base, version), RELEASE_FILES.payload))) return true;
+  return false;
+}
+
+/**
+ * Перенести настройки узла из прежнего каталога данных, если они там новее.
+ *
+ * У установленного приложения каталог данных общий, но узел мог работать и с
+ * другим (его записывали в autostart.home). При переезде молча взять настройки
+ * времён первой установки — то же, что сбросить имя, ключи и публикации; более
+ * новые из прежнего каталога забираем, старые не трогаем. Прежний каталог не
+ * изменяется.
+ * @returns {{copied: boolean, error?: string}}
+ */
+export function adoptNewerConfig(fromHome, toHome) {
+  const from = path.join(fromHome, 'config.json');
+  const to = path.join(toHome, 'config.json');
+  try {
+    if (path.resolve(fromHome) === path.resolve(toHome) || !fs.existsSync(from)) return { copied: false };
+    if (fs.existsSync(to) && fs.statSync(to).mtimeMs >= fs.statSync(from).mtimeMs) return { copied: false };
+    fs.mkdirSync(path.dirname(to), { recursive: true });
+    fs.copyFileSync(from, to);
+    return { copied: true };
+  } catch (e) {
+    return { copied: false, error: `${e.code || ''} ${e.message}`.trim() };
+  }
+}
+
 /** Удалить всё, кроме перечисленных версий. Возвращает, что осталось не удалённым. */
 export function prune(base, keep) {
   const stuck = [];

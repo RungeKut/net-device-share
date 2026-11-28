@@ -29,7 +29,7 @@ import { compareVersions } from './lib/semver.js';
 import { unpackBundle, verifyManifest } from './lib/release.js';
 import {
   appDir, readState, updateState, listInstalled, verifyInstalled, restoreFromArchive, installRelease,
-  prune, badKey, rmSafe, configSnapshotFile,
+  prune, badKey, rmSafe, configSnapshotFile, versionAvailable, adoptNewerConfig,
 } from './lib/layout.js';
 
 export const RESTART_EXIT_CODE = 75;
@@ -75,22 +75,18 @@ const HOME = process.env.NDS_HOME || (INSTALLED?.home ? path.resolve(INSTALLED.h
 
 /**
  * Установленное приложение хранит данные в общем каталоге, а не в профиле
- * того, кто его ставил. При первом запуске переносим настройки оттуда, где
- * они лежали раньше (идентификатор узла сохраняется — для сети это тот же узел).
+ * того, кто его ставил. Переносим настройки оттуда, где они лежали раньше,
+ * если они новее: узел мог работать с профилем (идентификатор узла
+ * сохраняется — для сети это тот же узел).
  */
 function migrateLegacyConfig() {
   if (!INSTALLED?.home || process.env.NDS_HOME) return;
-  const target = path.join(HOME, 'config.json');
-  const legacy = path.join(defaultHome(), 'config.json');
-  try {
-    if (fs.existsSync(target) || !fs.existsSync(legacy)) return;
-    fs.mkdirSync(HOME, { recursive: true });
-    fs.copyFileSync(legacy, target);
-    say(`настройки перенесены из ${legacy}`);
-  } catch (e) {
-    // Без прав администратора каталог данных недоступен на запись: это не ошибка,
-    // перенос сделает запуск с правами (так бывает у проверок вроде --status).
-    if (!['EPERM', 'EACCES'].includes(e.code)) say(`настройки перенести не удалось: ${e.message}`);
+  const legacy = defaultHome();
+  const r = adoptNewerConfig(legacy, HOME);
+  if (r.copied) say(`настройки перенесены из ${legacy}`);
+  else if (r.error) {
+    // Без прав администратора общий каталог недоступен на запись: перенесёт запуск с правами.
+    if (!['EPERM', 'EACCES'].some((c) => r.error.startsWith(c))) say(`настройки перенести не удалось: ${r.error}`);
   }
 }
 const KEYS = trustedKeys();
@@ -124,8 +120,17 @@ if (argv[0] === '--verify') {
 }
 
 if (argv[0] === '--stop') {
-  fs.mkdirSync(path.dirname(stopFlag()), { recursive: true });
-  fs.writeFileSync(stopFlag(), String(Date.now()));
+  // Флаг — в каждый каталог, с которым узел мог быть запущен: тот, что в
+  // autostart.home, установщик сам не знает, а узел слушает только свой.
+  for (const home of dataHomesForStop()) {
+    try {
+      const file = path.join(home, 'update', 'stop.flag');
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, String(Date.now()));
+    } catch (e) {
+      if (!['EPERM', 'EACCES'].includes(e.code)) say(`каталог ${home}: флаг остановки не записан (${e.message})`);
+    }
+  }
   say('запрошена остановка');
   process.exit(0);
 }
@@ -140,22 +145,49 @@ if (argv[0] === '--install-release') {
   process.exit(installFromFile(argv[1], argv.includes('--allow-downgrade')));
 }
 
+/** Каталоги данных, с которыми узел мог быть запущен: этот и записанный в autostart.home (его читает autostart.bat). */
+function dataHomesForStop() {
+  const homes = [HOME];
+  try {
+    const foreign = fs.readFileSync(path.join(BASE, 'autostart.home'), 'utf8').trim();
+    if (foreign && path.resolve(foreign) !== path.resolve(HOME)) homes.push(foreign);
+  } catch { /* файла нет — узел работает с HOME */ }
+  return homes;
+}
+
+/**
+ * Записать состояние после того, как версия появилась в app/ (--adopt,
+ * --install-release). Текущая и предыдущая, которых нет ни в app/, ни в
+ * архиве, из состояния уходят: узел, работавший с другим каталогом данных,
+ * оставил здесь номер версии, давно удалённой; ссылкой на неё сломались бы
+ * и откат, и запуск. any — версия может быть и не новее текущей (намеренный
+ * откат по файлу): тогда она идёт пробным запуском.
+ */
+function noteInstalled(version, { any = false } = {}) {
+  const keep = (v) => versionAvailable(BASE, v, KEYS);
+  updateState(HOME, (s) => {
+    const current = keep(s.current) ? s.current : null;
+    const previous = current !== null && s.previous !== current && keep(s.previous) ? s.previous : null;
+    if (current === null || version === current) {
+      s.current = version;
+      s.previous = previous && compareVersions(previous, version) < 0 ? previous : null;
+    } else if (any || compareVersions(version, current) > 0) {
+      s.pending = version;
+      s.attempts = 0;
+      s.configSnapshot = false;
+      s.previous = previous;
+    }
+    if (!s.highestInstalled || compareVersions(version, s.highestInstalled) > 0) s.highestInstalled = version;
+    return s;
+  });
+  return readState(HOME);
+}
+
 function adoptInstalled() {
   for (const v of listInstalled(BASE).reverse()) {
     const check = verifyInstalled(BASE, v, KEYS);
     if (!check.ok) { say(`версия ${v} не прошла проверку: ${check.reason}`); continue; }
-    updateState(HOME, (s) => {
-      if (!s.current) {
-        s.current = v;
-        s.highestInstalled = v;
-      } else if (compareVersions(v, s.current) > 0) {
-        s.pending = v;
-        s.attempts = 0;
-        s.configSnapshot = false;
-      }
-      return s;
-    });
-    const st = readState(HOME);
+    const st = noteInstalled(v);
     say(st.pending ? `версия ${st.pending} станет текущей при запуске (пробный запуск)` : `текущая версия: ${st.current}`);
     return 0;
   }
@@ -174,18 +206,8 @@ function installFromFile(file, allowDowngrade) {
       return 1;
     }
     installRelease(BASE, bundle, KEYS);
-    updateState(HOME, (s) => {
-      if (!s.current) {
-        s.current = manifest.version;
-        s.highestInstalled = manifest.version;
-      } else if (s.current !== manifest.version) {
-        s.pending = manifest.version;
-        s.attempts = 0;
-        s.configSnapshot = false;
-      }
-      return s;
-    });
-    say(`версия ${manifest.version} установлена${readState(HOME).pending ? ' — станет текущей при следующем запуске (пробный запуск)' : ''}`);
+    const after = noteInstalled(manifest.version, { any: allowDowngrade });
+    say(`версия ${manifest.version} установлена${after.pending ? ' — станет текущей при следующем запуске (пробный запуск)' : ''}`);
     return 0;
   } catch (e) {
     say(`установка не удалась: ${e.message}`);
@@ -321,7 +343,10 @@ function rollbackCommitted(reason) {
 
 function commitTrial(version, manifest) {
   updateState(HOME, (s) => {
-    s.previous = s.current && s.current !== version ? s.current : s.previous;
+    // Откатиться можно лишь на версию, которая есть на этой машине: номер без
+    // кода и без архива кнопка «Откатить» предложить может, лаунчер — выполнить нет.
+    const keep = (v) => Boolean(v) && v !== version && versionAvailable(BASE, v, KEYS);
+    s.previous = keep(s.current) ? s.current : (keep(s.previous) ? s.previous : null);
     s.current = version;
     s.pending = null;
     s.attempts = 0;

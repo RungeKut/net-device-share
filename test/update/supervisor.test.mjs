@@ -13,6 +13,8 @@ import http from 'node:http';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { buildRelease, packBundle } from '../../launcher/lib/release.js';
+import { unpackBundle } from '../../launcher/lib/release.js';
+import { installRelease } from '../../launcher/lib/layout.js';
 
 const SUP = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'launcher', 'supervisor.mjs');
 const { publicKey, privateKey } = crypto.generateKeyPairSync('ed25519', {
@@ -463,4 +465,100 @@ test('откатываться некуда (предыдущей нет) — п
   assert.match(r.stdout, /некуда/);
   assert.equal(stateOf(c).rollbackRequest, null);
   assert.deepEqual(runs(c), ['1.0.0 start']);
+});
+
+// ------------------------------ версии в state, файлов которых на диске нет
+
+/** Состояние, у которого current и previous указывают на отсутствующие версии. */
+const stateOfMissingVersions = () => ({
+  current: '9.9.9', previous: '9.9.0', pending: null, attempts: 0,
+  highestInstalled: '9.9.9', bad: {}, committedAt: null,
+  rollbackRequest: null, configSnapshot: false, trialSince: null,
+});
+
+const writeMissingState = (c) => {
+  fs.mkdirSync(path.join(c.home, 'update'), { recursive: true });
+  fs.writeFileSync(path.join(c.home, 'update', 'state.json'), JSON.stringify(stateOfMissingVersions()));
+};
+
+test('--install-release: текущей версии нет на диске — она не становится предыдущей', () => {
+  const c = env();
+  writeMissingState(c);
+  const f = path.join(c.dir, 'v1.ndsupd');
+  fs.writeFileSync(f, release('1.0.0', OK_EXIT));
+  const r = run(c, ['--install-release', f, '--allow-downgrade']);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  const s = state(c);
+  assert.equal(s.current, '1.0.0');
+  assert.equal(s.previous, null);
+  assert.equal(s.highestInstalled, '9.9.9');
+});
+
+test('--adopt: текущей версии нет на диске — новая становится текущей без висящей предыдущей', () => {
+  const c = env();
+  writeMissingState(c);
+  // версию кладёт «установщик»: напрямую в app/, минуя --install-release
+  installRelease(c.base, unpackBundle(release('1.0.0', OK_EXIT)), [{ keyId: 'test', publicKey, channels: ['test'] }]);
+  const r = run(c, ['--adopt']);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  const s = state(c);
+  assert.equal(s.current, '1.0.0');
+  assert.equal(s.previous, null);
+  assert.equal(s.pending, null);
+});
+
+test('установленное приложение: из прежнего каталога переносятся только более новые настройки', () => {
+  const mtime = (file, iso) => fs.utimesSync(file, new Date(iso), new Date(iso));
+  // (а) в прежнем каталоге новее — переносим
+  let c = env();
+  let data = path.join(c.dir, 'ProgramData-NDS');
+  let appdata = path.join(c.dir, 'AppData');
+  fs.mkdirSync(path.join(appdata, 'net-device-share'), { recursive: true });
+  fs.mkdirSync(data, { recursive: true });
+  fs.writeFileSync(path.join(c.base, 'installed.json'), JSON.stringify({ home: data }));
+  const noHome = { NDS_HOME: '', APPDATA: appdata, XDG_CONFIG_HOME: appdata };
+  fs.writeFileSync(path.join(data, 'config.json'), '{"nodeId":"old"}');
+  mtime(path.join(data, 'config.json'), '2020-01-01T00:00:00Z');
+  fs.writeFileSync(path.join(appdata, 'net-device-share', 'config.json'), '{"nodeId":"new"}');
+  mtime(path.join(appdata, 'net-device-share', 'config.json'), '2021-01-01T00:00:00Z');
+  let r = run(c, ['--status'], noHome);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.equal(fs.readFileSync(path.join(data, 'config.json'), 'utf8'), '{"nodeId":"new"}');
+
+  // (б) в прежнем каталоге старее — не затираем
+  c = env();
+  data = path.join(c.dir, 'ProgramData-NDS');
+  appdata = path.join(c.dir, 'AppData');
+  fs.mkdirSync(path.join(appdata, 'net-device-share'), { recursive: true });
+  fs.mkdirSync(data, { recursive: true });
+  fs.writeFileSync(path.join(c.base, 'installed.json'), JSON.stringify({ home: data }));
+  fs.writeFileSync(path.join(data, 'config.json'), '{"nodeId":"old"}');
+  mtime(path.join(data, 'config.json'), '2021-01-01T00:00:00Z');
+  fs.writeFileSync(path.join(appdata, 'net-device-share', 'config.json'), '{"nodeId":"old-legacy"}');
+  mtime(path.join(appdata, 'net-device-share', 'config.json'), '2020-01-01T00:00:00Z');
+  r = run(c, ['--status'], noHome);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.equal(fs.readFileSync(path.join(data, 'config.json'), 'utf8'), '{"nodeId":"old"}');
+
+  // (в) в прежнем каталоге файла нет — ничего не меняем
+  c = env();
+  data = path.join(c.dir, 'ProgramData-NDS');
+  appdata = path.join(c.dir, 'AppData');
+  fs.mkdirSync(data, { recursive: true });
+  fs.writeFileSync(path.join(c.base, 'installed.json'), JSON.stringify({ home: data }));
+  fs.writeFileSync(path.join(data, 'config.json'), '{"nodeId":"old"}');
+  r = run(c, ['--status'], noHome);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.equal(fs.readFileSync(path.join(data, 'config.json'), 'utf8'), '{"nodeId":"old"}');
+});
+
+test('--stop: флаг остановки кладётся и в каталог из autostart.home', () => {
+  const c = env();
+  const foreign = path.join(c.dir, 'foreign-home');
+  fs.mkdirSync(foreign, { recursive: true });
+  fs.writeFileSync(path.join(c.base, 'autostart.home'), foreign + '\r\n');
+  const r = run(c, ['--stop']);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.ok(fs.existsSync(path.join(c.home, 'update', 'stop.flag')));
+  assert.ok(fs.existsSync(path.join(foreign, 'update', 'stop.flag')));
 });

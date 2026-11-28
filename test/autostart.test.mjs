@@ -50,3 +50,31 @@ test('ярлык: с /elevated запускает напрямую, без runas
   assert.match(vbs, /schtasks\.exe \/Run \/TN NetDeviceShare/);
   assert.ok(vbs.indexOf('RunTask') < vbs.indexOf('StartApp nodeExe, entry'), 'задание пробуется раньше runas');
 });
+
+test('установщик: installed.json пишется на шаге ssInstall, в ssPostInstall записей нет', () => {
+  const iss = fs.readFileSync(path.join(root, 'installer', 'nds.iss.tpl'), 'utf8');
+  const ssInstall = iss.indexOf('if CurStep = ssInstall then');
+  const ssPost = iss.indexOf('else if CurStep = ssPostInstall then');
+  assert.ok(ssInstall > 0 && ssPost > ssInstall, 'ветка ssInstall должна идти раньше ssPostInstall');
+  assert.match(iss.slice(ssInstall, ssPost), /SaveStringToFile\([^\n]*installed\.json/);
+  const post = iss.slice(ssPost, iss.indexOf('end;', ssPost));
+  assert.ok(!post.includes('installed.json'), 'в ветке ssPostInstall installed.json не пишется');
+});
+
+test('брандмауэр: правило сначала удаляется, потом добавляется', () => {
+  const iss = fs.readFileSync(path.join(root, 'installer', 'nds.iss.tpl'), 'utf8');
+  for (const name of ['Net Device Share (UDP)', 'Net Device Share (TCP)']) {
+    const del = iss.indexOf(`delete rule name=""${name}""`);
+    const add = iss.indexOf(`add rule name=""${name}""`);
+    assert.ok(del > 0 && add > del, `«${name}»: delete должен идти раньше add`);
+  }
+});
+
+test('установщик: PrepareToInstall — узел остановлен: пусто, не остановлен: сообщение; StopRunning читает autostart.home', () => {
+  const iss = fs.readFileSync(path.join(root, 'installer', 'nds.iss.tpl'), 'utf8');
+  const stop = iss.slice(iss.indexOf('function StopRunning'), iss.indexOf('function PrepareToInstall'));
+  assert.match(stop, /LoadStringFromFile\([^\n]*autostart\.home/);
+  const prepare = iss.slice(iss.indexOf('function PrepareToInstall'), iss.indexOf('procedure CurStepChanged'));
+  assert.match(prepare, /if StopRunning\(\) then Result := ''/);
+  assert.match(prepare, /else Result := '[^']{10,}/, 'не остановлен — непустое сообщение');
+});

@@ -80,6 +80,8 @@ Name: "{autoprograms}\{#AppName} (с окном консоли)"; Filename: "{ap
 Filename: "{sys}\icacls.exe"; Parameters: """{#DataDir}"" /inheritance:r /grant:r *S-1-5-18:(OI)(CI)F *S-1-5-32-544:(OI)(CI)F"; Flags: runhidden; StatusMsg: "Настройка прав на каталог данных..."
 ; Версия новее текущей (установка поверх) станет текущей пробным запуском — с откатом.
 Filename: "{app}\node.exe"; Parameters: """{app}\launcher\supervisor.mjs"" --adopt"; Flags: runhidden; StatusMsg: "Проверка версии..."
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""Net Device Share (UDP)"""; Flags: runhidden; Tasks: firewall
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""Net Device Share (TCP)"""; Flags: runhidden; Tasks: firewall
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""Net Device Share (UDP)"" dir=in action=allow program=""{app}\node.exe"" protocol=UDP localport=47811 profile=domain,private"; Flags: runhidden; Tasks: firewall; StatusMsg: "Правила брандмауэра..."
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""Net Device Share (TCP)"" dir=in action=allow program=""{app}\node.exe"" protocol=TCP localport=47812-47814 profile=domain,private"; Flags: runhidden; Tasks: firewall
 Filename: "{app}\node.exe"; Parameters: """{app}\app\@@VERSION@@\src\main.js"" --autostart enable"; Flags: runhidden; Tasks: autostart; StatusMsg: "Автозапуск..."
@@ -111,37 +113,101 @@ begin
   Result := WizardIsTaskSelected('autostart');
 end;
 
-procedure StopRunning();
+// Узел работает от node.exe из каталога установки: пока процесс жив, файл не открыть на запись.
+function SetEnvironmentVariable(lpName, lpValue: String): BOOL;
+  external 'SetEnvironmentVariableW@kernel32.dll stdcall';
+function CreateFile(lpFileName: String; dwDesiredAccess, dwShareMode, dwCreationDisposition, dwFlagsAndAttributes: LongWord; hTemplateFile: THandle): THandle;
+  external 'CreateFileW@kernel32.dll stdcall';
+function CloseHandle(hObject: THandle): BOOL;
+  external 'CloseHandle@kernel32.dll stdcall';
+
+const
+  GENERIC_WRITE = $40000000;
+  OPEN_EXISTING = 3;
+
+var
+  InstalledHad: Boolean;    // installed.json был ещё до этой установки
+  StepsDone: Boolean;       // установка дошла до конца
+
+function NodeFileInUse(): Boolean;
+var
+  H: THandle;
+begin
+  H := CreateFile(ExpandConstant('{app}\node.exe'), GENERIC_WRITE, 7, OPEN_EXISTING, 0, 0);
+  Result := (H = -1);
+  if not Result then CloseHandle(H);
+end;
+
+// Каталог данных узлу задаётся переменной окружения: лаунчер читает только её.
+procedure AskNodeToStop(Home: String);
 var
   Code: Integer;
 begin
-  // Работающий узел просим остановиться через лаунчер: на Windows мягкого
-  // сигнала завершения нет, поэтому флаг-файлом (см. launcher\supervisor.mjs).
-  if FileExists(ExpandConstant('{app}\launcher\supervisor.mjs')) and FileExists(ExpandConstant('{app}\node.exe')) then
+  SetEnvironmentVariable('NDS_HOME', Home);
+  Exec(ExpandConstant('{app}\node.exe'), ExpandConstant('"{app}\launcher\supervisor.mjs" --stop'), ExpandConstant('{app}'),
+    SW_HIDE, ewWaitUntilTerminated, Code);
+end;
+
+// True — узла нет (или он остановился). На Windows мягкого сигнала завершения
+// нет, поэтому флаг-файлом (см. launcher\supervisor.mjs); флаг кладётся в каждый
+// каталог данных, с которым узел мог быть запущен: узел слушает только свой.
+function StopRunning(): Boolean;
+var
+  Foreign: AnsiString;
+  SavedHome: String;
+  Waits: Integer;
+begin
+  Result := True;
+  if not (FileExists(ExpandConstant('{app}\launcher\supervisor.mjs')) and FileExists(ExpandConstant('{app}\node.exe'))) then Exit;
+  SavedHome := GetEnv('NDS_HOME');
+  AskNodeToStop(ExpandConstant('{#DataDir}'));
+  if LoadStringFromFile(ExpandConstant('{app}\autostart.home'), Foreign) and (Trim(Foreign) <> '') then
+    AskNodeToStop(String(Trim(Foreign)));
+  SetEnvironmentVariable('NDS_HOME', SavedHome);
+  for Waits := 1 to 30 do
   begin
-    Exec(ExpandConstant('{app}\node.exe'), ExpandConstant('"{app}\launcher\supervisor.mjs" --stop'), '', SW_HIDE, ewWaitUntilTerminated, Code);
-    Sleep(6000);
+    if not NodeFileInUse() then Exit;
+    Sleep(2000);
   end;
+  Result := False;
 end;
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
-  StopRunning();
-  Result := '';
+  // Не остановили — и не начинаем: установка поверх живого узла падала на занятом
+  // node.exe посреди замены файлов.
+  if StopRunning() then Result := ''
+  else Result := 'Не удалось остановить работающий Net Device Share: его файлы заняты.' + #13#10 +
+    'Остановите узел (закройте окно консоли или выполните node.exe launcher\supervisor.mjs --stop) и повторите установку.';
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   Home: String;
 begin
-  if CurStep = ssPostInstall then
+  if CurStep = ssInstall then
   begin
-    // Признак «поставлено установщиком» и каталог данных для лаунчера.
+    // Обычные записи [Run] (--adopt, --autostart enable) выполняются до ssPostInstall,
+    // и приложению уже надо знать, что оно из установщика: не знав, оно записывает
+    // службе профиль того, кто ставил, вместо общего каталога данных.
+    InstalledHad := FileExists(ExpandConstant('{app}\installed.json'));
+    ForceDirectories(ExpandConstant('{app}'));
     Home := ExpandConstant('{#DataDir}');
     StringChangeEx(Home, '\', '\\', True);
+    // Признак «поставлено установщиком» и каталог данных для лаунчера.
     SaveStringToFile(ExpandConstant('{app}\installed.json'),
       '{"kind":"installer","home":"' + Home + '"}', False);
-  end;
+  end
+  else if CurStep = ssPostInstall then
+    StepsDone := True;
+end;
+
+procedure DeinitializeSetup();
+begin
+  // Первая установка сорвалась или отменена после начала копирования: без приложения
+  // такой признак — ложь.
+  if not StepsDone and not InstalledHad then
+    DeleteFile(ExpandConstant('{app}\installed.json'));
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);

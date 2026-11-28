@@ -17,6 +17,8 @@ import {
   installRelease, verifyInstalled, restoreFromArchive, readState, updateState, listInstalled, prune,
   appDir, badKey,
 } from '../../launcher/lib/layout.js';
+import { RELEASE_FILES } from '../../launcher/lib/release.js';
+import { versionAvailable, adoptNewerConfig } from '../../launcher/lib/layout.js';
 
 const { publicKey, privateKey } = crypto.generateKeyPairSync('ed25519', {
   publicKeyEncoding: { type: 'spki', format: 'pem' },
@@ -187,4 +189,69 @@ test('очистка старых версий и состояние', () => {
   assert.ok(s.bad['2.2.0|abcdef12']);
   fs.rmSync(base, { recursive: true, force: true });
   fs.rmSync(home, { recursive: true, force: true });
+});
+
+test('versionAvailable: пустой base, код в app/, архив в releases/', () => {
+  const base = tmp();
+  assert.equal(versionAvailable(base, '1.0.0'), false);
+  assert.equal(versionAvailable(base, null), false);
+
+  fs.mkdirSync(appDir(base, '1.0.0'), { recursive: true });
+  fs.writeFileSync(path.join(appDir(base, '1.0.0'), RELEASE_FILES.manifest), '{}');
+  assert.equal(versionAvailable(base, '1.0.0'), true);
+
+  fs.mkdirSync(path.join(base, 'releases', '2.0.0'), { recursive: true });
+  fs.writeFileSync(path.join(base, 'releases', '2.0.0', RELEASE_FILES.payload), 'x');
+  assert.equal(versionAvailable(base, '2.0.0'), true);
+
+  fs.rmSync(base, { recursive: true, force: true });
+});
+
+test('adoptNewerConfig: новее из прежнего каталога забирает, сам источник не меняет', () => {
+  const from = tmp();
+  const to = tmp();
+  const fromCfg = path.join(from, 'config.json');
+  const toCfg = path.join(to, 'config.json');
+
+  assert.deepEqual(adoptNewerConfig(from, to), { copied: false });
+
+  fs.writeFileSync(fromCfg, '{"name":"узел"}');
+  assert.equal(adoptNewerConfig(from, to).copied, true);
+  assert.deepEqual(fs.readFileSync(toCfg), fs.readFileSync(fromCfg));
+
+  fs.writeFileSync(fromCfg, '{"name":"новое имя"}');
+  fs.writeFileSync(toCfg, '{"name":"старое имя"}');
+  fs.utimesSync(toCfg, new Date('2020-01-01T00:00:00Z'), new Date('2020-01-01T00:00:00Z'));
+  fs.utimesSync(fromCfg, new Date('2021-01-01T00:00:00Z'), new Date('2021-01-01T00:00:00Z'));
+  assert.equal(adoptNewerConfig(from, to).copied, true);
+  assert.equal(fs.readFileSync(toCfg, 'utf8'), '{"name":"новое имя"}');
+
+  assert.equal(fs.readFileSync(fromCfg, 'utf8'), '{"name":"новое имя"}');
+
+  fs.rmSync(from, { recursive: true, force: true });
+  fs.rmSync(to, { recursive: true, force: true });
+});
+
+test('adoptNewerConfig: прежний старее, времена равны, путь тот же — не копирует', () => {
+  const from = tmp();
+  const to = tmp();
+  const fromCfg = path.join(from, 'config.json');
+  const toCfg = path.join(to, 'config.json');
+  fs.writeFileSync(fromCfg, '{"name":"из прежнего"}');
+  fs.writeFileSync(toCfg, '{"name":"текущие"}');
+
+  fs.utimesSync(toCfg, new Date('2021-01-01T00:00:00Z'), new Date('2021-01-01T00:00:00Z'));
+  fs.utimesSync(fromCfg, new Date('2020-01-01T00:00:00Z'), new Date('2020-01-01T00:00:00Z'));
+  assert.equal(adoptNewerConfig(from, to).copied, false);
+  assert.equal(fs.readFileSync(toCfg, 'utf8'), '{"name":"текущие"}');
+
+  // равные времена считаются «не новее»: сравнение по mtime через >=
+  fs.utimesSync(fromCfg, new Date('2021-01-01T00:00:00Z'), new Date('2021-01-01T00:00:00Z'));
+  assert.equal(adoptNewerConfig(from, to).copied, false);
+  assert.equal(fs.readFileSync(toCfg, 'utf8'), '{"name":"текущие"}');
+
+  assert.equal(adoptNewerConfig(from, from).copied, false);
+
+  fs.rmSync(from, { recursive: true, force: true });
+  fs.rmSync(to, { recursive: true, force: true });
 });

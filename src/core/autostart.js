@@ -272,6 +272,26 @@ export class Autostart {
     return process.env.NDS_HOME || configDir();
   }
 
+  /**
+   * Установленному приложению autostart.home не нужен: служба работает с общим
+   * каталогом из installed.json. Но прежние версии установщика успевали
+   * записать туда профиль раньше, чем появлялся installed.json, — и узел
+   * работал с профилем. Прежде чем файл убрать, настройки оттуда забираем,
+   * если они новее: иначе обновление выглядело бы как сброс имени, ключей
+   * и публикаций до времён первой установки.
+   */
+  async _adoptForeignHome() {
+    let foreign;
+    try { foreign = (await fsp.readFile(this._homeFile, 'utf8')).trim(); } catch { return; }
+    let common;
+    try { common = JSON.parse(fs.readFileSync(path.join(ROOT, 'installed.json'), 'utf8')).home; } catch { return; }
+    if (!foreign || !common || path.resolve(foreign) === path.resolve(common)) return;
+    const { lib } = await import('../update/lib.js');
+    const r = lib ? lib.layout.adoptNewerConfig(foreign, common) : { error: 'нет библиотеки лаунчера' };
+    if (r.copied) log.info(`настройки перенесены из ${foreign} в ${common}`);
+    else if (r.error) log.warn(`настройки из ${foreign} не перенесены (${r.error}): узел будет работать с ${common}`);
+  }
+
   async _enableWindows() {
     if (!fs.existsSync(this._launcher)) {
       throw new Error(`не найден ${this._launcher} — без него задание запускать нечего`);
@@ -292,6 +312,7 @@ export class Autostart {
         log.warn(`не записан ${this._homeFile} (${e.code || e.message}): служба возьмёт собственный каталог настроек`);
       }
     } else {
+      await this._adoptForeignHome();
       await fsp.rm(this._homeFile, { force: true }).catch(() => {});
     }
 
